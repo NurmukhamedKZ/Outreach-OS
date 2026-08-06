@@ -29,10 +29,15 @@ class HttpError(RuntimeError):
         self.status = status
 
 
+def _paths(url):
+    h = hashlib.sha1(url.encode()).hexdigest()
+    return CACHE / f"{h}.html", CACHE / f"{h}.url"
+
+
 def get(url, **kw):
     """GET через кэш. Возвращает сырой HTML."""
     CACHE.mkdir(exist_ok=True)
-    f = CACHE / (hashlib.sha1(url.encode()).hexdigest() + ".html")
+    f, u = _paths(url)
     if f.exists():
         return f.read_text(encoding="utf-8")
 
@@ -41,8 +46,20 @@ def get(url, **kw):
         raise HttpError(page.status, url)
     # .text у Response — текст корневого элемента (пустой), сырая разметка в .html_content
     html = str(page.html_content)
+    u.write_text(str(page.url), encoding="utf-8")
     f.write_text(html, encoding="utf-8")
     return html
+
+
+def final_url(url):
+    """Куда запрос приземлился после редиректов.
+
+    Нужен, потому что источники подменяют страницу молча: несуществующий slug на hh
+    и запредельная страница 2GIS отвечают HTTP 200 и отдают чужое содержимое.
+    Статус тут не помогает — помогает только конечный адрес.
+    """
+    _, u = _paths(url)
+    return u.read_text(encoding="utf-8") if u.exists() else None
 
 
 def jsonl(name, rows, key):

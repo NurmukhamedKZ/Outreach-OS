@@ -14,7 +14,7 @@ import json
 import re
 import sys
 
-from fetch import HttpError, get, jsonl
+from fetch import HttpError, final_url, get, jsonl
 
 LIST = "https://{city}.hh.kz/vacancies/{slug}"
 VACANCY = "https://hh.kz/vacancy/{id}"
@@ -41,7 +41,7 @@ def posting(html):
     return None
 
 
-def parse(d, vacancy_id, city):
+def parse(d, vacancy_id, city, slug):
     return {
         "vacancy_id": vacancy_id,
         "title": d.get("title"),
@@ -50,12 +50,31 @@ def parse(d, vacancy_id, city):
         "description": d.get("description"),
         "url": VACANCY.format(id=vacancy_id),
         "city": city,
+        "slug": slug,
     }
 
 
+def listing(slug, city):
+    """HTML страницы slug'а. Падает, если hh подменил её общим списком.
+
+    Slug — не произвольный запрос, а фиксированная SEO-страница hh. Несуществующий
+    редиректит на /vacancies (все вакансии города) и отвечает HTTP 200, поэтому
+    сбор без этой проверки молча наберёт 50 посторонних вакансий.
+    """
+    url = LIST.format(city=city, slug=slug)
+    html = get(url, headers=HEADERS)
+    landed = final_url(url)
+    if landed and slug.lower() not in landed.lower():
+        sys.exit(
+            f"У hh нет страницы '{slug}' — запрос увело на {landed}\n"
+            f"Валидный slug: открой поиск hh.kz по нужной фразе в браузере и возьми\n"
+            f"slug из адреса, куда он сам перебросит (например menedzher_po_prodazham)."
+        )
+    return html
+
+
 def collect(slug, city):
-    html = get(LIST.format(city=city, slug=slug), headers=HEADERS)
-    found = ids(html)
+    found = ids(listing(slug, city))
     print(f"{slug} / {city}: {len(found)} вакансий на странице")
 
     rows = []
@@ -68,22 +87,28 @@ def collect(slug, city):
         if not d:
             print(f"\n  {vid}: JobPosting не найден — вакансия снята или закрыта")
             continue
-        rows.append(parse(d, vid, city))
+        rows.append(parse(d, vid, city, slug))
         print(f"  {i}/{len(found)}", end="\r", flush=True)
     print()
     return rows
 
 
 def demo():
-    """Список отдаёт id, вакансия — структурированный JobPosting."""
-    html = get(LIST.format(city="almaty", slug="menedzher_po_prodazham"), headers=HEADERS)
-    found = ids(html)
+    """Список отдаёт id, вакансия — JobPosting, несуществующий slug — отказ."""
+    found = ids(listing("menedzher_po_prodazham", "almaty"))
     assert len(found) >= 20, f"ожидали десятки вакансий, получили {len(found)}"
+
+    # выдуманный slug обязан приводить к отказу, а не к сбору чужих вакансий
+    url = LIST.format(city="almaty", slug="AI_engineer")
+    get(url, headers=HEADERS)
+    landed = final_url(url)
+    assert landed and "ai_engineer" not in landed.lower(), \
+        f"подмена страницы перестала обнаруживаться: {landed}"
 
     vid = found[0]
     d = posting(get(VACANCY.format(id=vid), headers=HEADERS))
     assert d, "JSON-LD JobPosting не найден"
-    r = parse(d, vid, "almaty")
+    r = parse(d, vid, "almaty", "menedzher_po_prodazham")
     assert r["title"], r
     assert r["employer"], "работодатель пуст — по нему клеится компания"
     assert r["published_at"] and r["published_at"].startswith("20"), r["published_at"]
@@ -97,5 +122,5 @@ if __name__ == "__main__":
     else:
         if len(sys.argv) < 3:
             sys.exit(__doc__)
-        rows = collect(sys.argv[1], sys.argv[2])
+        rows = collect(sys.argv[1], sys.argv[2].lower())
         print(f"новых записей: {jsonl(OUT, rows, 'vacancy_id')} из {len(rows)} -> raw/{OUT}")
