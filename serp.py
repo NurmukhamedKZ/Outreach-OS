@@ -1,0 +1,90 @@
+"""Выдача Google через Serper.dev.
+
+Утилита: ЛПР, добор компаний вне 2GIS, email по домену. $1 за 1 000 запросов.
+Ключ — в переменной окружения SERPER_API_KEY.
+
+Запуск: uv run serp.py "директор ТОО Ромашка"
+        uv run serp.py demo          проверка разбора, в сеть не ходит
+"""
+
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+from scrapling.fetchers import Fetcher
+
+from fetch import jsonl
+
+API = "https://google.serper.dev/search"
+CACHE = Path("cache")
+OUT = "serp.jsonl"
+
+
+def search(query, country="kz", lang="ru"):
+    """Ответ Serper с кэшем на диск — повторный запрос денег не стоит."""
+    key = os.environ.get("SERPER_API_KEY")
+    if not key:
+        sys.exit("Нет SERPER_API_KEY в окружении")
+
+    CACHE.mkdir(exist_ok=True)
+    f = CACHE / (hashlib.sha1(f"serp:{query}:{country}:{lang}".encode()).hexdigest() + ".json")
+    if f.exists():
+        return json.loads(f.read_text(encoding="utf-8"))
+
+    page = Fetcher.post(
+        API,
+        json={"q": query, "gl": country, "hl": lang},
+        headers={"X-API-KEY": key, "Content-Type": "application/json"},
+    )
+    if page.status != 200:
+        sys.exit(f"Serper HTTP {page.status}: {str(page.html_content)[:200]}")
+    data = page.json()
+    f.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return data
+
+
+def parse(data, query):
+    return [
+        {
+            "query": query,
+            "url": r.get("link"),
+            "title": r.get("title"),
+            "snippet": r.get("snippet"),
+            "position": r.get("position"),
+        }
+        for r in data.get("organic") or []
+    ]
+
+
+def demo():
+    """Разбор ответа Serper на образце — сеть и ключ не нужны."""
+    sample = {
+        "organic": [
+            {"title": "Ромашка, ТОО", "link": "https://romashka.kz",
+             "snippet": "Директор — Иванов И.", "position": 1},
+            {"title": "Без сниппета", "link": "https://x.kz", "position": 2},
+        ],
+        "searchParameters": {"q": "тест"},
+    }
+    rows = parse(sample, "тест")
+    assert len(rows) == 2, rows
+    assert rows[0]["url"] == "https://romashka.kz", rows[0]
+    assert rows[0]["snippet"].startswith("Директор"), rows[0]
+    assert rows[1]["snippet"] is None, "отсутствующий сниппет должен быть None"
+    assert all(r["query"] == "тест" for r in rows)
+    assert parse({}, "пусто") == [], "пустая выдача не должна падать"
+    print("serp demo ok")
+
+
+if __name__ == "__main__":
+    if sys.argv[1:2] == ["demo"]:
+        demo()
+    else:
+        if len(sys.argv) < 2:
+            sys.exit(__doc__)
+        query = " ".join(sys.argv[1:])
+        rows = parse(search(query), query)
+        print(f"результатов: {len(rows)}")
+        print(f"новых записей: {jsonl(OUT, rows, 'url')} -> raw/{OUT}")

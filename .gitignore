@@ -13,3 +13,7 @@ wheels/
 cookies.json
 ig_profile/
 *_posts.json
+
+# Кэш ответов и собранные данные
+cache/
+raw/
