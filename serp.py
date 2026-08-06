@@ -1,9 +1,9 @@
 """Выдача Google через Serper.dev.
 
 Утилита: ЛПР, добор компаний вне 2GIS, email по домену. $1 за 1 000 запросов.
-Ключ — в переменной окружения SERPER_API_KEY.
+Ключ SERPER_API_KEY берётся из .env (шаблон — .env.example).
 
-Запуск: uv run serp.py "директор ТОО Ромашка"
+Запуск: uv run --env-file .env serp.py "директор ТОО Ромашка"
         uv run serp.py demo          проверка разбора, в сеть не ходит
 """
 
@@ -26,7 +26,11 @@ def search(query, country="kz", lang="ru"):
     """Ответ Serper с кэшем на диск — повторный запрос денег не стоит."""
     key = os.environ.get("SERPER_API_KEY")
     if not key:
-        sys.exit("Нет SERPER_API_KEY в окружении")
+        sys.exit(
+            "SERPER_API_KEY пуст.\n"
+            "  1) cp .env.example .env  и вписать ключ с https://serper.dev\n"
+            "  2) uv run --env-file .env serp.py ...   (или export UV_ENV_FILE=.env)"
+        )
 
     CACHE.mkdir(exist_ok=True)
     f = CACHE / (hashlib.sha1(f"serp:{query}:{country}:{lang}".encode()).hexdigest() + ".json")

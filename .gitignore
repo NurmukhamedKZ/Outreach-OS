@@ -17,3 +17,6 @@ ig_profile/
 # Кэш ответов и собранные данные
 cache/
 raw/
+
+# Ключи. Шаблон — в .env.example
+.env
