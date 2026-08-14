@@ -11,19 +11,22 @@ import hashlib
 import json
 import os
 import sys
-from pathlib import Path
 
 from scrapling.fetchers import Fetcher
 
-from fetch import jsonl
+from fetch import RAW, jsonl
+from sources import parse_serper as parse
 
 API = "https://google.serper.dev/search"
-CACHE = Path("cache")
 OUT = "serp.jsonl"
 
 
 def search(query, country="kz", lang="ru"):
-    """Ответ Serper с кэшем на диск — повторный запрос денег не стоит."""
+    """Ответ Serper в слой сырья — повторный запрос денег не стоит.
+
+    Суффикс .serp.json отделяет ответ API от сайдкаров страниц: те лежат как
+    <sha>.json и описывают скачанную страницу, а здесь сырьё — сам ответ.
+    """
     key = os.environ.get("SERPER_API_KEY")
     if not key:
         sys.exit(
@@ -32,8 +35,8 @@ def search(query, country="kz", lang="ru"):
             "  2) uv run --env-file .env serp.py ...   (или export UV_ENV_FILE=.env)"
         )
 
-    CACHE.mkdir(exist_ok=True)
-    f = CACHE / (hashlib.sha1(f"serp:{query}:{country}:{lang}".encode()).hexdigest() + ".json")
+    RAW.mkdir(exist_ok=True)
+    f = RAW / (hashlib.sha1(f"serp:{query}:{country}:{lang}".encode()).hexdigest() + ".serp.json")
     if f.exists():
         return json.loads(f.read_text(encoding="utf-8"))
 
@@ -47,19 +50,6 @@ def search(query, country="kz", lang="ru"):
     data = page.json()
     f.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     return data
-
-
-def parse(data, query):
-    return [
-        {
-            "query": query,
-            "url": r.get("link"),
-            "title": r.get("title"),
-            "snippet": r.get("snippet"),
-            "position": r.get("position"),
-        }
-        for r in data.get("organic") or []
-    ]
 
 
 def demo():

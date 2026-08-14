@@ -1,0 +1,416 @@
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --border: #e2e5ea;
+  --text: #14181f;
+  --muted: #6b7482;
+  --accent: #1f6feb;
+  --accent-soft: #e8f0fe;
+  --warm: #b45309;
+  --warm-soft: #fef3c7;
+  --danger: #b42318;
+  --danger-soft: #fee4e2;
+  --radius: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #10131a;
+    --panel: #171b24;
+    --border: #262c38;
+    --text: #e8eaee;
+    --muted: #8b94a3;
+    --accent: #4d8ef7;
+    --accent-soft: #17243d;
+    --warm: #f0b429;
+    --warm-soft: #33270d;
+    --danger: #f97066;
+    --danger-soft: #3a1614;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+a {
+  color: var(--accent);
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- каркас ---------------------------------------------------------------- */
+
+.console {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px 24px 64px;
+}
+
+.masthead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px 20px;
+  margin-bottom: 20px;
+}
+
+.masthead h1 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: -0.01em;
+}
+
+.counters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.counters b {
+  color: var(--text);
+}
+
+.controls {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.controls select {
+  font: inherit;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .split {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* --- список ---------------------------------------------------------------- */
+
+.roster {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: inherit;
+  text-align: left;
+}
+
+/* Без этого grid-ячейка не сжимается ниже своего содержимого, и длинное название
+   компании выдавливает intent за край строки вместо того, чтобы обрезаться. */
+.row > * {
+  min-width: 0;
+}
+
+.row:hover {
+  border-color: var(--accent);
+}
+
+.row[aria-current="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.rank {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.row-text {
+  min-width: 0;
+}
+
+/* display: block обязателен — на инлайновом элементе overflow не действует, и
+   длинное название компании уезжает поверх intent вместо многоточия. */
+.row-name,
+.row-sub {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-name {
+  font-weight: 550;
+}
+
+.row-sub {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.intent {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--warm-soft);
+  color: var(--warm);
+}
+
+/* --- карточка -------------------------------------------------------------- */
+
+.card {
+  position: sticky;
+  top: 24px;
+  padding: 22px 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.card h2 {
+  margin: 0 0 2px;
+  font-size: 20px;
+  letter-spacing: -0.01em;
+}
+
+.card h3 {
+  margin: 24px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.card-sub {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 18px;
+}
+
+.why {
+  padding: 14px 16px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: var(--accent-soft);
+}
+
+.why p {
+  margin: 0;
+}
+
+.why blockquote {
+  margin: 10px 0 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  font-style: italic;
+}
+
+.tag {
+  display: inline-block;
+  margin-top: 10px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.channels {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.channel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.channel-kind {
+  min-width: 84px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.channel .handle {
+  flex: 1;
+}
+
+.channel.is-primary {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.channel.is-primary .channel-kind::after {
+  content: " · пишем сюда";
+  color: var(--accent);
+}
+
+.channel.is-primary .channel-kind {
+  min-width: 150px;
+}
+
+.channel.is-suppressed {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.channel.is-suppressed .handle {
+  text-decoration: line-through;
+  color: var(--danger);
+}
+
+.ghost {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.ghost:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.signals {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.signals li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.signals li:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.signal-quote {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.weight {
+  color: var(--warm);
+  font-size: 13px;
+}
+
+.sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.refusal {
+  margin-top: 26px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.refusal form {
+  display: flex;
+  gap: 8px;
+}
+
+.refusal input {
+  flex: 1;
+  font: inherit;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.refusal button {
+  padding: 7px 14px;
+  border: 1px solid var(--danger);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--danger);
+}
+
+.refusal button:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--panel);
+}
+
+.refusal button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.note {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.placeholder {
+  padding: 60px 24px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  text-align: center;
+}
+
+.failure {
+  padding: 14px 18px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  background: var(--danger-soft);
+  color: var(--danger);
+}

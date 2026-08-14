@@ -7,54 +7,16 @@
 Города: almaty, astana. Список рубрик даёт gis_rubrics.py.
 """
 
-import json
-import re
 import sys
 
-from fetch import get, jsonl
+from fetch import JSONL_DIR, get, jsonl
+from sources import parse_initial_state as state
+from sources import parse_org_list as orgs
+from sources import parse_search_meta as meta
 
 COOKIE = {"dg5_museum_accept": "true"}  # снимает редирект на /museum
 URL = "https://2gis.kz/{city}/rubric/{rubric}/page/{page}"
 OUT = "2gis_list.jsonl"
-
-
-def state(html):
-    """initialState — JS-строка с JSON внутри. Снимаем только JS-экранирование."""
-    raw = re.search(r"var initialState = JSON\.parse\('(.*?)'\);", html, re.S).group(1)
-    return json.loads(re.sub(r"\\(['\\])", r"\1", raw))
-
-
-def meta(s):
-    """total, pages и фактическая страница из ветки поиска."""
-    prof = s["data"]["search"]["profile"]
-    d = prof[next(iter(prof))]["data"]
-    return d["total"], d["pages"], d.get("currentPage")
-
-
-def orgs(s, city, rubric):
-    """Карточки организаций из ветки entity. Записи без org — не организации."""
-    rows = []
-    for branch_id, node in s["data"]["entity"]["profile"].items():
-        d = node.get("data") or {}
-        org = d.get("org")
-        if not org:
-            continue
-        rev = d.get("reviews") or {}
-        rows.append({
-            "branch_id": branch_id,
-            "org_id": org.get("id"),
-            "name": d.get("name"),
-            "org_name": org.get("name"),
-            "branch_count": org.get("branch_count"),
-            "rubrics": [r.get("name") for r in d.get("rubrics") or []],
-            "address": d.get("address_name"),
-            "point": d.get("point"),
-            "review_count": rev.get("general_review_count"),
-            "rating": rev.get("general_rating"),
-            "city": city,
-            "rubric_id": str(rubric),
-        })
-    return rows
 
 
 def collect(rubric, city):
@@ -118,4 +80,4 @@ if __name__ == "__main__":
             sys.exit(__doc__)
         rubric, city = sys.argv[1], sys.argv[2]
         rows = collect(rubric, city)
-        print(f"новых записей: {jsonl(OUT, rows, 'branch_id')} из {len(rows)} -> raw/{OUT}")
+        print(f"новых записей: {jsonl(OUT, rows, 'branch_id')} из {len(rows)} -> {JSONL_DIR}/{OUT}")

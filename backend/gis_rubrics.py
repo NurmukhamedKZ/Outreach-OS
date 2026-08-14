@@ -11,21 +11,15 @@ gis_list.py, а чёрный список конкурентов — это то
 потому что заранее неизвестно, есть ли у него дети.
 """
 
-import json
-import re
 import sys
 
-from fetch import HttpError, get, jsonl
+from fetch import JSONL_DIR, HttpError, get, jsonl
+from sources import parse_initial_state as state
 
 COOKIE = {"dg5_museum_accept": "true"}
 ROOT = "https://2gis.kz/almaty/rubrics"
 BRANCH = "https://2gis.kz/almaty/rubrics/subrubrics/{id}"
 OUT = "2gis_rubrics.jsonl"
-
-
-def state(html):
-    raw = re.search(r"var initialState = JSON\.parse\('(.*?)'\);", html, re.S).group(1)
-    return json.loads(re.sub(r"\\(['\\])", r"\1", raw))
 
 
 def named(rubricator, ids):
@@ -96,4 +90,4 @@ if __name__ == "__main__":
         demo()
     else:
         rows = walk(sys.argv[1:] or None)
-        print(f"новых записей: {jsonl(OUT, rows, 'id')} из {len(rows)} -> raw/{OUT}")
+        print(f"новых записей: {jsonl(OUT, rows, 'id')} из {len(rows)} -> {JSONL_DIR}/{OUT}")

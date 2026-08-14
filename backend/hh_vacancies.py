@@ -10,35 +10,16 @@ SEO-урлы /vacancies/<slug> идут без параметров и под з
 Slug — хвост SEO-страницы hh: menedzher_po_prodazham, buhgalter, ...
 """
 
-import json
-import re
 import sys
 
-from fetch import HttpError, final_url, get, jsonl
+from fetch import JSONL_DIR, HttpError, final_url, get, jsonl
+from sources import parse_job_posting as posting
+from sources import parse_vacancy_ids as ids
 
 LIST = "https://{city}.hh.kz/vacancies/{slug}"
 VACANCY = "https://hh.kz/vacancy/{id}"
 HEADERS = {"accept-language": "ru-RU,ru;q=0.9"}
 OUT = "hh_vacancies.jsonl"
-
-
-def ids(html):
-    """id вакансий со страницы списка."""
-    return sorted(set(re.findall(r"/vacancy/(\d{6,})", html)))
-
-
-def posting(html):
-    """JSON-LD JobPosting — hh отдаёт вакансию структурно, парсить HTML не нужно."""
-    for block in re.findall(
-        r'<script type="application/ld\+json">(.*?)</script>', html, re.S
-    ):
-        try:
-            d = json.loads(block)
-        except json.JSONDecodeError:
-            continue
-        if d.get("@type") == "JobPosting":
-            return d
-    return None
 
 
 def parse(d, vacancy_id, city, slug):
@@ -123,4 +104,4 @@ if __name__ == "__main__":
         if len(sys.argv) < 3:
             sys.exit(__doc__)
         rows = collect(sys.argv[1], sys.argv[2].lower())
-        print(f"новых записей: {jsonl(OUT, rows, 'vacancy_id')} из {len(rows)} -> raw/{OUT}")
+        print(f"новых записей: {jsonl(OUT, rows, 'vacancy_id')} из {len(rows)} -> {JSONL_DIR}/{OUT}")

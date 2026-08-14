@@ -1,57 +1,48 @@
 """Контакты организаций из карточек 2GIS.
 
-Читает raw/2gis_list.jsonl и по каждому branch_id забирает карточку филиала.
+Читает raw_jsonl_legacy/2gis_list.jsonl и по каждому branch_id забирает карточку филиала.
 Своей фильтрации нет: отбор задаётся тем, по каким рубрикам запускался gis_list.py.
 
 Запуск: uv run gis_firm.py [limit]
         uv run gis_firm.py demo
 """
 
-import json
-import re
 import sys
 
-from fetch import get, jsonl, read
+from fetch import JSONL_DIR, get, jsonl, read
+from sources import parse_firm_card
+from sources import parse_initial_state as state
 
 COOKIE = {"dg5_museum_accept": "true"}
 URL = "https://2gis.kz/{city}/firm/{branch_id}"
 SRC = "2gis_list.jsonl"
 OUT = "2gis_firm.jsonl"
 
-KINDS = ("phone", "website", "email", "instagram", "whatsapp")
-
-
-def state(html):
-    raw = re.search(r"var initialState = JSON\.parse\('(.*?)'\);", html, re.S).group(1)
-    return json.loads(re.sub(r"\\(['\\])", r"\1", raw))
-
-
-def unwrap(url):
-    """2GIS заворачивает сайт в редирект link.2gis.ru — настоящий URL в хвосте после '?'."""
-    if url and "link.2gis." in url and "?" in url:
-        return url.split("?", 1)[1]
-    return url
-
 
 def contacts(s, branch_id):
-    d = s["data"]["entity"]["profile"][branch_id]["data"]
-    found = {k: [] for k in KINDS}
-    for group in d.get("contact_groups") or []:
-        for c in group.get("contacts") or []:
-            kind = c.get("type")
-            if kind not in found:
-                continue
-            value = c.get("value") or c.get("url") or c.get("text")
-            if value and value not in found[kind]:
-                found[kind].append(value)
+    """Строка JSONL: по словарю на филиал, дедуп в fetch.jsonl идёт по branch_id.
+
+    Плоские строки — в sources.parse_firm_card, и leads.db хранит именно их;
+    здесь они собираются обратно только ради формы старого файла.
+    """
+    rows = parse_firm_card(s, branch_id)
     return {
         "branch_id": branch_id,
-        "phones": found["phone"],
-        "website": unwrap(found["website"][0]) if found["website"] else None,
-        "emails": found["email"],
-        "instagram": found["instagram"][0] if found["instagram"] else None,
-        "whatsapp": found["whatsapp"],
+        "phones": handles(rows, "phone"),
+        "website": first(rows, "website"),
+        "emails": handles(rows, "email"),
+        "instagram": first(rows, "instagram"),
+        "whatsapp": handles(rows, "whatsapp"),
     }
+
+
+def handles(rows, kind):
+    return [r["handle"] for r in rows if r["kind"] == kind]
+
+
+def first(rows, kind):
+    found = handles(rows, kind)
+    return found[0] if found else None
 
 
 def fetch_one(branch_id, city):
@@ -97,4 +88,4 @@ if __name__ == "__main__":
     else:
         limit = int(sys.argv[1]) if len(sys.argv) > 1 else None
         rows = collect(limit)
-        print(f"новых записей: {jsonl(OUT, rows, 'branch_id')} из {len(rows)} -> raw/{OUT}")
+        print(f"новых записей: {jsonl(OUT, rows, 'branch_id')} из {len(rows)} -> {JSONL_DIR}/{OUT}")
