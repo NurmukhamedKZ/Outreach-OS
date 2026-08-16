@@ -1,4 +1,133 @@
-## Clean Code & Architecture Rules for Claude Code
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Что это
+
+AI lead-generation продукт: находит нужных людей, пишет им персонализированные
+письма и доставляет их так, чтобы они не попали в спам. Продукт — это три
+взаимосвязанные системы, а не одна:
+
+1. **Targeting & Enrichment** — многоисточниковый сбор лидов, ICP-фильтрация,
+   intent-сигналы, верификация контактов, обогащение. Живёт в `collector/`.
+2. **AI-персонализация** — письма и цепочки follow-up по данным системы 1.
+   Будет жить в `writer/`. Пока не начато — папка пустая.
+3. **Sending infrastructure** — домены, DNS, прогрев, ротация, deliverability.
+   Будет жить в `sender/`. Пока не начато — папка пустая.
+
+Полностью реализована только система 1. Остальной этот документ описывает
+именно её: команды, схему данных, границы. Когда появится код в `writer/` или
+`sender/`, описывай их здесь отдельными секциями по той же схеме — не смешивай
+с системой 1.
+
+Бизнес-контекст, ICP и полная спецификация — в `docs/` (см. ниже).
+
+## Команды
+
+Python-конвейер живёт в `collector/`, консоль оператора — во `frontend/`.
+Команды ниже, кроме веба, запускаются из `collector/`.
+
+```bash
+uv run -m scripts.collect                      # сеть, наполняет data/raw/
+uv run --env-file .env -m scripts.classify      # профиль и why_now от модели (Ф9)
+uv run --env-file .env -m scripts.classify_ig   # смысл подписей instagram (Ф6-IG)
+uv run build.py                                 # data/raw/ -> db/leads.db, без сети
+uv run report.py [сколько]                      # db/leads.db -> data/leads.csv, по умолчанию 30
+uv run -m scripts.check [раздел]                # ассерты; без аргумента — все разделы
+```
+
+Разделы `check.py`: `parsers`, `raw`, `build`, `collect`, `resolve`, `signals`,
+`scores`, `leads`, `web`. `parsers` — единственный, который не требует ни базы,
+ни `data/raw/`: он разбирает эталонные страницы из `fixtures/` и один
+запускается на чистом клоне. Тестов в привычном смысле (pytest) в проекте нет —
+`scripts/check.py` это и есть тестовый набор.
+
+Разведка источника вручную: `uv run -m services.probes.gis_list demo` (и так же
+для остальных модулей `services/probes/`).
+
+Веб — два процесса, браузеру нужен только порт 3000:
+
+```bash
+cd collector && uv run uvicorn api:app --port 8787 --reload   # FastAPI
+cd frontend && npm run dev                                   # Next.js -> http://localhost:3000
+```
+
+`SERPER_API_KEY` и `OPENROUTER_API_KEY` берутся из `collector/.env` (шаблон —
+`.env.example`); без них работают `collect`/`build`/`report`/веб, но не
+`classify*`.
+
+## Архитектура collector/ (система 1)
+
+**`build.py` — граница системы.** Слева от неё — `scripts/collect.py` и
+единственное, что нельзя восстановить (`data/raw/`: страницы удаляются,
+вакансии закрываются). Справа — всё, что пересобирается из `raw/` бесплатно
+за секунды. Поэтому `build.py` не импортирует ни `services/fetch.py`, ни
+`scrapling` — невозможность похода в сеть обеспечена отсутствием инструмента,
+а не дисциплиной, и `scripts/check.py` это проверяет.
+
+Сборка идёт целиком: `db/schema.sql` начинается с `DROP` всех таблиц,
+миграций нет и не будет. Пишет `build.py` в `db/leads.building` и подменяет
+рабочую `db/leads.db` одним `replace()` в конце — `api.py` читает старую базу
+всё время, пока идёт пересборка, и падение на середине не портит рабочую.
+
+**`services/sources.py` — единственная копия разбора.** Чистые функции без
+сети, диска и `print`, использует их и `build.py`, и `scripts/check.py`
+(на эталонных страницах из `fixtures/`). Второй копии разбора HTML/JSON в
+проекте нет и быть не должно.
+
+**`config.toml` — единственное место конфигурации.** Рубрики 2GIS,
+города, slug'и hh, веса скоринга, LLM-модель. Ничего из этого не хардкодится
+в коде; читается через `tomllib` (stdlib).
+
+**Юридический контур (`suppression.csv`, PRD F21).** Источник истины — файл,
+таблица в базе — его копия (пересобирается через `DROP`). Отказ пишется
+сначала в файл и только потом в базу (`services/suppression.py`); `report.py`
+и API проверяют suppression **до** выдачи, а не после. Список никогда не
+очищается.
+
+**LLM-кэш.** `scripts/classify.py` и `scripts/classify_ig.py` кладут ответы
+модели в `data/raw/<sha256(модель+промпт)>.llm.json` рядом со страницами;
+`build.py` читает их с диска, поэтому пересборка базы не стоит ни цента —
+платится только за компанию/аккаунт, увиденные впервые. Имя модели входит в
+ключ кэша: смена модели не обесценивает старые ответы.
+
+**Выдача (`report.py`).** Три правила из PRD, не смягчаются ради красивого
+числа: F19 — лид без канала (`whatsapp`/`phone`/`email`) не попадает в выдачу;
+F21 — suppression проверяется до выдачи; F20 — у каждого лида `why_now` —
+цитата и ссылка, а не голый скор. `services/leads.py` и `routes/leads.py` не
+дублируют эту логику, а импортируют `report.candidates`/`report.best_channel`.
+
+**Веб как обвязка, не источник правды.** `routes/runs.py` запускает те же
+команды, что есть в этом файле, — из белого списка, аргументы в `argv` без
+shell. Ответ не стримится (`next dev` теряет тело долгого ответа), поэтому лог
+копится на бэкенде и клиент дочитывает его по `offset`. Запуск — один за раз:
+`build.py` пересобирает базу через `DROP`. Статус переписки с лидом в систему
+не возвращается — это работа оператора в его таблице; обратно приходит только
+отказ (suppression).
+
+## Слои данных
+
+- **`data/raw/`** — невосстановимое сырьё: `<sha1(url)>.html.gz` + сайдкар
+  `<sha1(url)>.json` (`url`, `final_url`, `status`, `fetched_at`). Не в git
+  (гигабайты), бэкапится отдельно. `final_url` — единственный честный признак
+  того, что источник молча подменил страницу.
+- **`fixtures/`** — по одной эталонной странице на каждый разбор в
+  `services/sources.py`, снята из `raw/`, лежит в git. Числа в `check_parsers`
+  — свойства именно этих файлов; расхождение значит, что поехал разбор, а не
+  что источник поменял вёрстку.
+- **`db/leads.db`** — восемь таблиц (`db/schema.sql`), производная, пересобирается
+  `build.py`, в git не лежит.
+- **`data/leads.csv`** — производная от базы, печатает `report.py`.
+
+## Документация
+
+`docs/BRD.md`, `docs/PRD.md`, `docs/TRD.md`, `docs/SPEC.md`,
+`docs/ARCHITECTURE.md`, `docs/ARCHITECTURE_v2.md` — бизнес-контекст, ICP,
+полная спецификация и обоснование схемы (`ARCHITECTURE_v2.md` §4 — источник
+для `db/schema.sql`). Комментарии в коде вида «Ф3», «Ф9», «F19» — ссылки на
+фазы и требования из этих документов.
+
+## Clean Code & Architecture Rules
 
 ### 1. Naming & Readability
 - **Self-Documenting Code**: Choose explicit, intention-revealing names for variables, functions, classes, and files. Code must read like clear prose.
@@ -36,46 +165,3 @@
 - **Clean Unit Tests**: Treat test code with the same quality standards as production code. Tests must be Fast, Independent, Repeatable, Self-validating, and Timely (FIRST).
 - **Boy Scout Rule**: Always leave the code cleaner than you found it.
 - **Atomic Refactoring**: Make small, incremental edits that preserve passing tests rather than attempting massive single-commit rewrites. First make it work, then make it clean.
-
-
-## Code Style & Clean Code Guidelines
-
-### General Philosophy
-- Write self-documenting, maintainable code meant to be read by humans, not just executed by machines.
-- **Boy Scout Rule:** Always leave the codebase cleaner than you found it.
-- **Refactoring:** First make the code work, then refine and clean it up in small, safe, incremental steps.
-- **Simplicity:** Keep units small, explicit, and focused on a single responsibility (SRP).
-
-### Naming Conventions
-- **Meaningful & Self-Explanatory:** Names must clearly state purpose and intent (`getUserOrders` > `getData`, `isEmailVerified` > `flag`).
-- **Context-Specific:** Use distinct nouns for entities/classes/variables, active verbs for functions/methods.
-- **Avoid Ambiguity:** Do not use broad terms (`data`, `info`, `item`, `list`) when precise terms exist (`UserOrderPayments`, `activeUserIdList`).
-- **No Magic Values:** Replace hardcoded numbers, strings, and status codes with descriptive constants, enums, or named types.
-
-### Functions & Methods
-- **Single Responsibility (SRP):** Each function must do one thing, do it well, and do it only.
-- **Keep It Small:** Keep functions concise (ideally under 20–30 lines). Avoid high nesting levels (prefer early returns/guard clauses).
-- **Function Arguments:** Minimize parameters (0–2 ideal). If 3+ arguments are needed, group them into a single options object/DTO.
-- **No Flag Arguments:** Avoid passing boolean flags (`doX(true)`); split into separate, intent-revealing functions instead.
-- **Side Effects:** Avoid hidden side effects. A function should only perform what its name implies.
-
-### Classes & Architecture
-- **Cohesion & SRP:** Classes must be small with a focused boundary. High cohesion means methods operate on shared class state.
-- **Objects vs. Data Structures:**
-  - *Objects* hide internal state and expose high-level behavioral methods.
-  - *Data Structures / DTOs* expose raw fields without business logic (used purely for data transfer across boundaries).
-- **Boundary Isolation & Adapters:**
-  - Wrap third-party APIs, external HTTP clients, and database clients in abstraction interfaces / adapters.
-  - Never allow raw vendor/framework types to bleed across core domain logic.
-- **Dependency Injection (DI):** Pass dependencies explicitly via constructors/initializers rather than instantiating them internally.
-
-### Error Handling
-- **Exceptions over Error Codes:** Throw clear, descriptive exceptions rather than returning error result codes or custom error objects.
-- **Separate Error Logic:** Isolate error-handling (try-catch, middleware) from happy-path business logic.
-- **No Null Tricks:** Do not return `null`/`undefined` or pass `null` as arguments where possible; return empty collections, default objects, or handle missing values explicitly.
-
-### Comments & Formatting
-- **Code as Documentation:** If code needs a comment to explain *what* it does, rewrite the code to be clearer.
-- **When Comments Are Valid:** Legal notices, explanations of complex/unavoidable domain algorithms, or explicit warning markers (`TODO`, `FIXME`).
-- **No Dead Code:** Remove commented-out code, unused variables, and orphaned functions immediately.
-- **Formatting:** Keep vertical organization natural (high-level functions at the top, helper/detail functions below). Use automated linters and formatters.

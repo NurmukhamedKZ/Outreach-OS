@@ -43,6 +43,8 @@ export type LeadDetail = Lead & {
 export type Stats = {
   companies: number;
   with_intent: number;
+  /** Потолок выдачи: компании с сигналом и рабочим каналом. Просить больше нечего. */
+  available: number;
   suppressed: number;
   cities: string[];
 };

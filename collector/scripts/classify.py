@@ -9,13 +9,20 @@
 источниками видны только в общем контексте — реклама на сайте плюс отсутствие CRM
 вместе значат больше, чем порознь. Дешевле по токенам и даёт одну схему вместо двух.
 
-Провайдер OpenAI, вызов обычным HTTPS через тот же Fetcher, которым ходит serp.py.
-Отдельный SDK ради одного POST не нужен.
+Провайдер OpenRouter через LangChain. Своего HTTP тут нет намеренно: модель в
+проекте не одна и будет меняться, а with_structured_output снимает разбор ответа
+и повторы при невалидной схеме. Список моделей — единственное место, где остаётся
+прямой GET: ради одного справочного запроса поднимать клиента незачем.
+
+Ключ ChatOpenRouter берёт из окружения сам и параметром его не принимает: вызов с
+api_key=... виснет вместо того, чтобы отказать. Отсюда запуск через --env-file .env
+и проверка переменной до первого обращения к сети.
 
 Запуск:
-  uv run --env-file .env -m scripts.classify            топ из config.toml [llm].top_n
-  uv run --env-file .env -m scripts.classify 10         первые 10
-  uv run --env-file .env -m scripts.classify --models   какие модели доступны ключу
+  uv run --env-file .env -m scripts.classify             топ из config.toml [llm].top_n
+  uv run --env-file .env -m scripts.classify 10          первые 10
+  uv run --env-file .env -m scripts.classify --models         все модели OpenRouter
+  uv run --env-file .env -m scripts.classify --models deepseek  только с этой подстрокой
 """
 
 import hashlib
@@ -26,15 +33,30 @@ import sys
 import tomllib
 from pathlib import Path
 
+from langchain_openrouter import ChatOpenRouter
 from scrapling.fetchers import Fetcher
 
 import build
+from schemas.company_profile import CompanyProfile
 
-API = "https://api.openai.com/v1/chat/completions"
-MODELS_API = "https://api.openai.com/v1/models"
+MODELS_API = "https://openrouter.ai/api/v1/models"
 RAW = Path("data/raw")
 DB = Path("db/leads.db")
 CONFIG = Path("config.toml")
+
+# Ответ кэшируется по sha256(модель + промпт), а раздаёт кэш build.fill_profiles
+# по всем raw/*.llm.json разом. Тип ответа приходится называть явно: рядом лягут
+# ответы classify_ig.py с другой схемой, и без метки build разобрал бы их как
+# профиль компании.
+ANSWER_KIND = "company_profile"
+MAX_RETRIES = 2
+
+# deepseek-v4-flash — reasoning-модель: по умолчанию она сначала думает вслух, и
+# на промпте с текстом сайта уходит за две минуты, отдав content: null. Наши задачи
+# — извлечение из готового текста, а не рассуждение, поэтому размышление выключено:
+# ответ приходит за пару секунд, а reasoning-токены не оплачиваются как выходные.
+# Понадобится задача, где рассуждение действительно помогает, — включать здесь.
+REASONING = {"enabled": False}
 
 SYSTEM = (
     "Ты аналитик B2B-лидогенерации в Казахстане. По данным о компании определи, "
@@ -43,37 +65,14 @@ SYSTEM = (
     "основания в данных, верни null. Отвечай по-русски."
 )
 
-# Схема ответа. Строгая: модель извлекает и классифицирует, решения принимают
-# правила (§11). Поэтому здесь нет ни скоринга, ни вердикта «писать/не писать».
-SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["industry", "size_hint", "has_sales_team", "why_now", "quote", "confidence"],
-    "properties": {
-        "industry": {"type": ["string", "null"], "description": "чем компания занимается, 3-6 слов"},
-        "size_hint": {"type": ["string", "null"], "description": "оценка размера, если видна"},
-        "has_sales_team": {"type": ["boolean", "null"]},
-        "why_now": {
-            "type": ["string", "null"],
-            "description": "одно предложение: почему ей нужны клиенты сейчас, конкретно про неё",
-        },
-        "quote": {
-            "type": ["string", "null"],
-            "description": "дословная фраза С САЙТА, подтверждающая why_now",
-        },
-        "confidence": {"type": "number"},
-    },
-}
-
-
 def main():
     if "--models" in sys.argv:
-        list_models()
+        list_models(next((a for a in sys.argv[2:] if not a.startswith("-")), ""))
         return
 
     config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))["llm"]
     limit = int(sys.argv[1]) if sys.argv[1:] and sys.argv[1].isdigit() else config["top_n"]
-    key = api_key()
+    llm = structured_model(config["model"], CompanyProfile)
 
     db = sqlite3.connect(DB)
     companies = top_companies(db, limit)
@@ -85,7 +84,7 @@ def main():
         prompt = build_prompt(company, site_text.get(company["company_id"], ""), config)
         path = cache_path(config["model"], prompt)
         if not path.exists():
-            ask_model(key, config["model"], prompt, path)
+            ask_model(llm, config["model"], prompt, path)
             spent += 1
         print(f"  {number}/{len(companies)}", end="\r", flush=True)
     db.close()
@@ -158,46 +157,52 @@ def build_prompt(company, text, config):
 # --- вызов -------------------------------------------------------------------
 
 
-def api_key():
-    key = os.environ.get("OPENAI_API_KEY")
-    if not key:
+def require_api_key():
+    """Отказать до первого запроса, а не в середине прогона.
+
+    Ключ дальше нигде не передаётся: ChatOpenRouter читает его из окружения сам.
+    """
+    if not os.environ.get("OPENROUTER_API_KEY"):
         sys.exit(
-            "OPENAI_API_KEY пуст.\n"
-            "  1) вписать ключ с https://platform.openai.com/api-keys в .env\n"
+            "OPENROUTER_API_KEY пуст.\n"
+            "  1) вписать ключ с https://openrouter.ai/keys в .env\n"
             "  2) uv run --env-file .env -m scripts.classify"
         )
-    return key
 
 
-def ask_model(key, model, prompt, path):
-    """Один вызов со structured output. Ответ кладётся в raw/ вместе с запросом.
+def structured_model(model, schema):
+    """Модель, которая обязана ответить заданной pydantic-схемой.
+
+    Разбор ответа и повтор при невалидной схеме — на стороне LangChain, поэтому
+    ниже по коду есть только готовый объект, а не JSON неизвестной формы.
+
+    Схема приходит параметром: этой же функцией пользуется classify_ig.py, и
+    второй копии настройки клиента в проекте быть не должно.
+    """
+    require_api_key()
+    return ChatOpenRouter(
+        model=model,
+        temperature=0,
+        max_retries=MAX_RETRIES,
+        reasoning=REASONING,
+    ).with_structured_output(schema, method="json_schema")
+
+
+def ask_model(llm, model, prompt, path):
+    """Один вызов. Ответ кладётся в raw/ вместе с запросом.
 
     Запрос сохраняется рядом с ответом намеренно: через месяц промпт будет другим,
     и без него нельзя будет понять, на что модель отвечала.
     """
-    page = Fetcher.post(
-        API,
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {"name": "company_profile", "strict": True, "schema": SCHEMA},
-            },
-        },
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-    )
-    if page.status != 200:
-        sys.exit(f"OpenAI HTTP {page.status}: {str(page.html_content)[:400]}")
-
-    answer = page.json()
-    content = answer["choices"][0]["message"]["content"]
+    profile = llm.invoke([("system", SYSTEM), ("human", prompt)])
     path.write_text(
         json.dumps(
-            {"model": model, "prompt": prompt, "profile": json.loads(content)},
+            {
+                "kind": ANSWER_KIND,
+                "model": model,
+                "prompt": prompt,
+                "profile": profile.model_dump(),
+            },
             ensure_ascii=False,
         ),
         encoding="utf-8",
@@ -209,13 +214,15 @@ def cache_path(model, prompt):
     return RAW / f"{digest}.llm.json"
 
 
-def list_models():
-    key = api_key()
-    page = Fetcher.get(MODELS_API, headers={"Authorization": f"Bearer {key}"})
+def list_models(substring=""):
+    """Каталог OpenRouter. Ключ не нужен: список моделей там публичный."""
+    page = Fetcher.get(MODELS_API)
     if page.status != 200:
-        sys.exit(f"OpenAI HTTP {page.status}: {str(page.html_content)[:300]}")
-    names = sorted(item["id"] for item in page.json()["data"])
-    print(f"доступно моделей: {len(names)}")
+        sys.exit(f"OpenRouter HTTP {page.status}: {str(page.html_content)[:300]}")
+    names = sorted(
+        item["id"] for item in page.json()["data"] if substring.lower() in item["id"].lower()
+    )
+    print(f"моделей{f' с «{substring}»' if substring else ''}: {len(names)}")
     for name in names:
         print(" ", name)
 

@@ -1,3 +1,4 @@
+import report
 from fastapi import APIRouter, HTTPException
 
 from db import lead as store
@@ -7,11 +8,11 @@ router = APIRouter(prefix="/api/leads")
 
 
 @router.get("")
-def leads(limit: int = 30, city: str | None = None):
+def leads(limit: int = report.DEFAULT_LIMIT, city: str | None = None):
     """Выдача с каналом и обоснованием — то же, что уходит в leads.csv."""
     db = store.connect()
     try:
-        return {"leads": service.pick(db, limit, city), "stats": store.stats(db)}
+        return {"leads": service.pick(db, limit, city), "stats": service.stats(db)}
     finally:
         db.close()
 

@@ -5,23 +5,39 @@
 
 ## Команды
 
-Python-конвейер живёт в `backend/`, консоль оператора — во `frontend/`.
-Наверху `backend/` — `build.py`, `report.py` и `api.py`: их не только запускают, но и
+Python-конвейер живёт в `collector/`, консоль оператора — во `frontend/`.
+Наверху `collector/` — `build.py`, `report.py` и `api.py`: их не только запускают, но и
 импортируют. Остальные команды в `scripts/`, логика и сеть в `services/`, схема с
 запросами и базой в `db/`, сырьё и выгрузки в `data/`. Разведка источника вручную —
-`uv run -m services.probes.gis_list demo`. Команды ниже запускаются из `backend/`.
+`uv run -m services.probes.gis_list demo`. Команды ниже запускаются из `collector/`.
 
 ```bash
 uv run -m scripts.collect                   # ходит в сеть, наполняет data/raw/
-uv run --env-file .env -m scripts.classify  # профиль и why_now от OpenAI
+uv run -m scripts.collect --instagram       # ленты аккаунтов компаний без сайта
+uv run --env-file .env -m scripts.classify     # профиль и why_now от модели
+uv run --env-file .env -m scripts.classify_ig  # смысл подписей инстаграма
 uv run build.py                             # data/raw/ -> db/leads.db, без единого запроса
-uv run report.py                            # db/leads.db -> data/leads.csv, 30 лидов
-uv run -m scripts.check                     # восемь разделов ассертов на живых данных
+uv run report.py [сколько]                  # db/leads.db -> data/leads.csv, по умолчанию 30
+uv run -m scripts.check [раздел]            # девять разделов ассертов
 ```
+
+Модель зовётся через OpenRouter: ключ `OPENROUTER_API_KEY` в `.env`, имя модели —
+в `config.toml` `[llm].model`. Ответы кэшируются в `raw/` по `sha256(модель+промпт)`,
+поэтому `build.py` читает их с диска, а пересборка не стоит ни цента.
+
+Шаги с `--instagram` и `classify_ig` идут вторым проходом: аккаунты берутся из
+`leads.db`, значит до них нужны обычный сбор и `build.py`. Всё идемпотентно,
+порядок восстанавливается сам. Ленте нужны куки — `uv run -m ig.login` разово.
 
 `build.py` — граница системы: слева от неё то, что нельзя восстановить, справа то,
 что пересобирается бесплатно. Поэтому она не импортирует ни `fetch`, ни `scrapling`,
-и `check.py` это проверяет.
+и `check.py` это проверяет. Собирает она в `db/leads.building` и подменяет базу одним
+движением в конце: `api.py` читает `leads.db` всё это время, а схема начинается с
+`DROP` всех таблиц.
+
+`scripts.check parsers` — единственный раздел, которому не нужны ни база, ни `raw/`:
+он разбирает эталонные страницы из `fixtures/` и один запускается на чистом клоне.
+Остальные проверяют собранные данные.
 
 ## Веб-интерфейс
 
@@ -29,7 +45,7 @@ uv run -m scripts.check                     # восемь разделов ас
 браузеру нужен только порт 3000.
 
 ```bash
-cd backend  && uv run uvicorn api:app --port 8787 --reload   # FastAPI
+cd collector && uv run uvicorn api:app --port 8787 --reload   # FastAPI
 cd frontend && npm run dev                                   # Next.js -> http://localhost:3000
 ```
 
@@ -42,6 +58,16 @@ cd frontend && npm run dev                                   # Next.js -> http:/
 Запуск идёт один за раз — `build.py` пересобирает базу через `DROP`. Ответ не
 стримится: `next dev` теряет тело долгого ответа, поэтому лог копится на бэкенде,
 а страница дочитывает его по `offset` — и переживает перезагрузку вкладки.
+
+## `fixtures/` — эталонные страницы
+
+По одной на каждый разбор в `services/sources.py`: рубрика и карточка филиала 2GIS,
+список и страница вакансии hh. Сняты из `raw/` и, в отличие от него, лежат в git —
+иначе проверка разбора не работала бы на чистом клоне.
+
+Числа в `check_parsers` — свойства именно этих файлов, а не «примерно столько»:
+страница в git не меняется, поэтому расхождение означает, что поехал разбор, а не
+что источник поменял вёрстку. Правятся только вместе с фикстурой.
 
 ## `raw/` — слой сырья
 

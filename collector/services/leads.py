@@ -24,9 +24,14 @@ def pick(db, limit, city=None):
     return found
 
 
+def stats(db):
+    """Счётчики шапки. available — потолок выдачи, а не текущий limit."""
+    return {**store.stats(db), "available": report.available(db)}
+
+
 def card(db, company_id):
     """Карточка: все каналы, все сигналы с датами, разбивка скоринга."""
-    row = next((r for r in report.candidates(db) if r["company_id"] == company_id), None)
+    row = next(report.candidates(db, company_id), None)
     if not row:
         return None
     suppressed = store.suppression_handles(db)

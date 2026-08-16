@@ -5,6 +5,9 @@ import { useCallback, useEffect, useState } from "react";
 import { fetchLeads, type Lead, type Stats } from "./api";
 import LeadCard from "./LeadCard";
 
+// Фиксированные шаги плюс «все» с числом из stats.available: сколько лидов
+// доступно на самом деле, знает только бэкенд, и зашивать это в список нельзя —
+// оно меняется с каждой пересборкой.
 const LIMITS = [30, 60, 100];
 
 export default function Console() {
@@ -60,6 +63,9 @@ export default function Console() {
               с сигналами <b className="mono">{stats.with_intent}</b>
             </span>
             <span>
+              с каналом <b className="mono">{stats.available}</b>
+            </span>
+            <span>
               в выдаче <b className="mono">{leads.length}</b>
             </span>
             <span>
@@ -80,11 +86,14 @@ export default function Console() {
             ))}
           </select>
           <select value={limit} onChange={(event) => setLimit(Number(event.target.value))}>
-            {LIMITS.map((value) => (
+            {LIMITS.filter((value) => !stats || value < stats.available).map((value) => (
               <option key={value} value={value}>
                 {value} лидов
               </option>
             ))}
+            {stats && (
+              <option value={stats.available}>все {stats.available}</option>
+            )}
           </select>
         </div>
       </header>

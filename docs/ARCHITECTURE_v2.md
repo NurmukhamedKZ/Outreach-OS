@@ -170,7 +170,7 @@ suppression(handle TEXT PRIMARY KEY, added_at TEXT, reason TEXT)
 ## 5. Раскладка и запуск
 
 ```
-backend/
+collector/
   build.py        чистая функция raw/ -> leads.db, ни одного сетевого запроса
   report.py       leads.db -> leads.csv
   api.py          сборка FastAPI: CORS и подключение роутеров, больше ничего
@@ -209,7 +209,7 @@ backend/
 frontend/         Next.js — консоль оператора, /api/* проксируется на api.py
 ```
 
-Наверху backend/ — только то, что запускают: шесть команд и `fetch.py`.
+Наверху collector/ — только то, что запускают: шесть команд и `fetch.py`.
 Наверху — только то, что запускают. `services/probes/` трогают руками при разведке
 нового источника: `uv run -m services.probes.gis_list demo`.
 

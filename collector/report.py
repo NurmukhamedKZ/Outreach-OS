@@ -68,20 +68,30 @@ def build_leads(db, limit):
     return leads
 
 
-def candidates(db):
-    """Компании по убыванию intent, с каналами и разбивкой. Отсев — в build_leads."""
-    rows = db.execute(
-        # Название берётся из карточки 2GIS, а не из companies.name_norm:
-        # нормализованное имя нужно склейке, а оператору читать исходное.
-        "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm), c.city, c.domain,"
-        "       s.fit_score, s.intent_score, s.breakdown, p.why_now, p.quote, p.industry"
-        " FROM companies c JOIN scores s USING (company_id)"
-        " LEFT JOIN company_links l ON l.company_id = c.company_id AND l.rule = 'self'"
-        " LEFT JOIN orgs o ON o.branch_id = l.branch_id"
-        " LEFT JOIN profiles p USING (company_id)"
-        " WHERE s.intent_score > 0"
-        " ORDER BY s.intent_score DESC, s.fit_score DESC, c.company_id"
-    ).fetchall()
+CANDIDATES = (
+    # Название берётся из карточки 2GIS, а не из companies.name_norm:
+    # нормализованное имя нужно склейке, а оператору читать исходное.
+    "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm), c.city, c.domain,"
+    "       s.fit_score, s.intent_score, s.breakdown, p.why_now, p.quote, p.industry"
+    " FROM companies c JOIN scores s USING (company_id)"
+    " LEFT JOIN company_links l ON l.company_id = c.company_id AND l.rule = 'self'"
+    " LEFT JOIN orgs o ON o.branch_id = l.branch_id"
+    " LEFT JOIN profiles p USING (company_id)"
+    " WHERE s.intent_score > 0"
+)
+CANDIDATES_ORDER = " ORDER BY s.intent_score DESC, s.fit_score DESC, c.company_id"
+
+
+def candidates(db, company_id=None):
+    """Компании по убыванию intent, с каналами и разбивкой. Отсев — в build_leads.
+
+    company_id сужает выборку до одной компании — карточке в вебе не нужны
+    остальные восемьсот, а искать её перебором значило бы тянуть их все.
+    """
+    narrowing = " AND c.company_id = ?" if company_id else ""
+    arguments = (company_id,) if company_id else ()
+    rows = db.execute(CANDIDATES + narrowing + CANDIDATES_ORDER, arguments).fetchall()
+    channels = channels_by_company(db, company_id)
 
     for (company_id, name, city, domain, fit, intent, breakdown,
          model_why, model_quote, industry) in rows:
@@ -93,22 +103,32 @@ def candidates(db):
             "fit_score": fit,
             "intent_score": intent,
             "breakdown": json.loads(breakdown or "[]"),
-            "channels": channels_of(db, company_id),
+            "channels": channels.get(company_id, []),
             "model_why": model_why,
             "model_quote": model_quote,
             "industry": industry,
         }
 
 
-def channels_of(db, company_id):
-    """Каналы всех филиалов компании, приведённые к виду, пригодному для набора."""
+def channels_by_company(db, company_id=None):
+    """{company_id: [(канал, адрес)]} — одним запросом, а не по запросу на компанию.
+
+    Отдельный запрос на каждого кандидата стоил 844 обращения к базе ради 30
+    строк отчёта и делал дорогим само расширение выдачи. Каналы всех компаний —
+    семь тысяч строк, они берутся разом дешевле, чем тридцать раз по одной.
+    """
+    narrowing = " WHERE l.company_id = ?" if company_id else ""
+    arguments = (company_id,) if company_id else ()
     rows = db.execute(
-        "SELECT DISTINCT k.kind, k.handle FROM contacts k"
-        " JOIN company_links l USING (branch_id)"
-        " WHERE l.company_id = ? ORDER BY k.kind, k.handle",
-        (company_id,),
-    ).fetchall()
-    return [(kind, dialable(kind, handle)) for kind, handle in rows]
+        "SELECT DISTINCT l.company_id, k.kind, k.handle FROM contacts k"
+        " JOIN company_links l USING (branch_id)" + narrowing +
+        " ORDER BY l.company_id, k.kind, k.handle",
+        arguments,
+    )
+    grouped = {}
+    for company, kind, handle in rows:
+        grouped.setdefault(company, []).append((kind, dialable(kind, handle)))
+    return grouped
 
 
 def dialable(kind, handle):
@@ -179,13 +199,25 @@ def write_csv(leads):
         writer.writerows(leads)
 
 
+def available(db):
+    """Потолок выдачи: компании с intent и хотя бы одним каналом, которым пишут.
+
+    Просить больше бессмысленно — F19 отсеет остальных ещё до выдачи. Веб
+    показывает это число оператору, чтобы «30 лидов» не выглядело результатом
+    отбора, когда это всего лишь значение limit.
+    """
+    kinds = ", ".join("?" * len(CHANNEL_PRIORITY))
+    return db.execute(
+        "SELECT count(*) FROM scores s WHERE s.intent_score > 0 AND EXISTS ("
+        "  SELECT 1 FROM company_links l JOIN contacts k USING (branch_id)"
+        f"  WHERE l.company_id = s.company_id AND k.kind IN ({kinds}))",
+        CHANNEL_PRIORITY,
+    ).fetchone()[0]
+
+
 def report(db, leads, limit):
     total = db.execute("SELECT count(*) FROM scores WHERE intent_score > 0").fetchone()[0]
-    without_channel = db.execute(
-        "SELECT count(*) FROM scores s WHERE s.intent_score > 0 AND NOT EXISTS ("
-        "  SELECT 1 FROM company_links l JOIN contacts k USING (branch_id)"
-        "  WHERE l.company_id = s.company_id AND k.kind IN ('phone', 'email', 'whatsapp'))"
-    ).fetchone()[0]
+    without_channel = total - available(db)
     print(f"компаний с intent > 0: {total}, из них без рабочего канала: {without_channel}")
     print(f"в выдаче {len(leads)} из запрошенных {limit} -> {OUT}")
     if leads:

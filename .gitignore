@@ -10,13 +10,13 @@ wheels/
 .venv
 
 # Instagram-сессия и выгрузки
-backend/data/cookies.json
-backend/data/ig_profile/
+collector/data/cookies.json
+collector/data/ig_profile/
 *_posts.json
 
 # Слой сырья: невосстановим, в git не кладётся — бэкапится отдельно
-backend/data/raw/*
-!backend/data/raw/.gitkeep
+collector/data/raw/*
+!collector/data/raw/.gitkeep
 
 # Производные JSONL. НЕ удалены в Ф3: 60 организаций рубрики 1236, 14 карточек
 # филиалов и 135 рубрик собраны, когда их HTML ещё не сохранялся, — build.py их
@@ -24,7 +24,9 @@ backend/data/raw/*
 raw_jsonl_legacy/
 
 # Производное: пересобирается build.py из raw/ за секунды
-backend/db/leads.db
+collector/db/leads.db
+# Недособранная база: остаётся на диске, если build.py упал на полпути
+collector/db/leads.building
 
 # Ключи. Шаблон — в .env.example
 .env

@@ -1,10 +1,14 @@
 """Проверки. Ассерты, а не фреймворк; сеть не нужна ни одной из них.
 
 Запуск: uv run -m scripts.check [раздел]      без аргумента — все разделы
-Разделы: raw (целостность сырья), build (приёмка Ф3), collect (приёмка Ф4).
+Разделы: parsers (разбор на эталонных страницах), raw (целостность сырья),
+build (приёмка Ф3), collect (приёмка Ф4).
 
 Каждая следующая фаза дописывает сюда свой раздел. Отдельной фазы «написать
 тесты» в плане нет: проверка — часть фазы, а не работа после неё.
+
+Разделу parsers не нужны ни база, ни raw/ — он идёт первым и один запускается
+на чистом клоне. Остальные требуют собранных данных.
 """
 
 import csv
@@ -18,14 +22,203 @@ import sys
 import tomllib
 from pathlib import Path
 
+from services import enrich
 from services import sources
 
 RAW = Path("data/raw")
+FIXTURES = Path("fixtures")
 DB = Path("db/leads.db")
 OUT = Path("data/leads.csv")
 CYRILLIC = re.compile(r"[А-Яа-я]")
 RUBRIC_URL = re.compile(r"/rubric/\d+(?:/page/(\d+))?$")
 SIDECAR_FIELDS = ("url", "final_url", "status", "fetched_at")
+
+
+# Эталонные страницы для раздела parsers: по одной на каждый разбор в
+# services/sources.py. Сняты из raw/ 16.08.2026 и, в отличие от самого raw/,
+# лежат в git — это единственная проверка разбора, которая работает на чистом
+# клоне и не зависит от того, что 2GIS и hh отдают сегодня.
+#
+# Числа ниже — свойства именно этих четырёх файлов, а не «примерно столько».
+# Страница в git не меняется, поэтому расхождение означает, что поехал разбор, а
+# не что источник поменял вёрстку. Правятся только вместе с фикстурой.
+GIS_RUBRIC_CITY, GIS_RUBRIC_ID = "almaty", "653"
+GIS_FIRM_BRANCH = "70000001017502602"
+
+
+def check_parsers():
+    """Разбор источников на эталонных страницах: ни базы, ни сети, ни raw/.
+
+    Остальные разделы проверяют данные и ловят поломку разбора задним числом —
+    нулями в отчёте. Этот ловит её сразу и называет сломавшийся парсер.
+    """
+    check_gis_rubric_parsing()
+    check_gis_firm_parsing()
+    check_hh_parsing()
+    check_link_unwrapping()
+    check_ig_parsing()
+
+
+def check_gis_rubric_parsing():
+    """Страница рубрики: счётчики пагинации и карточки организаций."""
+    state = sources.parse_initial_state(fixture_html("gis_rubric"))
+    total, pages, current = sources.parse_search_meta(state)
+    assert (total, pages, current) == (670, 56, 1), \
+        f"счётчики поиска {(total, pages, current)}, у эталона (670, 56, 1)"
+
+    orgs = sources.parse_org_list(state, GIS_RUBRIC_CITY, GIS_RUBRIC_ID)
+    assert len(orgs) == 12, f"организаций {len(orgs)}, у эталона 12"
+
+    first = orgs[0]
+    assert first["branch_id"] == "70000001037962810", first["branch_id"]
+    assert first["org_id"] == "70000001037962809", first["org_id"]
+    assert first["name"] == "Ваша Бухгалтерия, бухгалтерская компания", first["name"]
+    assert first["address"] == "проспект Серкебаева, 31", first["address"]
+    assert first["city"] == GIS_RUBRIC_CITY and first["rubric_id"] == GIS_RUBRIC_ID
+
+    assert all(o["branch_id"] and o["name"] for o in orgs), "организация без id или названия"
+    assert all(CYRILLIC.search(o["name"]) for o in orgs), \
+        "кириллица побита разбором JS-строки initialState"
+
+    check_non_orgs_are_skipped()
+    print(f"  2gis рубрика: {len(orgs)} организаций, пагинация {total}/{pages}")
+
+
+def check_non_orgs_are_skipped():
+    """Записи без org — не организации, и в orgs им не место.
+
+    Проверяется на синтетическом состоянии, а не на фикстуре: в эталонной
+    рубрике все двенадцать записей оказались организациями, и живой страницы,
+    доказывающей отсев, у нас нет. Ветка от этого не перестаёт быть нужной —
+    2GIS кладёт в ту же ветку остановки и рекламные блоки.
+    """
+    state = {"data": {"entity": {"profile": {
+        "70000001037962810": {"data": {"name": "Компания", "org": {"id": "1"}}},
+        "stop_1": {"data": {"name": "Остановка «Абая»"}},
+        "empty_1": {},
+    }}}}
+    rows = sources.parse_org_list(state, GIS_RUBRIC_CITY, GIS_RUBRIC_ID)
+    assert [r["branch_id"] for r in rows] == ["70000001037962810"], \
+        f"в организации попало лишнее: {[r['branch_id'] for r in rows]}"
+
+
+def check_gis_firm_parsing():
+    """Карточка филиала: каналы связи, по строке на канал."""
+    state = sources.parse_initial_state(fixture_html("gis_firm"))
+    contacts = sources.parse_firm_card(state, GIS_FIRM_BRANCH)
+    by_kind = {}
+    for contact in contacts:
+        by_kind.setdefault(contact["kind"], set()).add(contact["handle"])
+
+    assert by_kind["phone"] == {"+77272960782", "+77750009131"}, by_kind.get("phone")
+    assert by_kind["website"] == {"http://studionomad.kz"}, by_kind.get("website")
+    assert by_kind["whatsapp"], "whatsapp у эталонной карточки потерян"
+
+    assert all(c["branch_id"] == GIS_FIRM_BRANCH for c in contacts), "чужой branch_id"
+    assert all(c["source_url"].endswith(GIS_FIRM_BRANCH) for c in contacts), \
+        "source_url не ведёт на разобранную карточку"
+    assert len(contacts) == len({(c["kind"], c["handle"]) for c in contacts}), \
+        "канал задвоился: contact_groups перечисляет один и тот же номер дважды"
+    print(f"  2gis карточка: {len(contacts)} каналов, типы {sorted(by_kind)}")
+
+
+def check_hh_parsing():
+    """hh: id со страницы списка и JobPosting со страницы вакансии."""
+    ids = sources.parse_vacancy_ids(fixture_html("hh_list"))
+    assert len(ids) == 50, f"id вакансий {len(ids)}, у эталона 50 — страница списка hh"
+    assert all(i.isdigit() and len(i) >= 6 for i in ids), "в id вакансий попал мусор"
+
+    posting = sources.parse_job_posting(fixture_html("hh_vacancy"))
+    assert posting, "JobPosting не найден — разбор JSON-LD сломан"
+    assert posting["title"] == "Менеджер по продажам, менеджер по работе с клиентами", \
+        posting["title"]
+    assert posting["hiringOrganization"]["name"] == "Atrium", posting["hiringOrganization"]
+    assert posting["datePosted"].startswith("2026-07-31"), posting["datePosted"]
+
+    # Текст вакансии — главный intent-сигнал проекта: по нему ищутся vacancy_sales
+    # и цитата для why_now. Обрезанное описание не уронит ни один запрос, просто
+    # тихо перестанет давать сигналы.
+    description = posting["description"]
+    assert len(description) > 2000, f"описание {len(description)} символов — обрезано"
+    assert CYRILLIC.search(description), "кириллица побита в тексте вакансии"
+    print(f"  hh: {len(ids)} id со списка, вакансия «{posting['title'][:30]}…»")
+
+
+def check_link_unwrapping():
+    """2GIS заворачивает сайт в редирект: в contacts обязан лечь адрес компании."""
+    wrapped = "https://link.2gis.ru/go?https://studionomad.kz"
+    assert sources.unwrap_2gis_link(wrapped) == "https://studionomad.kz", "редирект не развёрнут"
+    assert sources.unwrap_2gis_link("https://studionomad.kz") == "https://studionomad.kz", \
+        "прямой адрес испорчен разворачиванием"
+    assert sources.unwrap_2gis_link(None) is None
+
+
+def check_ig_parsing():
+    """Лента инстаграма: посты как события с датой.
+
+    Эталон — ответ feed/user аккаунта adalservice__ от 16.08.2026: двенадцать
+    постов, среди них карусель, видео и фото.
+    """
+    feed = sources.parse_ig_feed(fixture_html("ig_feed"))
+    assert feed["username"] == "adalservice__", feed["username"]
+    assert feed["is_private"] is False, "эталонный аккаунт открытый"
+
+    posts = feed["posts"]
+    assert len(posts) == 12, f"постов {len(posts)}, у эталона 12"
+    assert sorted({p["type"] for p in posts}) == ["carousel", "image", "video"], \
+        f"типы постов {sorted({p['type'] for p in posts})} — у эталона все три"
+
+    # Дата обязана быть сравнимой с fetched_at: на ней держится затухание в
+    # score.py, а unix-время молча считало бы любой пост сегодняшним.
+    assert all(re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", p["taken_at"])
+               for p in posts), "дата поста не в ISO UTC"
+    assert all(p["url"].startswith("https://www.instagram.com/p/") for p in posts), \
+        "ссылка на пост не собрана — сигналу нечем обосноваться"
+    assert any(CYRILLIC.search(p["caption"]) for p in posts), \
+        "кириллица побита разбором JSON внутри <html><body>"
+
+    check_ig_empty_caption_is_not_none()
+    check_ig_quote_binding(posts)
+    newest = max(p["taken_at"] for p in posts)
+    print(f"  instagram: {len(posts)} постов, последний {newest[:10]}")
+
+
+def check_ig_quote_binding(posts):
+    """Находка модели привязывается к посту по цитате, а не по её номеру.
+
+    Номер модель иногда сдвигает — в живом прогоне пришёл 0 при нумерации с
+    единицы. Цитата же обязана быть дословной, и её отсутствие в подписи значит,
+    что модель фразу испортила: такой находке в signals не место.
+    """
+    real = next(p for p in posts if len(p["caption"]) > 40)
+    fragment = real["caption"][10:40]
+    bound = enrich.post_with_quote(posts, fragment)
+    assert bound and fragment in bound["caption"], "цитата не нашла свой пост"
+    assert enrich.post_with_quote(posts, "такой фразы в ленте нет") is None, \
+        "выдуманная цитата привязалась к посту — проверка дословности не работает"
+    assert enrich.post_with_quote(posts, "") is None, "пустая цитата привязалась к посту"
+
+
+def check_ig_empty_caption_is_not_none():
+    """Пост без подписи даёт пустую строку, а не None.
+
+    Проверяется синтетически: у эталонного аккаунта подписаны все двенадцать
+    постов. Ветка от этого не перестаёт быть нужной — инстаграм кладёт в caption
+    именно null, и регулярка Ф6 упала бы на нём вместо того, чтобы не найти
+    ничего.
+    """
+    post = sources.parse_ig_post(
+        {"code": "ABC", "taken_at": 1786867200, "media_type": 1, "caption": None}
+    )
+    assert post["caption"] == "", repr(post["caption"])
+    assert post["taken_at"] == "2026-08-16T08:00:00Z", post["taken_at"]
+    assert post["url"] == "https://www.instagram.com/p/ABC/", post["url"]
+    assert sources.ig_username("https://instagram.com/adalservice__/") == "adalservice__"
+
+
+def fixture_html(name):
+    with gzip.open(FIXTURES / f"{name}.html.gz", "rt", encoding="utf-8") as fh:
+        return fh.read()
 
 
 def check_raw():
@@ -329,12 +522,41 @@ def check_signals():
     ).fetchone()[0]
     assert doubled == 0, f"{doubled} сигналов задвоены по (компания, тип, источник)"
 
+    check_instagram_signals(db)
+
     with_signal = db.execute("SELECT count(DISTINCT company_id) FROM signals").fetchone()[0]
     companies = count(db, "companies")
     print(f"  сигналов {total} у {with_signal} компаний из {companies}")
     for row in db.execute("SELECT type, count(*) FROM signals GROUP BY type ORDER BY 2 DESC"):
         print(f"    {row[0]:<16} {row[1]}")
     db.close()
+
+
+def check_instagram_signals(db):
+    """Ф6-IG: заброшенный и живой аккаунт исключают друг друга.
+
+    Аккаунт, молчащий полгода, не может одновременно считаться живым. Если оба
+    сигнала стоят у одной компании, то либо порог поехал, либо к компании
+    привязаны две разные ленты — и в обоих случаях intent_score завышен вдвое.
+    """
+    both = db.execute(
+        "SELECT count(*) FROM (SELECT company_id FROM signals"
+        " WHERE type IN ('ig_dormant', 'ig_active_marketing')"
+        " GROUP BY company_id HAVING count(DISTINCT type) > 1)"
+    ).fetchone()[0]
+    assert both == 0, f"{both} компаний одновременно и заброшены, и активны в инстаграме"
+
+    # Цитата модели обязана стоять в подписи дословно — иначе оператор увидит в
+    # why_now фразу, которой в аккаунте нет. Здесь проверяется следствие: пустых
+    # и обрезанных цитат у находок модели быть не должно.
+    empty = db.execute(
+        "SELECT count(*) FROM signals WHERE type IN"
+        " ('ig_direct_selling', 'ig_promo', 'ig_hiring_sales') AND length(quote) < 3"
+    ).fetchone()[0]
+    assert empty == 0, f"{empty} находок модели с пустой цитатой"
+
+    kinds = {row[0] for row in db.execute("SELECT DISTINCT type FROM signals WHERE type LIKE 'ig_%'")}
+    print(f"  инстаграм: типы сигналов {sorted(kinds)}")
 
 
 def check_scores():
@@ -438,6 +660,7 @@ def check_web():
 
 
 SECTIONS = {
+    "parsers": check_parsers,
     "raw": check_raw,
     "build": check_build,
     "collect": check_collect,

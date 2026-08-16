@@ -11,6 +11,7 @@
 
 import json
 import re
+from datetime import datetime, timezone
 
 INITIAL_STATE = re.compile(r"var initialState = JSON\.parse\('(.*?)'\);", re.S)
 JSON_LD = re.compile(r'<script type="application/ld\+json">(.*?)</script>', re.S)
@@ -18,6 +19,9 @@ VACANCY_ID = re.compile(r"/vacancy/(\d{6,})")
 
 CONTACT_KINDS = ("phone", "website", "email", "instagram", "whatsapp")
 FIRM_URL = "https://2gis.kz/{city}/firm/{branch_id}"
+
+IG_POST_URL = "https://www.instagram.com/p/{shortcode}/"
+IG_MEDIA_TYPE = {1: "image", 2: "video", 8: "carousel"}
 
 
 def parse_initial_state(html):
@@ -117,6 +121,64 @@ def parse_job_posting(html):
         if posting.get("@type") == "JobPosting":
             return posting
     return None
+
+
+def parse_ig_feed(body):
+    """Аккаунт и его посты из ответа feed/user инстаграма.
+
+    Разбирается именно лента, а не профиль: web_profile_info отвечает 400 на
+    половине аккаунтов и с 2026 года отдаёт edge_owner_to_timeline_media пустым,
+    то есть постов там больше нет вовсе. Лента ответила на 18 запросах из 18.
+    """
+    data = json.loads(json_body(body))
+    user = data.get("user") or {}
+    return {
+        "username": user.get("username"),
+        "full_name": user.get("full_name"),
+        "is_private": bool(user.get("is_private")),
+        "posts": [parse_ig_post(item) for item in data.get("items") or []],
+    }
+
+
+def parse_ig_post(item):
+    """Пост как событие с датой — материал для сигналов Ф6.
+
+    Ссылок на медиа здесь нет намеренно: ни один сигнал не смотрит на картинку,
+    а хранить в базе протухающие за сутки CDN-адреса незачем.
+    """
+    return {
+        "shortcode": item["code"],
+        "url": IG_POST_URL.format(shortcode=item["code"]),
+        "taken_at": iso_utc(item["taken_at"]),
+        "type": IG_MEDIA_TYPE.get(item.get("media_type"), str(item.get("media_type"))),
+        "caption": ((item.get("caption") or {}).get("text") or "").strip(),
+        "likes": item.get("like_count"),
+        "comments": item.get("comment_count"),
+    }
+
+
+def ig_username(handle):
+    """Логин аккаунта из ссылки, как её отдаёт 2GIS: https://instagram.com/<логин>."""
+    return handle.rstrip("/").rsplit("/", 1)[-1]
+
+
+def json_body(body):
+    """JSON из ответа, который fetch.get завернул в <html><body>.
+
+    Scrapling разбирает как разметку любой ответ, включая ответ API. Тело при
+    этом остаётся дословным — проверено сравнением с сырыми байтами, — поэтому
+    достаточно вырезать сам JSON, а не заводить второй путь забора ради него.
+    """
+    return body[body.index("{"): body.rindex("}") + 1]
+
+
+def iso_utc(taken_at):
+    """Unix-время инстаграма -> ISO UTC, в котором даты хранят остальные таблицы.
+
+    Без этого observed_at не сравнить с fetched_at, и затухание в score.py
+    молча считало бы любой пост сегодняшним.
+    """
+    return datetime.fromtimestamp(taken_at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def parse_serper(data, query):

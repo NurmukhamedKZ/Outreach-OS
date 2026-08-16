@@ -27,6 +27,11 @@ from services import enrich, resolve, score, sources
 
 RAW = Path("data/raw")
 DB = Path("db/leads.db")
+# Сборка идёт в соседний файл и подменяет боевую базу одним движением в конце.
+# api.py читает leads.db всё время, пока build.py работает, а первое, что делает
+# схема, — DROP всех таблиц: без подмены оператор несколько секунд смотрел бы на
+# базу без единой строки. Неудачная сборка по той же причине не портит рабочую.
+BUILDING = DB.with_suffix(".building")
 SCHEMA = Path("db/schema.sql")
 # Отказы живут в файле, а не только в базе: схема пересобирается через DROP, и
 # запись, сделанная напрямую в таблицу, исчезла бы на ближайшей сборке. Список,
@@ -46,7 +51,8 @@ VACANCY_URL = "https://hh.kz/vacancy/{id}"
 def main():
     started = time.time()
     pages = load_pages()
-    db = sqlite3.connect(DB)
+    BUILDING.unlink(missing_ok=True)
+    db = sqlite3.connect(BUILDING)
     db.executescript(SCHEMA.read_text(encoding="utf-8"))
 
     fill_fetches(db, pages)
@@ -64,6 +70,7 @@ def main():
 
     report(db, len(pages), time.time() - started)
     db.close()
+    BUILDING.replace(DB)
 
 
 def scoring_config():
@@ -89,6 +96,10 @@ def fill_profiles(db):
     }
     for answer_path in sorted(RAW.glob("*.llm.json")):
         answer = json.loads(answer_path.read_text(encoding="utf-8"))
+        # Рядом лежат ответы classify_ig.py с другой схемой. Ответы, записанные до
+        # появления метки, — профили компаний: тогда другого вида и не было.
+        if answer.get("kind", "company_profile") != "company_profile":
+            continue
         first_line = answer["prompt"].splitlines()[0].removeprefix("Компания: ")
         company_id = names.get(first_line)
         if not company_id:
@@ -139,6 +150,20 @@ def ranking_config():
         "exclude_branch": set(config["rubrics"]["exclude"]),
         "cities": set(config["cities"]),
     }
+
+
+def load_llm_answers(kind):
+    """Кэшированные ответы модели заданного вида. Сети здесь нет: они уже на диске.
+
+    Ответы, записанные до появления метки, — профили компаний: другого вида тогда
+    не существовало.
+    """
+    answers = []
+    for path in sorted(RAW.glob("*.llm.json")):
+        answer = json.loads(path.read_text(encoding="utf-8"))
+        if answer.get("kind", "company_profile") == kind:
+            answers.append(answer)
+    return answers
 
 
 def load_pages():
