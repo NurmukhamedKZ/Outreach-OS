@@ -1,19 +1,22 @@
 # Targeting & Enrichment, Казахстан
 
-Документы: [BRD](docs/BRD.md) · [PRD](docs/PRD.md) · [TRD](docs/TRD.md) · [SPEC](SPEC.md) ·
-[ARCHITECTURE](ARCHITECTURE.md) · [ARCHITECTURE_v2](ARCHITECTURE_v2.md)
+Документы: [BRD](docs/BRD.md) · [PRD](docs/PRD.md) · [TRD](docs/TRD.md) · [SPEC](docs/SPEC.md) ·
+[ARCHITECTURE](docs/ARCHITECTURE.md) · [ARCHITECTURE_v2](docs/ARCHITECTURE_v2.md)
 
 ## Команды
 
 Python-конвейер живёт в `backend/`, консоль оператора — во `frontend/`.
-Команды ниже запускаются из `backend/`.
+Наверху `backend/` — `build.py`, `report.py` и `api.py`: их не только запускают, но и
+импортируют. Остальные команды в `scripts/`, логика и сеть в `services/`, схема с
+запросами и базой в `db/`, сырьё и выгрузки в `data/`. Разведка источника вручную —
+`uv run -m services.probes.gis_list demo`. Команды ниже запускаются из `backend/`.
 
 ```bash
-uv run collect.py                      # ходит в сеть, наполняет raw/
-uv run --env-file .env classify.py     # профиль и why_now от OpenAI, в raw/*.llm.json
-uv run build.py                        # raw/ -> leads.db, ни одного сетевого запроса
-uv run report.py                       # leads.db -> leads.csv, 30 лидов
-uv run check.py                        # восемь разделов ассертов на живых данных
+uv run -m scripts.collect                   # ходит в сеть, наполняет data/raw/
+uv run --env-file .env -m scripts.classify  # профиль и why_now от OpenAI
+uv run build.py                             # data/raw/ -> db/leads.db, без единого запроса
+uv run report.py                            # db/leads.db -> data/leads.csv, 30 лидов
+uv run -m scripts.check                     # восемь разделов ассертов на живых данных
 ```
 
 `build.py` — граница системы: слева от неё то, что нельзя восстановить, справа то,
@@ -33,6 +36,12 @@ cd frontend && npm run dev                                   # Next.js -> http:/
 Что делает оператор: смотрит лид, читает `why_now` с цитатой с сайта компании,
 копирует канал, пишет руками. Статус переписки в систему не возвращается — это
 работа человека в его таблице.
+
+Страница `/runs` запускает те же команды, что и терминал: белый список в
+`routes/runs.py`, аргументы из поля рядом с кнопкой, вывод построчно в браузере.
+Запуск идёт один за раз — `build.py` пересобирает базу через `DROP`. Ответ не
+стримится: `next dev` теряет тело долгого ответа, поэтому лог копится на бэкенде,
+а страница дочитывает его по `offset` — и переживает перезагрузку вкладки.
 
 ## `raw/` — слой сырья
 

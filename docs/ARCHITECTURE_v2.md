@@ -170,33 +170,54 @@ suppression(handle TEXT PRIMARY KEY, added_at TEXT, reason TEXT)
 ## 5. Раскладка и запуск
 
 ```
-config.toml     рубрики, города, slug'и hh, веса скоринга, чёрный список
-schema.sql      восемь таблиц + витрина как VIEW
+backend/
+  build.py        чистая функция raw/ -> leads.db, ни одного сетевого запроса
+  report.py       leads.db -> leads.csv
+  api.py          сборка FastAPI: CORS и подключение роутеров, больше ничего
 
-cache.py        get(url) -> html      | llm(prompt) -> dict     content-addressed
-sources.py      четыре источника: 2GIS, hh, SERP, сайты — запрос + разбор
-resolve.py      склейка дублей
-enrich.py       regex-детекторы: CRM, пиксели, реклама, соцсети
-classify.py     единственный вызов модели (OpenAI), только по топу
-score.py        fit_score, intent_score — возвращают (число, разбивку)
+                  build и report наверху не по привычке: их импортируют api.py,
+                  classify.py и services/leads.py — правило выдачи одно на CSV и веб
 
-collect.py      ходит в сеть, наполняет raw/ и fetches
-build.py        чистая функция raw/ -> leads.db, ни одного сетевого запроса
-report.py       leads.db -> leads.csv
-check.py        ассерты на живых фикстурах из raw/
+  scripts/        команды, которые никто не импортирует
+    collect.py    ходит в сеть, наполняет raw/ и fetches
+    classify.py   единственный вызов модели (OpenAI), только по топу
+    check.py      ассерты на живых фикстурах из raw/
 
-api.py          FastAPI над leads.db: тот же отбор лидов, что у report.py
-frontend/       Next.js — консоль оператора, /api/* проксируется на api.py
-suppression.csv кому не писать: файл, а не таблица — схема пересобирается DROP'ом
+  routes/         эндпоинты: leads.py, suppression.py
+  schemas/        pydantic на входе: refusal.py
+
+  services/       логика и доступ к внешнему миру
+    fetch.py      get(url) -> html, content-addressed: единственный выход в сеть
+    sources.py    четыре источника: 2GIS, hh, SERP, сайты — разбор ответа
+    resolve.py    склейка дублей
+    enrich.py     regex-детекторы: CRM, пиксели, реклама, соцсети
+    score.py      fit_score, intent_score — возвращают (число, разбивку)
+    leads.py      отбор лидов для веба — тот же, что у report.py
+    suppression.py  отказ: сначала файл, потом таблица
+    probes/       разведка источника вручную, по одной команде на источник
+      gis_rubrics.py gis_list.py gis_firm.py hh_vacancies.py serp.py
+
+  db/             всё про базу: schema.sql — восемь таблиц и витрина как VIEW,
+                  lead.py — соединение и запросы, leads.db — производное
+
+  data/           raw/ — слой сырья, невосстановим
+                  suppression.csv — кому не писать: файл, а не таблица, схема
+                    пересобирается DROP'ом
+                  leads.csv — выгрузка оператору
+  config.toml     рубрики, города, slug'и hh, веса скоринга, чёрный список
+
+frontend/         Next.js — консоль оператора, /api/* проксируется на api.py
 ```
 
-Пятнадцать файлов, из них четыре — данные и конфиг.
+Наверху backend/ — только то, что запускают: шесть команд и `fetch.py`.
+Наверху — только то, что запускают. `services/probes/` трогают руками при разведке
+нового источника: `uv run -m services.probes.gis_list demo`.
 
 ```bash
-python collect.py            # 1,5 часа, один раз
-python build.py              # 2 минуты, сколько угодно раз
-python report.py             # выгрузка топа
-python check.py              # проверки, сеть не нужна
+uv run -m scripts.collect    # 1,5 часа, один раз
+uv run build.py              # 2 минуты, сколько угодно раз
+uv run report.py             # выгрузка топа
+uv run -m scripts.check      # проверки, сеть не нужна
 
 uvicorn api:app --port 8787  # бэкенд веб-консоли
 cd frontend && npm run dev   # фронтенд на 3000, /api/* проксируется на 8787

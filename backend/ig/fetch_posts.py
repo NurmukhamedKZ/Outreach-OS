@@ -12,7 +12,7 @@ from scrapling.fetchers import Fetcher
 
 API = "https://www.instagram.com/api/v1/feed/user/{user}/username/?count={count}"
 APP_ID = "936619743392459"  # публичный web app id инстаграма, он статичный
-COOKIES = Path("cookies.json")
+COOKIES = Path("data/cookies.json")
 
 MEDIA_TYPE = {1: "image", 2: "video", 8: "carousel"}
 
@@ -105,6 +105,6 @@ if __name__ == "__main__":
         username = sys.argv[1] if len(sys.argv) > 1 else "viresta.kz"
         count = int(sys.argv[2]) if len(sys.argv) > 2 else 10
         posts = fetch(username, count)
-        out = Path(f"{username}_posts.json")
+        out = Path(f"data/{username}_posts.json")
         out.write_text(json.dumps(posts, ensure_ascii=False, indent=2))
         print(f"{len(posts)} постов -> {out}")

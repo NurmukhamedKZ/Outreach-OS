@@ -10,8 +10,8 @@ from pathlib import Path
 
 from scrapling.fetchers import StealthySession
 
-COOKIES = Path("cookies.json")
-PROFILE = Path("ig_profile").absolute()
+COOKIES = Path("data/cookies.json")
+PROFILE = Path("data/ig_profile").absolute()
 
 
 def wait_for_login(page):

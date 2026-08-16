@@ -73,6 +73,34 @@ export function refuse(handle: string, reason: string) {
   });
 }
 
+export type Command = { name: string; title: string; command: string };
+
+/** Хвост лога запуска: `lines` — то, чего у клиента ещё нет, `code` — null, пока идёт. */
+export type RunTail = {
+  name: string | null;
+  title: string;
+  lines: string[];
+  offset: number;
+  code: number | null;
+};
+
+export function fetchCommands() {
+  return json<Command[]>("/api/runs");
+}
+
+export function startRun(name: string, args: string) {
+  const query = args ? `?args=${encodeURIComponent(args)}` : "";
+  return json<{ name: string }>(`/api/runs/${encodeURIComponent(name)}${query}`, { method: "POST" });
+}
+
+export function fetchRunTail(offset: number) {
+  return json<RunTail>(`/api/runs/current?offset=${offset}`);
+}
+
+export function stopRun() {
+  return json<{ name: string }>("/api/runs/current/stop", { method: "POST" });
+}
+
 /** Ссылка, которой оператор реально открывает диалог. Текст не подставляем:
  *  первое сообщение пишется руками, в этом весь смысл ручной отправки в v1. */
 export function channelLink(channel: Channel): string {

@@ -3,15 +3,15 @@
 Читает raw_jsonl_legacy/2gis_list.jsonl и по каждому branch_id забирает карточку филиала.
 Своей фильтрации нет: отбор задаётся тем, по каким рубрикам запускался gis_list.py.
 
-Запуск: uv run gis_firm.py [limit]
-        uv run gis_firm.py demo
+Запуск: uv run -m services.probes.gis_firm [limit]
+        uv run -m services.probes.gis_firm demo
 """
 
 import sys
 
-from fetch import JSONL_DIR, get, jsonl, read
-from sources import parse_firm_card
-from sources import parse_initial_state as state
+from services.fetch import JSONL_DIR, get, jsonl, read
+from services.sources import parse_firm_card
+from services.sources import parse_initial_state as state
 
 COOKIE = {"dg5_museum_accept": "true"}
 URL = "https://2gis.kz/{city}/firm/{branch_id}"

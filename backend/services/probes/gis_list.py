@@ -1,18 +1,18 @@
 """Списки организаций 2GIS по рубрике.
 
-Запуск: uv run gis_list.py <rubric_id> <city>
-Пример: uv run gis_list.py 653 almaty      (Бухгалтерские услуги, Алматы)
-        uv run gis_list.py demo
+Запуск: uv run -m services.probes.gis_list <rubric_id> <city>
+Пример: uv run -m services.probes.gis_list 653 almaty      (Бухгалтерские услуги, Алматы)
+        uv run -m services.probes.gis_list demo
 
-Города: almaty, astana. Список рубрик даёт gis_rubrics.py.
+Города: almaty, astana. Список рубрик даёт services/probes/gis_rubrics.py.
 """
 
 import sys
 
-from fetch import JSONL_DIR, get, jsonl
-from sources import parse_initial_state as state
-from sources import parse_org_list as orgs
-from sources import parse_search_meta as meta
+from services.fetch import JSONL_DIR, get, jsonl
+from services.sources import parse_initial_state as state
+from services.sources import parse_org_list as orgs
+from services.sources import parse_search_meta as meta
 
 COOKIE = {"dg5_museum_accept": "true"}  # снимает редирект на /museum
 URL = "https://2gis.kz/{city}/rubric/{rubric}/page/{page}"

@@ -8,8 +8,8 @@
 читает страницы с диска и не делает ни одного сетевого запроса.
 
 Запуск:
-  uv run collect.py                                      полный объём из config.toml
-  uv run collect.py --cities almaty --rubrics 5 --slugs 3 --budget 600 --workers 4
+  uv run -m scripts.collect                                      полный объём из config.toml
+  uv run -m scripts.collect --cities almaty --rubrics 5 --slugs 3 --budget 600 --workers 4
 """
 
 import argparse
@@ -23,11 +23,11 @@ from functools import partial
 from pathlib import Path
 from threading import Lock
 
-import fetch
-import sources
+from services import fetch
+from services import sources
 
 CONFIG = Path("config.toml")
-DB = Path("leads.db")
+DB = Path("db/leads.db")
 
 RUBRIC_PAGE = "https://2gis.kz/{city}/rubric/{rubric}/page/{page}"
 FIRM_CARD = "https://2gis.kz/{city}/firm/{branch_id}"
@@ -262,7 +262,7 @@ def collect_sites(budget, workers):
 
 def site_domains():
     if not DB.exists():
-        sys.exit(f"нет {DB}: сначала uv run collect.py && uv run build.py")
+        sys.exit(f"нет {DB}: сначала uv run -m scripts.collect && uv run build.py")
     db = sqlite3.connect(DB)
     rows = db.execute(
         "SELECT DISTINCT domain FROM companies WHERE domain IS NOT NULL ORDER BY domain"
@@ -334,7 +334,7 @@ def report(budget, raw_before, elapsed):
         + (f" из {budget.cap}" if budget.cap else "")
         + f", файлов в raw/ было {raw_before}, стало {raw_after}"
     )
-    print(f"за {elapsed / 60:.1f} мин. Дальше: uv run build.py && uv run check.py")
+    print(f"за {elapsed / 60:.1f} мин. Дальше: uv run build.py && uv run -m scripts.check")
 
 
 def raw_file_count():

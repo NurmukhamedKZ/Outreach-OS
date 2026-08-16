@@ -1,6 +1,6 @@
 """Проверки. Ассерты, а не фреймворк; сеть не нужна ни одной из них.
 
-Запуск: uv run check.py [раздел]      без аргумента — все разделы
+Запуск: uv run -m scripts.check [раздел]      без аргумента — все разделы
 Разделы: raw (целостность сырья), build (приёмка Ф3), collect (приёмка Ф4).
 
 Каждая следующая фаза дописывает сюда свой раздел. Отдельной фазы «написать
@@ -18,11 +18,11 @@ import sys
 import tomllib
 from pathlib import Path
 
-import sources
+from services import sources
 
-RAW = Path("raw")
-DB = Path("leads.db")
-OUT = Path("leads.csv")
+RAW = Path("data/raw")
+DB = Path("db/leads.db")
+OUT = Path("data/leads.csv")
 CYRILLIC = re.compile(r"[А-Яа-я]")
 RUBRIC_URL = re.compile(r"/rubric/\d+(?:/page/(\d+))?$")
 SIDECAR_FIELDS = ("url", "final_url", "status", "fetched_at")
@@ -172,7 +172,7 @@ def check_rebuild_is_identical():
 
 def check_collect():
     """Приёмка Ф4: обе проверки подмены доказаны на собранном сырье, план соблюдён."""
-    assert DB.exists(), "leads.db нет — сначала uv run collect.py && uv run build.py"
+    assert DB.exists(), "leads.db нет — сначала uv run -m scripts.collect && uv run build.py"
     config = tomllib.loads(Path("config.toml").read_text(encoding="utf-8"))
     db = sqlite3.connect(DB)
 
@@ -412,21 +412,23 @@ def check_web():
     правил. Если она разъедется с report.py, оператор увидит в браузере лид,
     которого нет в выдаче, — а F19 и F21 не про формат вывода, а про закон.
     """
-    import api
+    from db import lead as store
+    from routes import leads as web_leads
+    from services import suppression as refusals
 
     db = sqlite3.connect(DB)
-    web = api.leads(limit=30)["leads"]
+    web = web_leads.leads(limit=30)["leads"]
     with OUT.open(encoding="utf-8-sig") as fh:
         csv_names = [lead["компания"] for lead in csv.DictReader(fh)]
     assert [lead["name"] for lead in web] == csv_names, "веб и leads.csv разошлись"
 
-    suppressed = api.suppression_handles(db)
+    suppressed = store.suppression_handles(db)
     leaked = [lead for lead in web if lead["channel"]["handle"] in suppressed]
     assert not leaked, f"{len(leaked)} лидов из suppression в веб-выдаче (F21)"
 
     # Файл — источник истины, таблица — копия. Разойдутся, и запрет исчезнет на
     # ближайшем build.py, потому что схема пересобирается через DROP.
-    from_file = api.existing_handles() - {""}
+    from_file = refusals.existing_handles() - {""}
     assert from_file == suppressed, f"в файле {from_file}, в базе {suppressed}"
 
     for lead in web:

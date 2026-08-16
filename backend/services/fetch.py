@@ -23,9 +23,9 @@ from scrapling.fetchers import Fetcher
 # нет страницы подрубрик). Это тонет прогресс скриптов в потоке ложных «ошибок».
 logging.getLogger("scrapling").setLevel(logging.WARNING)
 
-RAW = Path("raw")
+RAW = Path("data/raw")
 # Производные JSONL до Ф3 живут отдельно от сырья: build.py пересоберёт их из raw/.
-JSONL_DIR = Path("raw_jsonl_legacy")
+JSONL_DIR = Path("data/raw_jsonl_legacy")
 
 
 class HttpError(RuntimeError):

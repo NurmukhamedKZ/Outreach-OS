@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { fetchLeads, type Lead, type Stats } from "./api";
 import LeadCard from "./LeadCard";
@@ -67,6 +68,9 @@ export default function Console() {
           </div>
         )}
         <div className="controls">
+          <Link className="ghost" href="/runs">
+            Скрипты
+          </Link>
           <select value={city} onChange={(event) => setCity(event.target.value)}>
             <option value="">все города</option>
             {stats?.cities.map((name) => (

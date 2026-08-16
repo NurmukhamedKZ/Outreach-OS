@@ -3,18 +3,18 @@
 Google не нужен: robots.txt запрещает строку запроса (`Disallow: *?*`), а не поиск.
 SEO-урлы /vacancies/<slug> идут без параметров и под запрет не попадают.
 
-Запуск: uv run hh_vacancies.py <slug> <city>
-Пример: uv run hh_vacancies.py menedzher_po_prodazham almaty
-        uv run hh_vacancies.py demo
+Запуск: uv run -m services.probes.hh_vacancies <slug> <city>
+Пример: uv run -m services.probes.hh_vacancies menedzher_po_prodazham almaty
+        uv run -m services.probes.hh_vacancies demo
 
 Slug — хвост SEO-страницы hh: menedzher_po_prodazham, buhgalter, ...
 """
 
 import sys
 
-from fetch import JSONL_DIR, HttpError, final_url, get, jsonl
-from sources import parse_job_posting as posting
-from sources import parse_vacancy_ids as ids
+from services.fetch import JSONL_DIR, HttpError, final_url, get, jsonl
+from services.sources import parse_job_posting as posting
+from services.sources import parse_vacancy_ids as ids
 
 LIST = "https://{city}.hh.kz/vacancies/{slug}"
 VACANCY = "https://hh.kz/vacancy/{id}"

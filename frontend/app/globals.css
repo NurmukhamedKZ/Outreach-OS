@@ -190,6 +190,45 @@ a {
   color: var(--warm);
 }
 
+/* --- скрипты --------------------------------------------------------------- */
+
+.row.command {
+  grid-template-columns: 1fr;
+}
+
+.row:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+.args {
+  font: inherit;
+  width: 280px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+}
+
+/* Лог держит свою высоту и скроллится сам: страница не должна прыгать под
+   курсором, пока процесс дописывает строки. */
+.log {
+  position: sticky;
+  top: 24px;
+  height: 70vh;
+  margin: 0;
+  padding: 16px 18px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* --- карточка -------------------------------------------------------------- */
 
 .card {
@@ -300,6 +339,9 @@ a {
 }
 
 .ghost {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
   padding: 5px 10px;
   border: 1px solid var(--border);
   border-radius: 7px;

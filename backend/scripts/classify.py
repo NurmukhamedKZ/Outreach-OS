@@ -13,9 +13,9 @@
 Отдельный SDK ради одного POST не нужен.
 
 Запуск:
-  uv run --env-file .env classify.py            топ из config.toml [llm].top_n
-  uv run --env-file .env classify.py 10         первые 10
-  uv run --env-file .env classify.py --models   какие модели доступны ключу
+  uv run --env-file .env -m scripts.classify            топ из config.toml [llm].top_n
+  uv run --env-file .env -m scripts.classify 10         первые 10
+  uv run --env-file .env -m scripts.classify --models   какие модели доступны ключу
 """
 
 import hashlib
@@ -32,8 +32,8 @@ import build
 
 API = "https://api.openai.com/v1/chat/completions"
 MODELS_API = "https://api.openai.com/v1/models"
-RAW = Path("raw")
-DB = Path("leads.db")
+RAW = Path("data/raw")
+DB = Path("db/leads.db")
 CONFIG = Path("config.toml")
 
 SYSTEM = (
@@ -164,7 +164,7 @@ def api_key():
         sys.exit(
             "OPENAI_API_KEY пуст.\n"
             "  1) вписать ключ с https://platform.openai.com/api-keys в .env\n"
-            "  2) uv run --env-file .env classify.py"
+            "  2) uv run --env-file .env -m scripts.classify"
         )
     return key
 

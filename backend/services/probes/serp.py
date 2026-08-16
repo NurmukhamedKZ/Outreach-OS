@@ -3,8 +3,8 @@
 Утилита: ЛПР, добор компаний вне 2GIS, email по домену. $1 за 1 000 запросов.
 Ключ SERPER_API_KEY берётся из .env (шаблон — .env.example).
 
-Запуск: uv run --env-file .env serp.py "директор ТОО Ромашка"
-        uv run serp.py demo          проверка разбора, в сеть не ходит
+Запуск: uv run --env-file .env -m services.probes.serp "директор ТОО Ромашка"
+        uv run -m services.probes.serp demo          проверка разбора, в сеть не ходит
 """
 
 import hashlib
@@ -14,8 +14,8 @@ import sys
 
 from scrapling.fetchers import Fetcher
 
-from fetch import RAW, jsonl
-from sources import parse_serper as parse
+from services.fetch import RAW, jsonl
+from services.sources import parse_serper as parse
 
 API = "https://google.serper.dev/search"
 OUT = "serp.jsonl"
@@ -32,7 +32,7 @@ def search(query, country="kz", lang="ru"):
         sys.exit(
             "SERPER_API_KEY пуст.\n"
             "  1) cp .env.example .env  и вписать ключ с https://serper.dev\n"
-            "  2) uv run --env-file .env serp.py ...   (или export UV_ENV_FILE=.env)"
+            "  2) uv run --env-file .env -m services.probes.serp ...   (или export UV_ENV_FILE=.env)"
         )
 
     RAW.mkdir(exist_ok=True)

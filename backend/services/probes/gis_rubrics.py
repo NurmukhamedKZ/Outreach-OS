@@ -3,9 +3,9 @@
 Рубрика = категория справочника, машинный эквивалент сегмента ICP. Её id идёт в
 gis_list.py, а чёрный список конкурентов — это тоже просто набор id.
 
-Запуск: uv run gis_rubrics.py [root_id ...]   без аргументов — весь рубрикатор
-        uv run gis_rubrics.py 110609          только ветка B2B-услуг
-        uv run gis_rubrics.py demo
+Запуск: uv run -m services.probes.gis_rubrics [root_id ...]   без аргументов — весь рубрикатор
+        uv run -m services.probes.gis_rubrics 110609          только ветка B2B-услуг
+        uv run -m services.probes.gis_rubrics demo
 
 Обход всего дерева — заметно больше запросов, чем одной ветки: лист тоже стоит GET,
 потому что заранее неизвестно, есть ли у него дети.
@@ -13,8 +13,8 @@ gis_list.py, а чёрный список конкурентов — это то
 
 import sys
 
-from fetch import JSONL_DIR, HttpError, get, jsonl
-from sources import parse_initial_state as state
+from services.fetch import JSONL_DIR, HttpError, get, jsonl
+from services.sources import parse_initial_state as state
 
 COOKIE = {"dg5_museum_accept": "true"}
 ROOT = "https://2gis.kz/almaty/rubrics"

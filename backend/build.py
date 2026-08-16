@@ -23,18 +23,15 @@ import time
 import tomllib
 from pathlib import Path
 
-import enrich
-import resolve
-import score
-import sources
+from services import enrich, resolve, score, sources
 
-RAW = Path("raw")
-DB = Path("leads.db")
-SCHEMA = Path("schema.sql")
+RAW = Path("data/raw")
+DB = Path("db/leads.db")
+SCHEMA = Path("db/schema.sql")
 # Отказы живут в файле, а не только в базе: схема пересобирается через DROP, и
 # запись, сделанная напрямую в таблицу, исчезла бы на ближайшей сборке. Список,
 # который «никогда не очищается» (PRD F21), нельзя хранить в том, что стирается.
-SUPPRESSION = Path("suppression.csv")
+SUPPRESSION = Path("data/suppression.csv")
 
 GIS_LIST_URL = re.compile(r"2gis\.kz/([a-z]+)/rubric/(\d+)(?:/page/(\d+))?$")
 GIS_FIRM_URL = re.compile(r"2gis\.kz/([a-z]+)/firm/(\d+)$")

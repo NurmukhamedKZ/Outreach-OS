@@ -22,8 +22,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
-DB = Path("leads.db")
-OUT = Path("leads.csv")
+DB = Path("db/leads.db")
+OUT = Path("data/leads.csv")
 
 # Каналы, которыми в Казахстане реально пользуются, в порядке приоритета
 # (ARCHITECTURE.md §13). Телефон выше почты: 2GIS отдаёт его почти всегда, и один
@@ -172,7 +172,7 @@ def sources_of(breakdown):
 
 def write_csv(leads):
     if not leads:
-        sys.exit("ни одного лида с рабочим каналом — проверь uv run check.py")
+        sys.exit("ни одного лида с рабочим каналом — проверь uv run -m scripts.check")
     with OUT.open("w", encoding="utf-8-sig", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=list(leads[0]))
         writer.writeheader()
