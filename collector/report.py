@@ -30,6 +30,12 @@ OUT = Path("data/leads.csv")
 # номер даёт сразу и звонок, и WhatsApp.
 CHANNEL_PRIORITY = ("whatsapp", "phone", "email")
 
+# Короче этого 2GIS отдаёт не телефон компании, а сервисный короткий номер
+# (1400, 5151, 349550 — их в базе 13 из 2706). Порог именно по числу цифр, а не
+# приведение к +7XXXXXXXXXX: бесплатная линия 8-800 (11 цифр) и номер с
+# добавочным (15 цифр) оператору годятся, и терять их нельзя.
+MIN_PHONE_DIGITS = 10
+
 DEFAULT_LIMIT = 30
 
 
@@ -144,12 +150,26 @@ def dialable(kind, handle):
 
 
 def best_channel(channels, suppressed):
-    """Первый канал из приоритетного списка, не попавший в suppression."""
+    """Первый канал из приоритетного списка, не попавший в suppression.
+
+    Канал, по которому нельзя связаться, каналом не считается: F19 требует
+    рабочего, а не любого.
+    """
     for kind in CHANNEL_PRIORITY:
         for channel_kind, handle in channels:
-            if channel_kind == kind and handle not in suppressed:
-                return kind, handle
+            if channel_kind != kind or handle in suppressed:
+                continue
+            if not reachable(kind, handle):
+                continue
+            return kind, handle
     return None
+
+
+def reachable(kind, handle):
+    """Можно ли по этому каналу связаться. Почта проверяется только на непустоту."""
+    if kind == "email":
+        return bool(handle and "@" in handle)
+    return len(re.sub(r"\D", "", handle or "")) >= MIN_PHONE_DIGITS
 
 
 # Почему найденное значит «писать сейчас». Маркер сам по себе не обоснование:
@@ -200,19 +220,17 @@ def write_csv(leads):
 
 
 def available(db):
-    """Потолок выдачи: компании с intent и хотя бы одним каналом, которым пишут.
+    """Потолок выдачи: компании с intent и рабочим каналом, которым можно писать.
 
-    Просить больше бессмысленно — F19 отсеет остальных ещё до выдачи. Веб
-    показывает это число оператору, чтобы «30 лидов» не выглядело результатом
-    отбора, когда это всего лишь значение limit.
+    Считается тем же проходом, что и сама выдача, а не отдельным запросом:
+    отдельный запрос знал бы про вид контакта, но не про отказы (F21) и не про
+    достижимость номера, и врал бы оператору тем сильнее, чем длиннее список
+    отказов. Полный проход стоит сотые доли секунды на 1660 компаниях.
     """
-    kinds = ", ".join("?" * len(CHANNEL_PRIORITY))
-    return db.execute(
-        "SELECT count(*) FROM scores s WHERE s.intent_score > 0 AND EXISTS ("
-        "  SELECT 1 FROM company_links l JOIN contacts k USING (branch_id)"
-        f"  WHERE l.company_id = s.company_id AND k.kind IN ({kinds}))",
-        CHANNEL_PRIORITY,
-    ).fetchone()[0]
+    suppressed = {row[0] for row in db.execute("SELECT handle FROM suppression")}
+    return sum(
+        1 for row in candidates(db) if best_channel(row["channels"], suppressed)
+    )
 
 
 def report(db, leads, limit):

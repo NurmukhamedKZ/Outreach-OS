@@ -261,6 +261,7 @@ def check_build():
     check_vacancies(db)
     check_contacts(db)
     check_fetches(db)
+    check_profiles(db)
     db.close()
     check_rebuild_is_identical()
 
@@ -348,6 +349,30 @@ def check_fetches(db):
     empty = db.execute("SELECT count(*) FROM fetches WHERE final_url IS NULL").fetchone()[0]
     assert not empty, "адрес без final_url — обнаружение подмены ослепло"
     print(f"  fetches {urls}")
+
+
+def check_profiles(db):
+    """Профили от модели дошли до своих компаний, и ни один не потерялся."""
+    import build
+
+    # Профиль опознаёт компанию по паре (название, город) из промпта: названия в
+    # базе не уникальны, и по одному названию оплаченный профиль лёг бы чужой
+    # компании — это цитата с чужого сайта в письме живому человеку (F20).
+    orphan = db.execute(
+        "SELECT count(*) FROM profiles p"
+        " WHERE NOT EXISTS (SELECT 1 FROM companies c WHERE c.company_id = p.company_id)"
+    ).fetchone()[0]
+    assert orphan == 0, f"{orphan} профилей у несуществующих компаний"
+
+    # Ответ модели стоил денег: если он лежит в raw/, а до базы не доехал, значит
+    # ключ разошёлся с промптом, и молча теряется оплаченная работа.
+    answers = len(build.load_llm_answers("company_profile"))
+    stored = count(db, "profiles")
+    assert stored == answers, (
+        f"ответов модели в raw/ {answers}, профилей в базе {stored} — "
+        "оплаченные ответы не находят свою компанию"
+    )
+    print(f"  профилей {stored}, все у существующих компаний")
 
 
 def check_rebuild_is_identical():
@@ -482,10 +507,19 @@ def check_resolve():
     ).fetchone()
     assert multi, "ни одной компании из нескольких филиалов — правила не сработали"
 
+    # Привязка работодателя hh к компании 2GIS — самое слабое место конвейера:
+    # из 384 вакансий привязаны 4. Число зафиксировано, чтобы падение до нуля
+    # не проходило зелёным. Ветку чинит отдельный план; когда починят — поднять
+    # порог здесь тем же коммитом, иначе ассерт перестанет что-либо значить.
+    LINKED_VACANCIES_FLOOR = 4
     fuzzy = db.execute(
         "SELECT count(*) FROM vacancies WHERE company_id IS NOT NULL"
     ).fetchone()[0]
     total = db.execute("SELECT count(DISTINCT employer) FROM vacancies").fetchone()[0]
+    assert fuzzy >= LINKED_VACANCIES_FLOOR, (
+        f"вакансий привязано к компаниям {fuzzy}, было {LINKED_VACANCIES_FLOOR} — "
+        "склейка работодателей стала хуже, сигналы вакансий исчезнут из скоринга"
+    )
     print(f"  компаний {companies} из {branches} филиалов, крупнейшая из {multi[1]}")
     print(f"  вакансий привязано к компаниям {fuzzy}, работодателей всего {total}")
     db.close()
@@ -521,6 +555,21 @@ def check_signals():
         " GROUP BY company_id, type, url HAVING count(*) > 1)"
     ).fetchone()[0]
     assert doubled == 0, f"{doubled} сигналов задвоены по (компания, тип, источник)"
+
+    # Ветвь vacancy_* сегодня пуста: вакансии почти не привязываются к компаниям
+    # (см. LINKED_VACANCIES_FLOOR в check_resolve). Ассерт на конкретные типы
+    # поставить нельзя, пока их ноль, — вместо него на виду держится состав
+    # семейств, чтобы исчезновение site_* или ig_* не спряталось за общим total.
+    families = {row[0] for row in db.execute("SELECT DISTINCT type FROM signals")}
+    site_types = {"ads_platform", "crm_widget", "inbound_widget", "service_catalog"}
+    assert site_types <= families, (
+        f"сигналы сайта потеряны: есть {sorted(families & site_types)}, "
+        f"нет {sorted(site_types - families)}"
+    )
+    assert any(t.startswith("ig_") for t in families), \
+        "ни одного сигнала инстаграма — лента не разобрана или склейка аккаунтов сломана"
+    if not any(t.startswith("vacancy_") for t in families):
+        print("    ! сигналов вакансий нет — ветка hh не работает, см. plans/002")
 
     check_instagram_signals(db)
 
@@ -622,8 +671,23 @@ def check_leads():
     suppressed = {row[0] for row in db.execute("SELECT handle FROM suppression")}
     leaked = [l for l in leads if l["канал"].split(": ", 1)[1] in suppressed]
     assert not leaked, f"{len(leaked)} лидов из suppression попали в выдачу (F21)"
+
+    # available() показывается оператору в шапке и задаёт пункт «все N».
+    # Он обязан считать ровно то же, что выдача: иначе оператор запросит больше
+    # лидов, чем существует, и решит, что часть потерялась.
+    import report
+
+    by_hand = sum(
+        1 for row in report.candidates(db) if report.best_channel(row["channels"], suppressed)
+    )
+    counted = report.available(db)
+    assert counted == by_hand, (
+        f"available() говорит {counted}, полный проход даёт {by_hand} — "
+        "счётчик разошёлся с выдачей"
+    )
     db.close()
 
+    print(f"  доступно лидов {by_hand}, счётчик с ними согласен")
     print(f"  выдача: {len(leads)} лидов, города {sorted(cities)}, у всех канал и why_now")
 
 

@@ -82,13 +82,19 @@ def scoring_config():
 def fill_profiles(db):
     """Профили от модели из raw/*.llm.json. Сети здесь нет: ответы уже на диске.
 
-    Компания опознаётся по названию в промпте — company_id в него не входит, чтобы
-    смена схемы идентификаторов не обесценивала оплаченные ответы.
+    Компания опознаётся по паре (название, город) из первых двух строк промпта —
+    company_id в него не входит, потому что нестабилен (`dom:` меняется на `2gis:`
+    при появлении домена), и его включение обесценило бы оплаченные ответы.
     """
-    names = {
-        name: company_id
-        for company_id, name in db.execute(
-            "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm)"
+    # Ключ — пара с городом, а не одно название: названия в базе не уникальны
+    # (Deloitte, Schneider Electric и ещё три пары стоят в двух городах), и по
+    # одному названию оплаченный профиль ложился бы той компании, что попалась
+    # обходу последней. Город уже есть второй строкой промпта, поэтому сам промпт
+    # не меняется и кэш ответов остаётся в силе.
+    companies = {
+        (name, city): company_id
+        for company_id, name, city in db.execute(
+            "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm), c.city"
             " FROM companies c"
             " LEFT JOIN company_links l ON l.company_id = c.company_id AND l.rule = 'self'"
             " LEFT JOIN orgs o ON o.branch_id = l.branch_id"
@@ -100,8 +106,10 @@ def fill_profiles(db):
         # появления метки, — профили компаний: тогда другого вида и не было.
         if answer.get("kind", "company_profile") != "company_profile":
             continue
-        first_line = answer["prompt"].splitlines()[0].removeprefix("Компания: ")
-        company_id = names.get(first_line)
+        lines = answer["prompt"].splitlines()
+        name = lines[0].removeprefix("Компания: ")
+        city = lines[1].removeprefix("Город: ") if len(lines) > 1 else ""
+        company_id = companies.get((name, city))
         if not company_id:
             continue
         profile = answer["profile"]
