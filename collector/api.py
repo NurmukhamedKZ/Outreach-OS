@@ -11,6 +11,7 @@ suppression.csv, а в таблицу дублируется, чтобы выд�
 """
 
 import sqlite3
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -20,6 +21,13 @@ import report
 from db import lead as store
 from routes import leads, runs, suppression
 from services import suppression as refusals
+
+# Система 2 живёт своим проектом и своей базой; здесь только склейка, чтобы у
+# оператора остались одна консоль и один порт. Каталог добавляется в путь
+# целиком: writer импортирует свои модули по коротким именам, как делает и сам
+# collector.
+sys.path.append(str(Path(__file__).resolve().parent.parent / "writer"))
+import web as writer  # noqa: E402
 
 WEB_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
@@ -33,6 +41,7 @@ app.add_middleware(
 app.include_router(leads.router)
 app.include_router(runs.router)
 app.include_router(suppression.router)
+app.include_router(writer.router)
 
 
 def demo():
@@ -46,8 +55,8 @@ def demo():
     in_db = store.suppression_handles(db)
     assert from_file == in_db, f"в файле {from_file}, в базе {in_db} — список разъехался"
 
-    assert report.best_channel([("phone", "+7700")], {"+7700"}) is None, "F21 нарушен"
-    assert report.best_channel([("phone", "+7700")], set()) == ("phone", "+7700")
+    assert report.best_channel([("phone", "+77010000000")], {"+77010000000"}) is None, "F21 нарушен"
+    assert report.best_channel([("phone", "+77010000000")], set()) == ("phone", "+77010000000")
 
     check_refusal_reaches_both_stores()
     print(f"api demo ok — отказов {len(from_file)}, все доехали до базы")

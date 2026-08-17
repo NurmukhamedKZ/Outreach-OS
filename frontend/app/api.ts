@@ -121,6 +121,47 @@ export const CHANNEL_LABELS: Record<string, string> = {
   instagram: "Instagram",
 };
 
+export type ThreadMessage = {
+  role: "outgoing" | "incoming";
+  text: string;
+  angle: string | null;
+  sent_at: string | null;
+};
+
+export type Conversation = {
+  thread_id: string;
+  channel_kind: string;
+  messages: ThreadMessage[];
+  draft: { message_id: number; draft_text: string; angle: string | null } | null;
+  /** Агент советует не писать: нового повода в данных нет. Решает оператор. */
+  stop: boolean;
+};
+
+export function fetchConversation(companyId: string) {
+  return json<Conversation>(`/api/threads/${encodeURIComponent(companyId)}`);
+}
+
+/** Единственный вызов, который стоит денег: один ход = один запрос к модели. */
+export function requestDraft(companyId: string, kind: "first" | "reply" | "followup") {
+  return post<Conversation>(`/api/threads/${encodeURIComponent(companyId)}/draft`, { kind });
+}
+
+export function markSent(companyId: string, text: string) {
+  return post<Conversation>(`/api/threads/${encodeURIComponent(companyId)}/sent`, { text });
+}
+
+export function addIncoming(companyId: string, text: string) {
+  return post<Conversation>(`/api/threads/${encodeURIComponent(companyId)}/incoming`, { text });
+}
+
+function post<T>(url: string, body: unknown) {
+  return json<T>(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 export const SIGNAL_LABELS: Record<string, string> = {
   ads_platform: "Платит за рекламу",
   crm_widget: "CRM на сайте",

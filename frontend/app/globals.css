@@ -456,3 +456,68 @@ a {
   background: var(--danger-soft);
   color: var(--danger);
 }
+
+/* Переписка: наша реплика прижата влево, ответ лида — вправо, чтобы очередь
+   хода читалась без подписей. */
+.thread {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.thread-log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+}
+
+.thread-log li {
+  display: flex;
+  gap: 8px;
+  max-width: 42em;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.thread-log li.incoming {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+  background: var(--accent-soft);
+}
+
+.thread-who {
+  min-width: 2em;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.thread-draft textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  resize: vertical;
+}
+
+.thread-reply {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.thread-reply input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
