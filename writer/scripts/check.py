@@ -15,6 +15,7 @@ import sys
 import config
 import leads_source
 import thread_store
+from schemas.outreach import BANNED, MAX_CHARS, Draft
 
 CONFIG = config.load()
 
@@ -131,7 +132,37 @@ def check_threads():
     print("  threads: черновик отделён от отправленного, углы и правки целы")
 
 
+def check_schema():
+    """Слоп не проходит схему, а не «не рекомендуется промптом».
+
+    Запрет живёт в валидаторе намеренно: with_structured_output повторит вызов
+    на невалидном ответе, а инструкция в промпте была бы просьбой, которую
+    модель нарушает ровно в тех случаях, ради которых написана система 2.
+    """
+    good = Draft(text="Здравствуйте! Увидел вакансию менеджера по продажам...",
+                 angle="vacancy_sales", stop=False)
+    assert good.angle == "vacancy_sales"
+
+    for slop in ("Просто напоминаю о себе", "just checking in on this", "Поднимаю наверх"):
+        try:
+            Draft(text=slop, angle="followup", stop=False)
+        except ValueError:
+            continue
+        raise AssertionError(f"пустой follow-up прошёл схему: {slop!r}")
+
+    try:
+        Draft(text="а" * (MAX_CHARS + 1), angle="vacancy_sales", stop=False)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("сообщение длиннее потолка прошло схему")
+
+    assert Draft(text="Здравствуйте!", angle="none").stop is False, "stop по умолчанию не False"
+    print(f"  schema: {len(BANNED)} запрещённых фраз, потолок {MAX_CHARS} символов")
+
+
 SECTIONS = {
+    "schema": check_schema,
     "threads": check_threads,
     "leads": check_leads,
 }
