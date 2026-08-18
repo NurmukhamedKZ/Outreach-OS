@@ -136,6 +136,25 @@ def test_ig_quote_binding(posts=None):
     assert enrich.post_with_quote(posts, "") is None, "пустая цитата привязалась к посту"
 
 
+def test_reviews_parsing():
+    """Ответ API отзывов: тексты, рейтинг, дата, комментарии, official_answer.
+
+    Эталон — фикстура reviews.html.gz, снятая в Task 1: три отзыва филиала
+    70000001017502602, все rating 5, ни одного official_answer.
+    """
+    body = fixture_html("reviews")
+    reviews = sources.parse_reviews(body, "70000001017502602")
+    assert len(reviews) == 3, f"отзывов {len(reviews)}, у эталона 3"
+    assert all(r["branch_id"] == "70000001017502602" for r in reviews), "чужой branch_id"
+    assert all(r["text"] for r in reviews), "отзыв без текста"
+    assert all(r["rating"] in (1, 2, 3, 4, 5) for r in reviews), "рейтинг вне шкалы"
+    assert all(r["date_created"] for r in reviews), "отзыв без даты"
+    assert all(r["comments_count"] is not None for r in reviews), "нет счётчика комментариев"
+    assert all("official_answer" in r for r in reviews), "official_answer потерян"
+    assert all(r["official_answer"] is None for r in reviews), \
+        "у эталонного филиала компания не отвечает на отзывы"
+
+
 def test_ig_empty_caption_is_not_none():
     """Пост без подписи даёт пустую строку, а не None.
 

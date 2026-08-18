@@ -128,6 +128,7 @@ def parse_ig_post(item):
     а хранить в базе протухающие за сутки CDN-адреса незачем.
     """
     return {
+        "pk": item.get("pk"),
         "shortcode": item["code"],
         "url": IG_POST_URL.format(shortcode=item["code"]),
         "taken_at": iso_utc(item["taken_at"]),
@@ -173,3 +174,28 @@ def parse_serper(data, query):
         }
         for r in data.get("organic") or []
     ]
+
+
+def parse_reviews(body, branch_id):
+    """Отзывы филиала из public-api.reviews.2gis.com.
+
+    Ответ API — JSON, который fetch.get завернул в <html><body>: тело дословно,
+    и json_body() вырезает его, как у ленты инстаграма. Свежие сверху — порядок
+    API, разбор его не меняет. official_answer — текст ответа (есть) или None
+    (нет): на нём держится сигнал reviews_unanswered_complaint.
+    """
+    data = json.loads(json_body(body))
+    rows = []
+    for item in data.get("reviews") or []:
+        answer = item.get("official_answer")
+        rows.append({
+            "branch_id": branch_id,
+            "text": (item.get("text") or "").strip(),
+            "rating": item.get("rating"),
+            "date_created": item.get("date_created"),
+            "comments_count": item.get("comments_count"),
+            "official_answer": (answer or {}).get("text") if isinstance(answer, dict) else answer,
+            "official_answer_date": (answer or {}).get("date_created")
+                if isinstance(answer, dict) else None,
+        })
+    return rows
