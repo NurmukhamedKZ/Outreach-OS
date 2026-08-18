@@ -128,9 +128,9 @@ def _snapshot(tmp_path):
 
 
 # Все таблицы прогона, включая те, где недетерминизм и возможен: companies и
-# company_links собирает union-find, profiles — перезапись оплаченными ответами.
+# company_links собирает union-find, dossiers — запись оплаченных ответов слоёв.
 COMPARED = ("fetches", "orgs", "contacts", "companies", "company_links",
-            "signals", "scores", "profiles")
+            "signals", "scores", "profiles", "dossiers")
 
 
 def _dump(db, table, run_id):

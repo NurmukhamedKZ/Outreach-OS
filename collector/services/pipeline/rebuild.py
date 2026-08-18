@@ -101,7 +101,6 @@ def run(ctx):
         stage("отзывы от модели", lambda: enrich.reviews_signals(db, run_id, pages, scoring_weights()))
         stage("сайты от модели", lambda: enrich.site_ai_signals(db, run_id, pages, scoring_weights()))
         stage("инстаграм от модели", lambda: enrich.instagram_ai_signals(db, run_id, pages, scoring_weights()))
-        stage("профили от модели", lambda: fill_profiles(db, run_id))
         stage("досье", lambda: dossier.fill_dossiers(db, run_id))
         stage("скоринг", lambda: score.score_all(db, run_id, *ranking_config()))
         stage(f"публикация прогона {run_id}", lambda: publish(engine, db, run_id))
@@ -110,7 +109,7 @@ def run(ctx):
     return {"run_id": run_id}
 
 
-STAGE_COUNT = 12
+STAGE_COUNT = 11
 
 
 def stage_reporter(ctx, total):
@@ -145,54 +144,6 @@ def config():
 def scoring_weights():
     """Веса сигналов из config.toml: в коде их держать нельзя, они калибруются."""
     return config()["scoring"]["intent"]
-
-
-def fill_profiles(db, run_id):
-    """Профили от модели из state.llm_answers. Сети здесь нет: ответы уже оплачены.
-
-    Компания опознаётся по паре (название, город) из первых двух строк промпта —
-    company_id в него не входит, потому что нестабилен (`dom:` меняется на `2gis:`
-    при появлении домена), и его включение обесценило бы оплаченные ответы.
-    """
-    # Ключ — пара с городом, а не одно название: названия в базе не уникальны
-    # (Deloitte, Schneider Electric и ещё три пары стоят в двух городах), и по
-    # одному названию оплаченный профиль ложился бы той компании, что попалась
-    # обходу последней. Город уже есть второй строкой промпта, поэтому сам промпт
-    # не меняется и кэш ответов остаётся в силе.
-    companies = {
-        (name, city): company_id
-        for company_id, name, city in db.execute(
-            "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm), c.city"
-            " FROM companies_all c"
-            " LEFT JOIN company_links_all l ON l.company_id = c.company_id"
-            "   AND l.run_id = ? AND l.rule = 'self'"
-            " LEFT JOIN orgs_all o ON o.branch_id = l.branch_id AND o.run_id = ?"
-            " WHERE c.run_id = ?",
-            (run_id, run_id, run_id),
-        )
-    }
-    for answer in load_llm_answers(db, "company_profile"):
-        name, _, city = answer["subject"].partition(" | ")
-        company_id = companies.get((name, city))
-        if not company_id:
-            continue
-        profile = answer["profile"]
-        db.execute(
-            "INSERT OR REPLACE INTO profiles_all (run_id, company_id, model, industry,"
-            " size_hint, has_sales_team, why_now, quote, confidence)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                run_id,
-                company_id,
-                answer["model"],
-                profile.get("industry"),
-                profile.get("size_hint"),
-                profile.get("has_sales_team"),
-                profile.get("why_now"),
-                profile.get("quote"),
-                profile.get("confidence"),
-            ),
-        )
 
 
 def ranking_config():
