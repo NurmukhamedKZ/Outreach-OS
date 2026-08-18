@@ -11,3 +11,10 @@ dependencies = [
     # `uv run -m web` из writer/ проверял тот же код, что исполняется в вебе.
     "fastapi>=0.141.1",
 ]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
