@@ -241,6 +241,4 @@ export const SIGNAL_LABELS: Record<string, string> = {
   crm_widget: "CRM на сайте",
   inbound_widget: "Виджет входящих",
   service_catalog: "Каталог услуг с ценами",
-  vacancy_sales: "Ищет продажников",
-  vacancy_stale: "Вакансия висит давно",
 };

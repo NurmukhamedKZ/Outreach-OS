@@ -41,7 +41,7 @@ class BotCheck(RuntimeError):
 
     Это отказ, а не страница, и в raw/ ему места нет: имя файла — sha1(url), и
     заглушка навсегда заняла бы место настоящей страницы, которую больше никто
-    не запросит. Обнаружено на hh.kz при 40 запросах в секунду.
+    не запросит. Обнаружено на боевом сборе при 40 запросах в секунду.
     """
 
 
@@ -150,16 +150,16 @@ def demo():
     global RAW, JSONL_DIR
     with tempfile.TemporaryDirectory() as tmp:
         RAW = Path(tmp)
-        _, sidecar_path = _paths("https://hh.kz/vacancies/AI_engineer")
+        _, sidecar_path = _paths("https://2gis.kz/almaty/rubric/653/page/7")
         sidecar_path.write_text(
-            json.dumps({"url": "https://hh.kz/vacancies/AI_engineer",
-                        "final_url": "https://hh.kz/vacancies",
+            json.dumps({"url": "https://2gis.kz/almaty/rubric/653/page/7",
+                        "final_url": "https://2gis.kz/almaty/rubric/653",
                         "status": 200, "fetched_at": "2026-08-12T09:14:03Z"}),
             encoding="utf-8",
         )
-        assert final_url("https://hh.kz/vacancies/AI_engineer") == "https://hh.kz/vacancies", \
-            "сайдкар перестал отдавать конечный адрес — проверка подмены слепа"
-        assert final_url("https://hh.kz/vacancies/no_such_page") is None
+        assert final_url("https://2gis.kz/almaty/rubric/653/page/7") == "https://2gis.kz/almaty/rubric/653", \
+            "сайдкар перестал отдавать конечный адрес — проверка подмены страницы слепа"
+        assert final_url("https://2gis.kz/almaty/rubric/653/page/99") is None
 
         JSONL_DIR = Path(tmp)
         rows = [{"id": "a", "v": 1}, {"id": "b", "v": 2}]

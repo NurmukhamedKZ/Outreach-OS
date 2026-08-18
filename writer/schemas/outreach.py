@@ -29,7 +29,7 @@ class Draft(BaseModel):
         " шаблонов и без списков. Опирается на факт из данных о компании"
     ))
     angle: str = Field(description=(
-        "чем цепляем — тип сигнала из данных (vacancy_sales, ads_platform, ig_promo)"
+        "чем цепляем — тип сигнала из данных (crm_widget, ads_platform, ig_promo)"
         " или 'answer', если это ответ на реплику лида"
     ))
     stop: bool = Field(False, description=(

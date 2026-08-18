@@ -38,7 +38,7 @@ def check_leads():
     assert lead["channel_kind"] == "whatsapp", lead["channel_kind"]
     assert lead["seed"]["name"] == "Ромашка", lead["seed"]
     assert lead["seed"]["why_now"] == "ищет клиентов", lead["seed"]
-    assert [s["type"] for s in lead["seed"]["signals"]] == ["vacancy_sales"], lead["seed"]
+    assert [s["type"] for s in lead["seed"]["signals"]] == ["crm_widget"], lead["seed"]
 
     assert leads_source.is_suppressed(db, "+77010000002"), "отказ не виден по handle"
     assert not leads_source.is_suppressed(db, "+77010000001"), "лишний handle в отказах"
@@ -76,8 +76,8 @@ def synthetic_leads_db():
         db.execute("INSERT INTO profiles VALUES (?,?,?,?,?,?,?,?)",
                    (company_id, "модель", "бухгалтерия", None, None,
                     "ищет клиентов", "оставьте заявку", 0.8))
-        db.execute("INSERT INTO signals VALUES (?, 'vacancy_sales', '2026-08-01', 3.0, ?, ?)",
-                   (company_id, "нужен менеджер по продажам", "https://hh.kz/vacancy/1"))
+        db.execute("INSERT INTO signals VALUES (?, 'crm_widget', '2026-08-01', 3.0, ?, ?)",
+                   (company_id, "виджет Bitrix24", "https://romashka.kz/"))
 
     contacts = (
         ("b_c_ok", "whatsapp", "https://wa.me/77010000001?text=%D0%9F%D0%B8%D1%88%D1%83"),
@@ -101,13 +101,13 @@ def check_threads():
     следующий ход агента строился бы на сообщении, которого лид не получал.
     """
     db = thread_store.connect(":memory:")
-    seed = {"name": "Ромашка", "signals": [{"type": "vacancy_sales", "quote": "нужен продавец"}]}
+    seed = {"name": "Ромашка", "signals": [{"type": "crm_widget", "quote": "виджет Bitrix24"}]}
 
     assert thread_store.open_thread(db, "+77010000001", "c_ok", seed), "тред не открылся"
     assert not thread_store.open_thread(db, "+77010000001", "c_ok", seed), "тред открылся дважды"
     assert thread_store.thread(db, "+77010000001")["seed"] == seed, "seed не пережил запись"
 
-    message_id = thread_store.add_draft(db, "+77010000001", "Здравствуйте, ...", "vacancy_sales")
+    message_id = thread_store.add_draft(db, "+77010000001", "Здравствуйте, ...", "crm_widget")
     assert thread_store.history(db, "+77010000001") == [], \
         "неподтверждённый черновик попал в историю"
     assert thread_store.pending_draft(db, "+77010000001")["message_id"] == message_id
@@ -126,7 +126,7 @@ def check_threads():
     thread_store.add_incoming(db, "+77010000001", "а сколько это стоит?")
     roles = [m["role"] for m in thread_store.history(db, "+77010000001")]
     assert roles == ["outgoing", "incoming"], roles
-    assert thread_store.used_angles(db, "+77010000001") == ["vacancy_sales"], \
+    assert thread_store.used_angles(db, "+77010000001") == ["crm_widget"], \
         "угол отправленного сообщения потерян — follow-up повторит его"
     assert thread_store.silent_days(db, "+77010000001", thread_store.now()) == 0
     db.close()
@@ -140,9 +140,9 @@ def check_schema():
     на невалидном ответе, а инструкция в промпте была бы просьбой, которую
     модель нарушает ровно в тех случаях, ради которых написана система 2.
     """
-    good = Draft(text="Здравствуйте! Увидел вакансию менеджера по продажам...",
-                 angle="vacancy_sales", stop=False)
-    assert good.angle == "vacancy_sales"
+    good = Draft(text="Здравствуйте! Увидел на сайте виджет Bitrix24...",
+                 angle="crm_widget", stop=False)
+    assert good.angle == "crm_widget"
 
     for slop in ("Просто напоминаю о себе", "just checking in on this", "Поднимаю наверх"):
         try:
@@ -152,7 +152,7 @@ def check_schema():
         raise AssertionError(f"пустой follow-up прошёл схему: {slop!r}")
 
     try:
-        Draft(text="а" * (MAX_CHARS + 1), angle="vacancy_sales", stop=False)
+        Draft(text="а" * (MAX_CHARS + 1), angle="crm_widget", stop=False)
     except ValueError:
         pass
     else:
@@ -167,24 +167,24 @@ def check_prompt():
     seed = {
         "name": "Ромашка", "city": "almaty", "industry": "бухгалтерия",
         "why_now": "ищет клиентов", "quote": "оставьте заявку",
-        "signals": [{"type": "vacancy_sales", "quote": "нужен менеджер по продажам"},
+        "signals": [{"type": "crm_widget", "quote": "виджет Bitrix24"},
                     {"type": "ads_platform", "quote": "Google Ads"}],
     }
     history = [
-        {"role": "outgoing", "text": "Первое сообщение", "angle": "vacancy_sales"},
+        {"role": "outgoing", "text": "Первое сообщение", "angle": "crm_widget"},
         {"role": "incoming", "text": "а сколько это стоит?", "angle": None},
     ]
 
     text = agent.prompt(seed, history, agent.REPLY)
     assert "Ромашка" in text and "бухгалтерия" in text, "контекст лида не попал в промпт"
-    assert "нужен менеджер по продажам" in text, "цитата сигнала потеряна"
+    assert "виджет Bitrix24" in text, "цитата сигнала потеряна"
     assert "а сколько это стоит?" in text, "ответ лида не попал в промпт"
     assert agent.REPLY in text, "задача хода не попала в промпт"
 
     # Углы follow-up: использованный не предлагается второй раз, иначе «новый
     # повод» окажется тем же самым, только другими словами.
-    assert agent.unused_angles(seed, ["vacancy_sales"]) == ["ads_platform"]
-    assert agent.unused_angles(seed, ["vacancy_sales", "ads_platform"]) == []
+    assert agent.unused_angles(seed, ["crm_widget"]) == ["ads_platform"]
+    assert agent.unused_angles(seed, ["crm_widget", "ads_platform"]) == []
     assert "3" in agent.followup_task(3, ["ads_platform"]), "в follow-up не видно, сколько молчат"
 
     # Системная роль несёт оффер из конфига: без него модель напишет письмо про
