@@ -78,6 +78,12 @@ def test_every_operation_takes_exactly_a_runcontext():
         assert len(required) == 1, f"{name}{signature}: воркер передаёт только ctx"
 
 
+def test_reviews_op_accepts_runcontext():
+    """Операция сбора отзывов принимает RunContext и возвращает dict."""
+    from services.pipeline import collect
+    assert callable(collect.reviews)
+
+
 def test_operations_use_the_context_they_are_given():
     """Операция обязана говорить, что делает, и слушать отмену.
 

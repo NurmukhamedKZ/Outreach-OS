@@ -123,6 +123,43 @@ def sites(ctx):
     return {"domains": len(domains), "collected": collected, "skipped": skipped}
 
 
+REVIEWS_API = "https://public-api.reviews.2gis.com/2.0/branches/{branch_id}/reviews"
+
+
+def reviews(ctx):
+    """Отзывы филиалов 2GIS. Один запрос на филиал, свежие сверху.
+
+    Источник — публичный API отзывов, недокументированный: ключ живёт в
+    config.toml ([reviews].key). branch_id берётся из view текущего прогона
+    (склейка Ф5 уже свела филиалы к компаниям). Страницы ложатся в raw/ как
+    обычно — дедуп по ним же, повторный запуск не делает ни одного запроса.
+    """
+    from services import store as engine
+    config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    reviews_cfg = config["reviews"]
+    db = engine.connect()
+    try:
+        branches = [r[0] for r in db.execute(
+            "SELECT DISTINCT branch_id FROM orgs WHERE review_count > 0"
+            " ORDER BY branch_id")]
+    finally:
+        db.close()
+    if not branches:
+        ctx.log("филиалов с отзывами нет — собирать нечего")
+        return {"branches": 0, "collected": 0, "skipped": 0}
+    budget = Budget(None)
+    ctx.log(f"отзывы 2GIS: {len(branches)} филиалов с отзывами")
+
+    def fetch_reviews(budget, branch_id):
+        url = REVIEWS_API.format(branch_id=branch_id) + (
+            f"?limit={reviews_cfg['limit']}&sort_by=date_edited&rated=true"
+            f"&locale=ru_KZ&key={reviews_cfg['key']}")
+        budget.get(url, headers={"Accept": "application/json"})
+
+    collected, skipped = download_all(fetch_reviews, budget, branches, ctx, "отзывы 2GIS")
+    return {"branches": len(branches), "collected": collected, "skipped": skipped}
+
+
 def instagram(ctx):
     """Ленты аккаунтов компаний без сайта — сырьё для сигналов Ф6.
 
