@@ -20,6 +20,15 @@ def test_views_read_current_run(stores):
     assert db.execute("SELECT count(*) FROM current_run").fetchone()[0] == 1, \
         "current_run обязан держать ровно одну строку"
 
+def test_dossiers_view_exists(stores):
+    """Досье — вычислимая таблица прогона, видна через view текущего прогона."""
+    stores.execute("INSERT INTO dossiers_all (run_id, company_id, summary, approach, sources)"
+                   " VALUES (1, 'c', 's', 'a', '[]')")
+    stores.execute("INSERT INTO current_run (id, run_id) VALUES (1, 1)")
+    rows = stores.execute("SELECT * FROM dossiers").fetchall()
+    assert rows and rows[0]["company_id"] == "c"
+
+
 def test_views_match_schema_file(live_db):
     """Определения view в базе совпадают с store/schema.sql.
 

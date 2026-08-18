@@ -146,7 +146,7 @@ WRITE = re.compile(
 )
 DERIVED_TABLES = frozenset(
     "runs current_run fetches_all orgs_all contacts_all companies_all"
-    " company_links_all signals_all scores_all profiles_all".split()
+    " company_links_all signals_all scores_all profiles_all dossiers_all".split()
 )
 
 

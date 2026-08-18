@@ -147,6 +147,20 @@ CREATE TABLE IF NOT EXISTS profiles_all (
   PRIMARY KEY (run_id, company_id)
 );
 
+CREATE TABLE IF NOT EXISTS dossiers_all (
+  run_id         INTEGER NOT NULL,
+  company_id     TEXT NOT NULL,
+  model          TEXT,
+  summary        TEXT,
+  hooks          TEXT,   -- JSON
+  pains          TEXT,   -- JSON
+  approach       TEXT,
+  decision_maker TEXT,
+  sources        TEXT,   -- JSON
+  confidence     REAL,
+  PRIMARY KEY (run_id, company_id)
+);
+
 -- View текущего прогона. IF NOT EXISTS, а не DROP+CREATE: connect() зовётся на
 -- каждую запись лога и прогресса, и любой DDL внутри него забирал бы у derived
 -- блокировку записи ровно тогда, когда её держит идущая пересборка
@@ -169,4 +183,6 @@ CREATE VIEW IF NOT EXISTS scores AS
   SELECT s.* FROM scores_all s JOIN current_run USING (run_id);
 CREATE VIEW IF NOT EXISTS profiles AS
   SELECT p.* FROM profiles_all p JOIN current_run USING (run_id);
+CREATE VIEW IF NOT EXISTS dossiers AS
+  SELECT d.* FROM dossiers_all d JOIN current_run USING (run_id);
 -- END --
