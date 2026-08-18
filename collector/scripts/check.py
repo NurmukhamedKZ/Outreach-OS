@@ -639,7 +639,7 @@ def check_web():
     правил. Если она разъедется с report.py, оператор увидит в браузере лид,
     которого нет в выдаче, — а F19 и F21 не про формат вывода, а про закон.
     """
-    from db import lead as store
+    from store import lead as store
     from routes import leads as web_leads
     from services import suppression as refusals
 

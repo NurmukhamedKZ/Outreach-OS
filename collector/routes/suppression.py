@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from db import lead as store
+from store import lead as store
 from schemas.refusal import Refusal
 from services import suppression as service
 

@@ -10,7 +10,7 @@ import csv
 from datetime import date
 from pathlib import Path
 
-from db import lead as store
+from store import lead as store
 
 SUPPRESSION = Path("data/suppression.csv")
 

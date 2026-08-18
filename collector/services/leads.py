@@ -6,7 +6,7 @@
 """
 
 import report
-from db import lead as store
+from store import lead as store
 
 
 def pick(db, limit, city=None):

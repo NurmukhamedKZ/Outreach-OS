@@ -15,7 +15,7 @@ import tomllib
 from contextlib import closing
 from pathlib import Path
 
-from db import lead as store
+from store import lead as store
 from services import jobs
 from services import leads as leads_service
 

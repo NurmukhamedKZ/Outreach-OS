@@ -1,7 +1,7 @@
 import report
 from fastapi import APIRouter, HTTPException
 
-from db import lead as store
+from store import lead as store
 from services import leads as service
 
 router = APIRouter(prefix="/api/leads")

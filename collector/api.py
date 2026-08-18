@@ -23,7 +23,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import report
-from db import lead as store
+from store import lead as store
 from routes import events, jobs, leads, pipeline, stats, suppression
 from services import jobs as queue, suppression as refusals
 
@@ -74,7 +74,7 @@ def demo():
     import build
 
     db = sqlite3.connect(":memory:")
-    db.executescript(Path("db/schema.sql").read_text(encoding="utf-8"))
+    db.executescript(Path("store/schema.sql").read_text(encoding="utf-8"))
     build.fill_suppression(db)
     from_file = refusals.existing_handles() - {""}
     in_db = store.suppression_handles(db)
@@ -96,7 +96,7 @@ def check_refusal_reaches_both_stores():
     import tempfile
 
     db = sqlite3.connect(":memory:")
-    db.executescript(Path("db/schema.sql").read_text(encoding="utf-8"))
+    db.executescript(Path("store/schema.sql").read_text(encoding="utf-8"))
     with tempfile.TemporaryDirectory() as tmp:
         original, refusals.SUPPRESSION = refusals.SUPPRESSION, Path(tmp) / "suppression.csv"
         try:
