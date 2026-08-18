@@ -1,21 +1,17 @@
-"""Массовый сбор сырья. Единственный модуль проекта, который ходит в сеть.
+"""Массовый сбор сырья — операции воркера. Единственный, кто ходит в сеть.
 
-В базу не кладёт ничего: разбор raw/ -> leads.db делает build.py. Здесь только
-план запросов из config.toml, пул потоков поверх fetch.get и две проверки
+В базу не кладёт ничего: разбор raw/ -> derived.db делает rebuild. Здесь только
+план запросов из config.toml, пул потоков поверх fetch.get и проверки
 молчаливой подмены — единственное, что отделяет собранные данные от мусора.
 
 Учёта «что уже скачано» нет и не нужно: raw/ и есть учёт. Повторный запуск
 читает страницы с диска и не делает ни одного сетевого запроса.
 
-Запуск:
-  uv run -m scripts.collect                                      полный объём из config.toml
-  uv run -m scripts.collect --cities almaty --rubrics 5 --budget 600 --workers 4
+Операции принимают ровно один аргумент — RunContext (контракт воркера).
+Параметры (города, рубрики) берутся из config.toml.
 """
 
-import argparse
 import json
-import sqlite3
-import sys
 import time
 import tomllib
 from collections import Counter
@@ -28,7 +24,6 @@ from services import fetch
 from services import sources
 
 CONFIG = Path("config.toml")
-DB = Path("db/leads.db")
 
 RUBRIC_PAGE = "https://2gis.kz/{city}/rubric/{rubric}/page/{page}"
 FIRM_CARD = "https://2gis.kz/{city}/firm/{branch_id}"
@@ -71,49 +66,120 @@ class Substituted(RuntimeError):
     """Источник молча отдал не то, что запрошено. HTTP 200 тут ничего не значит."""
 
 
-def main():
-    args = parse_args()
-    plan = load_plan(args)
-    budget = Budget(args.budget)
-    started = time.time()
-    raw_before = raw_file_count()
-
-    if args.instagram:
-        collect_instagram(budget)
-    elif args.sites:
-        collect_sites(budget, args.workers)
-    else:
-        branches = collect_org_lists(budget, plan, args.workers)
-        collect_firm_cards(budget, branches, args.workers)
-
-    report(budget, raw_before, time.time() - started)
-
-
-# --- план -------------------------------------------------------------------
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cities", nargs="+", help="города; по умолчанию все из config.toml")
-    parser.add_argument("--rubrics", type=int, help="сколько первых рубрик взять")
-    parser.add_argument("--budget", type=int, help="потолок сетевых запросов")
-    parser.add_argument("--workers", type=int, default=MAX_WORKERS, help="потоков (максимум 8)")
-    parser.add_argument("--sites", action="store_true",
-                        help="только главные страницы сайтов компаний из leads.db")
-    parser.add_argument("--instagram", action="store_true",
-                        help="только ленты инстаграма компаний без сайта")
-    args = parser.parse_args()
-    args.workers = min(args.workers, MAX_WORKERS)
-    return args
-
-
-def load_plan(args):
-    """Города и рубрики: всё из config.toml, аргументы только урезают объём."""
+def gis(ctx):
+    """Рубрики и карточки филиалов из config.toml — две стадии одного прогона."""
     config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
-    return {
-        "cities": args.cities or config["cities"],
-        "rubrics": config["rubrics"]["include"][: args.rubrics],
-    }
+    budget = Budget(None)   # без потолка: дедуп по raw/
+    plan = {"cities": config["cities"], "rubrics": config["rubrics"]["include"]}
+
+    jobs = [(city, rubric) for city in plan["cities"] for rubric in plan["rubrics"]]
+    ctx.log(f"2GIS списки: {len(jobs)} рубрик×городов, до {PAGE_LIMIT} страниц каждая")
+
+    branches = set()
+    for number, (city, rubric), result, error in in_parallel(rubric_pages, budget, jobs):
+        ctx.check_cancelled()
+        if error:
+            ctx.log(f"  рубрика {rubric}/{city}: {type(error).__name__}: {error}")
+            continue
+        found, reason = result
+        branches |= set(found)
+        ctx.log(f"  рубрика {rubric}/{city}: {len(found)} организаций — {reason}")
+        ctx.progress(number, len(jobs), "рубрики 2GIS")
+    ctx.log(f"  итого организаций после дедупа: {len(branches)}")
+    sorted_branches = sorted(branches)
+
+    ctx.log(f"2GIS карточки: {len(sorted_branches)}")
+    collected, skipped = download_all(firm_card, budget, sorted_branches, ctx, "карточки 2GIS")
+    return {"lists": len(jobs), "branches": len(sorted_branches),
+            "cards_collected": collected, "cards_skipped": skipped}
+
+
+def sites(ctx):
+    """Главные страницы сайтов компаний — сырьё для сигналов Ф6.
+
+    Только главная, а не сайт целиком: CRM-виджет, рекламный пиксель, форма заявки
+    и кнопка WhatsApp живут на ней. Обход 30 страниц на сайт по ARCHITECTURE §8.1
+    стоил бы в пятнадцать раз дороже ради того же набора сигналов.
+
+    Домены берутся из view текущего прогона, поэтому шаг идёт вторым проходом.
+    Всё идемпотентно, порядок восстанавливается сам.
+    """
+    from services import store as engine
+    db = engine.connect()
+    try:
+        domains = [r[0] for r in db.execute(
+            "SELECT DISTINCT domain FROM companies WHERE domain IS NOT NULL"
+            " ORDER BY domain")]
+    finally:
+        db.close()
+    budget = Budget(None)   # без потолка: только главные страницы, дедуп по raw/
+    ctx.log(f"сайты компаний: {len(domains)}")
+    collected, skipped = download_all(site_page, budget, domains, ctx, "сайты компаний")
+    return {"domains": len(domains), "collected": collected, "skipped": skipped}
+
+
+def instagram(ctx):
+    """Ленты аккаунтов компаний без сайта — сырьё для сигналов Ф6.
+
+    Берётся лента, а не профиль: web_profile_info отвечает 400 на половине
+    аккаунтов и постов больше не отдаёт вовсе, тогда как лента ответила на всех
+    восемнадцати проверенных. Один запрос на компанию, второго нет.
+
+    В один поток и с паузой: сессия личная, и цена ошибки здесь — не потерянный
+    прогон, а заблокированный аккаунт живого человека.
+    """
+    from services import store as engine
+    db = engine.connect()
+    try:
+        rows = db.execute(
+            "SELECT DISTINCT c.handle FROM company_links l"
+            " JOIN contacts c ON c.branch_id = l.branch_id"
+            " JOIN companies co ON co.company_id = l.company_id"
+            " WHERE c.kind = 'instagram' AND co.domain IS NULL"
+            " ORDER BY c.handle"
+        ).fetchall()
+    finally:
+        db.close()
+    accounts = [sources.ig_username(row[0]) for row in rows]
+    if not IG_COOKIES.exists():
+        raise RuntimeError(f"нет {IG_COOKIES}: сначала uv run -m ig.login")
+    jar = json.loads(IG_COOKIES.read_text(encoding="utf-8"))
+
+    ctx.log(f"инстаграм: {len(accounts)} аккаунтов, по одному, пауза {IG_PAUSE_SECONDS} с")
+    budget = Budget(None)
+    done = failures = in_row = 0
+    canary = None
+    for number, username in enumerate(accounts, 1):
+        ctx.check_cancelled()
+        try:
+            instagram_feed(budget, jar, username)
+            done += 1
+            in_row = 0
+            canary = canary or username
+        except BudgetSpent as spent:
+            ctx.log(f"\n  {spent}")
+            break
+        except Exception as error:
+            failures += 1
+            in_row += 1
+            ctx.log(f"\n  {username}: {type(error).__name__}: {error}")
+            if in_row >= IG_FAILURES_IN_ROW and canary:
+                if instagram_session_alive(jar, canary):
+                    ctx.log(f"  (сессия жива — {canary} отвечает; это удалённые аккаунты)")
+                    in_row = 0
+                else:
+                    raise RuntimeError(
+                        f"ОТКАЗ: {in_row} отказа подряд, и контрольный аккаунт "
+                        f"{canary} тоже молчит — сессия инстаграма умерла.\n"
+                        f"Собрано {done} лент, они целы. Обнови куки: "
+                        "uv run -m ig.login, потом повтори — уже скачанное не перекачивается."
+                    )
+        ctx.progress(number, len(accounts), "ленты инстаграма")
+    ctx.log(f"  {done + failures}/{len(accounts)} обработано, лент {done}, отказов {failures}")
+    return {"accounts": len(accounts), "collected": done, "failed": failures}
+
+
+# --- бюджет ------------------------------------------------------------------
 
 
 class Budget:
@@ -136,23 +202,6 @@ class Budget:
 
 
 # --- 2GIS -------------------------------------------------------------------
-
-
-def collect_org_lists(budget, plan, workers):
-    """Страницы рубрик. Возвращает пары (branch_id, город) для карточек филиалов."""
-    jobs = [(city, rubric) for city in plan["cities"] for rubric in plan["rubrics"]]
-    print(f"2GIS списки: {len(jobs)} рубрик×городов, до {PAGE_LIMIT} страниц каждая")
-
-    branches = set()
-    for (city, rubric), result, error in in_parallel(rubric_pages, budget, jobs, workers):
-        if error:
-            print(f"  рубрика {rubric}/{city}: {type(error).__name__}: {error}")
-            continue
-        found, reason = result
-        branches |= set(found)
-        print(f"  рубрика {rubric}/{city}: {len(found)} организаций — {reason}")
-    print(f"  итого организаций после дедупа: {len(branches)}")
-    return sorted(branches)
 
 
 def rubric_pages(budget, job):
@@ -191,45 +240,12 @@ def branch_ids(state, city, rubric):
     return [(row["branch_id"], city) for row in sources.parse_org_list(state, city, rubric)]
 
 
-def collect_firm_cards(budget, branches, workers):
-    """Карточки филиалов: телефон, сайт, email, Instagram, WhatsApp. Разбор — в build.py."""
-    print(f"2GIS карточки: {len(branches)}")
-    download_all(firm_card, budget, branches, workers)
-
-
 def firm_card(budget, job):
     branch_id, city = job
     budget.get(FIRM_CARD.format(city=city, branch_id=branch_id), cookies=GIS_COOKIE)
 
 
 # --- сайты компаний ---------------------------------------------------------
-
-
-def collect_sites(budget, workers):
-    """Главные страницы сайтов компаний — сырьё для сигналов Ф6.
-
-    Только главная, а не сайт целиком: CRM-виджет, рекламный пиксель, форма заявки
-    и кнопка WhatsApp живут на ней. Обход 30 страниц на сайт по ARCHITECTURE §8.1
-    стоил бы в пятнадцать раз дороже ради того же набора сигналов.
-
-    Домены берутся из leads.db, поэтому шаг идёт вторым проходом: сначала обычный
-    сбор и build.py, потом сайты и build.py снова. Всё идемпотентно, порядок
-    восстанавливается сам.
-    """
-    domains = site_domains()
-    print(f"сайты компаний: {len(domains)}")
-    download_all(site_page, budget, domains, workers)
-
-
-def site_domains():
-    if not DB.exists():
-        sys.exit(f"нет {DB}: сначала uv run -m scripts.collect && uv run build.py")
-    db = sqlite3.connect(DB)
-    rows = db.execute(
-        "SELECT DISTINCT domain FROM companies WHERE domain IS NOT NULL ORDER BY domain"
-    ).fetchall()
-    db.close()
-    return [row[0] for row in rows]
 
 
 def site_page(budget, domain):
@@ -251,76 +267,9 @@ def site_page(budget, domain):
 # --- инстаграм --------------------------------------------------------------
 
 
-def collect_instagram(budget):
-    """Ленты аккаунтов компаний без сайта — сырьё для сигналов Ф6.
-
-    Берётся лента, а не профиль: web_profile_info отвечает 400 на половине
-    аккаунтов и постов больше не отдаёт вовсе, тогда как лента ответила на всех
-    восемнадцати проверенных. Один запрос на компанию, второго нет.
-
-    В один поток и с паузой: сессия личная, и цена ошибки здесь — не потерянный
-    прогон, а заблокированный аккаунт живого человека.
-    """
-    accounts = instagram_accounts()
-    print(f"инстаграм: {len(accounts)} аккаунтов, по одному, пауза {IG_PAUSE_SECONDS} с")
-    jar = instagram_cookies()
-
-    done = failures = in_row = 0
-    canary = None
-    for number, username in enumerate(accounts, 1):
-        try:
-            instagram_feed(budget, jar, username)
-            done += 1
-            in_row = 0
-            canary = canary or username
-        except BudgetSpent as spent:
-            # Не ошибка сбора, а штатная остановка: сырьё цело, повтор продолжит
-            # с того же места. Отчёт должен напечататься, поэтому выходим из цикла.
-            print(f"\n  {spent}")
-            break
-        except Exception as error:
-            failures += 1
-            in_row += 1
-            print(f"\n  {username}: {type(error).__name__}: {error}")
-            if in_row >= IG_FAILURES_IN_ROW and canary:
-                if instagram_session_alive(jar, canary):
-                    print(f"  (сессия жива — {canary} отвечает; это удалённые аккаунты)")
-                    in_row = 0
-                else:
-                    sys.exit(
-                        f"\nОТКАЗ: {in_row} отказа подряд, и контрольный аккаунт "
-                        f"{canary} тоже молчит — сессия инстаграма умерла.\n"
-                        f"Собрано {done} лент, они целы. Обнови куки: "
-                        "uv run -m ig.login, потом повтори — уже скачанное не перекачивается."
-                    )
-        print(f"  {number}/{len(accounts)}", end="\r", flush=True)
-    print(f"  {done + failures}/{len(accounts)} обработано, лент {done}, отказов {failures}")
-
-
-def instagram_accounts():
-    """Логины аккаунтов компаний, у которых нет сайта.
-
-    Именно они сегодня не дают ни одного сигнала: site_signals читает главную
-    страницу, а её нет. Компании с сайтом сигналы уже получают, и трогать их
-    ради тех же событий незачем.
-    """
-    if not DB.exists():
-        sys.exit(f"нет {DB}: сначала uv run -m scripts.collect && uv run build.py")
-    db = sqlite3.connect(DB)
-    rows = db.execute(
-        "SELECT DISTINCT c.handle FROM company_links l"
-        " JOIN contacts c ON c.branch_id = l.branch_id"
-        " JOIN companies co ON co.company_id = l.company_id"
-        " WHERE c.kind = 'instagram' AND co.domain IS NULL"
-        " ORDER BY c.handle"
-    ).fetchall()
-    db.close()
-    return [sources.ig_username(row[0]) for row in rows]
-
-
 def instagram_cookies():
     if not IG_COOKIES.exists():
-        sys.exit(f"нет {IG_COOKIES}: сначала uv run -m ig.login")
+        raise RuntimeError(f"нет {IG_COOKIES}: сначала uv run -m ig.login")
     return json.loads(IG_COOKIES.read_text(encoding="utf-8"))
 
 
@@ -368,56 +317,37 @@ def instagram_feed(budget, jar, username):
 # --- пул потоков ------------------------------------------------------------
 
 
-def in_parallel(worker, budget, jobs, workers):
+def in_parallel(worker, budget, jobs):
     """worker(budget, job) на каждое задание. Ошибка одного не роняет прогон.
 
-    Отдаёт (задание, результат, ошибка) по мере готовности. Печать — дело
+    Отдаёт (номер, задание, результат, ошибка) по мере готовности. Печать — дело
     вызывающего: в рабочих функциях print не появляется, они бегут в потоках.
     """
-    with ThreadPoolExecutor(workers) as pool:
+    with ThreadPoolExecutor(MAX_WORKERS) as pool:
         futures = {pool.submit(partial(worker, budget), job): job for job in jobs}
-        for future in as_completed(futures):
+        for number, future in enumerate(as_completed(futures), 1):
             try:
-                yield futures[future], future.result(), None
+                yield number, futures[future], future.result(), None
             except Exception as error:
-                yield futures[future], None, error
+                yield number, futures[future], None, error
 
 
-def download_all(worker, budget, jobs, workers):
+def download_all(worker, budget, jobs, ctx, label):
     """Скачать пачку однотипных страниц, показывая прогресс одной строкой.
 
     Ошибки сводятся по типу: при капче или исчерпанном потолке их сотни, и
     построчная печать закопала бы отчёт.
     """
     done, failures, example = 0, Counter(), {}
-    for job, _, error in in_parallel(worker, budget, jobs, workers):
+    for number, job, _, error in in_parallel(worker, budget, jobs):
+        ctx.check_cancelled()
         done += 1
         if error:
             kind = type(error).__name__
             failures[kind] += 1
             example.setdefault(kind, f"{job}: {error}")
-        print(f"  {done}/{len(jobs)}", end="\r", flush=True)
-    print(f"  {done}/{len(jobs)} готово, ошибок {sum(failures.values())}")
+        ctx.progress(number, len(jobs), label)
+    ctx.log(f"  {done}/{len(jobs)} готово, ошибок {sum(failures.values())}")
     for kind, count in failures.items():
-        print(f"    {kind} ×{count} — например {example[kind]}")
-
-
-# --- отчёт ------------------------------------------------------------------
-
-
-def report(budget, raw_before, elapsed):
-    raw_after = raw_file_count()
-    print(
-        f"\nсетевых запросов {budget.spent}"
-        + (f" из {budget.cap}" if budget.cap else "")
-        + f", файлов в raw/ было {raw_before}, стало {raw_after}"
-    )
-    print(f"за {elapsed / 60:.1f} мин. Дальше: uv run build.py && uv run -m scripts.check")
-
-
-def raw_file_count():
-    return len(list(fetch.RAW.iterdir())) if fetch.RAW.exists() else 0
-
-
-if __name__ == "__main__":
-    main()
+        ctx.log(f"    {kind} ×{count} — например {example[kind]}")
+    return done - sum(failures.values()), sum(failures.values())

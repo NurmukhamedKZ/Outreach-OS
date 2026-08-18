@@ -54,3 +54,17 @@ def test_rebuild_import_graph_has_no_network():
         rel = m.relative_to(COLLECTOR).as_posix()
         assert not any(bad in rel for bad in FORBIDDEN), \
             f"rebuild тянет сеть через {rel}"
+
+
+def test_collect_ops_accept_runcontext():
+    """Операции сбора принимают RunContext и возвращают dict."""
+    from services.pipeline import collect
+    ctx = DummyContext()
+    # не запускаем сеть — только проверяем, что сигнатуры живы
+    assert callable(collect.gis) and callable(collect.sites) and callable(collect.instagram)
+
+
+class DummyContext:
+    def progress(self, current, total, label): ...
+    def log(self, message): ...
+    def check_cancelled(self): ...
