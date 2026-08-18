@@ -96,6 +96,12 @@ def test_site_pages_op_accepts_runcontext():
     assert callable(collect.site_pages)
 
 
+def test_site_analyze_op_accepts_runcontext():
+    """Слой анализа сайта принимает RunContext."""
+    from services.pipeline import analyze
+    assert callable(analyze.site)
+
+
 def test_operations_use_the_context_they_are_given():
     """Операция обязана говорить, что делает, и слушать отмену.
 

@@ -192,6 +192,96 @@ def reviews_prompt(name, city, text):
     ])
 
 
+SITE_KIND = "site"
+SITE_SYSTEM = (
+    "Ты аналитик B2B-лидогенерации в Казахстане. По страницам сайта компании "
+    "определи, чем она занимается, на кого работает, какие есть доказательства "
+    "и где сайт не собирает заявки. Не выдумывай: quote в hiring обязана быть "
+    "дословной со страницы вакансий. Нет основания — null."
+)
+
+
+def site(ctx):
+    """Слой сайта: чем занимается, на кого работает, где не собирает заявки.
+
+    Один вызов на компанию с сайтом, ответы кэшируются kind="site". Компания
+    без собранного сайта пропускается — слой отзывов её всё равно покроет.
+    """
+    from schemas.site import SiteAnalysis
+    from services import store as engine
+    db = engine.connect()
+    try:
+        config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+        model = config["llm"]["model"]
+        targets = site_targets(db)
+        if not targets:
+            ctx.log("сайтов в raw/ нет — сначала сбор (collect.sites)")
+            return {"companies": 0, "new_calls": 0}
+        llm_model = llm.structured_model(model, SiteAnalysis)
+        ctx.log(f"сайты: {len(targets)} компаний, модель {model}")
+        spent = 0
+        for number, (company_id, name, city, pages_text) in enumerate(targets, 1):
+            ctx.check_cancelled()
+            prompt = site_prompt(name, city, pages_text)
+            subject = f"{name} | {city}"
+            if not llm.answered(db, SITE_KIND, subject, model, prompt):
+                answer = llm_model.invoke([("system", SITE_SYSTEM), ("human", prompt)])
+                llm.store_answer(db, SITE_KIND, subject, model, prompt,
+                                 {"analysis": answer.model_dump()})
+                spent += 1
+            ctx.progress(number, len(targets), "сайты")
+        ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
+        return {"companies": len(targets), "new_calls": spent}
+    finally:
+        db.close()
+
+
+def site_targets(db):
+    """(company_id, название, город, текст главной+внутренних) по компаниям с сайтом.
+
+    До max_pages внутренних страниц из config.toml; страницы читаются из raw/.
+    Компания без собранного сайта пропускается (слой отзывов её всё равно покроет).
+    """
+    from services.pipeline import rebuild
+    config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    links_cfg = config["site"]["links"]
+    by_url = {p["url"]: p for p in rebuild.load_pages()}
+    targets = []
+    for company_id, name, city, domain in db.execute(
+        "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm), c.city, c.domain"
+        " FROM companies c LEFT JOIN company_links l ON l.company_id = c.company_id"
+        "   AND l.rule = 'self' LEFT JOIN orgs o ON o.branch_id = l.branch_id"
+        " WHERE c.domain IS NOT NULL ORDER BY c.company_id").fetchall():
+        home = next((u for u in (f"https://{domain}/", f"http://{domain}/")
+                     if u in by_url), None)
+        if not home:
+            continue
+        html = rebuild.html_of(by_url[home])
+        inner = sources.parse_site_links(html, home, domain,
+                                         links_cfg["keywords"], links_cfg["max_pages"])
+        texts = [strip_html(html)]
+        for url in inner:
+            page = by_url.get(url)
+            if page:
+                texts.append(strip_html(rebuild.html_of(page)))
+        targets.append((company_id, name, city, "\n\n".join(texts)))
+    return targets
+
+
+def strip_html(html):
+    import re
+    html = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", html)
+    return " ".join(re.sub(r"(?s)<[^>]+>", " ", html).split())
+
+
+def site_prompt(name, city, text):
+    return "\n".join([
+        f"Компания: {name}",
+        f"Город: {city}",
+        "Страницы сайта:\n" + (text[:20000] or "(не собраны)"),
+    ])
+
+
 # --- данные ------------------------------------------------------------------
 
 
