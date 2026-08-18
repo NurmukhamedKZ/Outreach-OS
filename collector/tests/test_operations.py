@@ -114,6 +114,12 @@ def test_instagram_analyze_op_accepts_runcontext():
     assert callable(analyze.instagram)
 
 
+def test_dossier_analyze_op_accepts_runcontext():
+    """Слой синтеза досье принимает RunContext."""
+    from services.pipeline import analyze
+    assert callable(analyze.dossier)
+
+
 def test_operations_use_the_context_they_are_given():
     """Операция обязана говорить, что делает, и слушать отмену.
 

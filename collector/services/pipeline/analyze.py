@@ -383,6 +383,91 @@ def profiles_by_username(db):
     return out
 
 
+DOSSIER_KIND = "dossier"
+DOSSIER_SYSTEM = (
+    "Ты аналитик B2B-лидогенерации в Казахстане. Из извлечённых фактов о "
+    "компании собери досье для написания первого сообщения в WhatsApp. "
+    "hooks — 2-5 зацепок, по одной на ход переписки, каждая с ДОСЛОВНОЙ цитатой "
+    "и ссылкой из данных (не выдумывай). pains — от сильной к слабой, максимум 4; "
+    "пустой список законен. approach — позитивная инструкция, без запретов. "
+    "sources перечисляет ровно те слои, что участвовали (reviews/site/instagram)."
+)
+
+
+def dossier(ctx):
+    """Синтез досье: из извлечённых слоями фактов — контракт для системы 2.
+
+    Единственный слой, запускаемый для каждой компании, включая тех, у кого нет
+    ни сайта, ни Instagram: у них досье строится из отзывов и карточки 2GIS.
+    Полного нуля не остаётся ни у кого. Ответы кэшируются kind="dossier".
+    """
+    from schemas.dossier import Dossier
+    from services import store as engine
+    db = engine.connect()
+    try:
+        config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+        model = config["llm"]["model"]
+        targets = dossier_targets(db)
+        if not targets:
+            ctx.log("компаний в базе нет — сначала сбор и пересборка")
+            return {"companies": 0, "new_calls": 0}
+        llm_model = llm.structured_model(model, Dossier)
+        ctx.log(f"досье: {len(targets)} компаний, модель {model}")
+        spent = 0
+        for number, (company_id, name, city, facts) in enumerate(targets, 1):
+            ctx.check_cancelled()
+            prompt = dossier_prompt(name, city, facts)
+            subject = f"{name} | {city}"
+            if not llm.answered(db, DOSSIER_KIND, subject, model, prompt):
+                answer = llm_model.invoke([("system", DOSSIER_SYSTEM), ("human", prompt)])
+                llm.store_answer(db, DOSSIER_KIND, subject, model, prompt,
+                                 {"dossier": answer.model_dump()})
+                spent += 1
+            ctx.progress(number, len(targets), "досье")
+        ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
+        return {"companies": len(targets), "new_calls": spent}
+    finally:
+        db.close()
+
+
+def dossier_targets(db):
+    """(company_id, название, город, факты) для каждой компании.
+
+    Факты — извлечённые слоями результаты (reviews/site/instagram) плюс рубрика,
+    город, рейтинг, контакты из карточки 2GIS. Ни одной сырой страницы — промпт
+    маленький. Компания без сайта и Instagram всё равно получает досье из отзывов.
+    """
+    from services.pipeline import rebuild
+    answers = {}
+    for kind in ("reviews", "site", "instagram"):
+        answers[kind] = {}
+        for a in rebuild.load_llm_answers(db, kind):
+            answers[kind][a["subject"]] = a.get("analysis") or a.get("dossier") or {}
+    out = []
+    for company_id, name, city, rubric, rating, contacts in db.execute(
+        "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm), c.city,"
+        "       c.rubric_id, o.rating, c.domain"
+        " FROM companies c LEFT JOIN company_links l ON l.company_id = c.company_id"
+        "   AND l.rule = 'self' LEFT JOIN orgs o ON o.branch_id = l.branch_id"
+        " ORDER BY c.company_id").fetchall():
+        subject = f"{name} | {city}"
+        facts = []
+        for kind, label in (("reviews", "Отзывы"), ("site", "Сайт"), ("instagram", "Instagram")):
+            if subject in answers[kind]:
+                facts.append(f"{label}: {answers[kind][subject]}")
+        facts.append(f"Рубрика: {rubric}; рейтинг: {rating}; сайт: {contacts or 'нет'}")
+        out.append((company_id, name, city, "\n\n".join(facts)))
+    return out
+
+
+def dossier_prompt(name, city, facts):
+    return "\n".join([
+        f"Компания: {name}",
+        f"Город: {city}",
+        "Извлечённые факты:\n" + (facts or "(данных нет)"),
+    ])
+
+
 # --- данные ------------------------------------------------------------------
 
 
