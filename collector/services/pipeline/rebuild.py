@@ -12,6 +12,7 @@ import tomllib
 from pathlib import Path
 
 from services import enrich, resolve, score, sources, storage
+from services.pipeline import dossier
 
 CONFIG = Path("config.toml")
 
@@ -101,6 +102,7 @@ def run(ctx):
         stage("сайты от модели", lambda: enrich.site_ai_signals(db, run_id, pages, scoring_weights()))
         stage("инстаграм от модели", lambda: enrich.instagram_ai_signals(db, run_id, pages, scoring_weights()))
         stage("профили от модели", lambda: fill_profiles(db, run_id))
+        stage("досье", lambda: dossier.fill_dossiers(db, run_id))
         stage("скоринг", lambda: score.score_all(db, run_id, *ranking_config()))
         stage(f"публикация прогона {run_id}", lambda: publish(engine, db, run_id))
     finally:
@@ -108,7 +110,7 @@ def run(ctx):
     return {"run_id": run_id}
 
 
-STAGE_COUNT = 11
+STAGE_COUNT = 12
 
 
 def stage_reporter(ctx, total):
