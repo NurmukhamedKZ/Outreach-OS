@@ -3,7 +3,7 @@
 Требует собранной data/derived.db — на чистом клоне раздел пропускается.
 """
 
-SITE_TYPES = {"ads_platform", "crm_widget", "inbound_widget", "service_catalog"}
+SITE_TYPES = {"ads_platform", "crm_widget", "inbound_widget"}
 
 
 def test_signals_are_dated_and_grounded(live_db):
@@ -93,6 +93,7 @@ def test_review_signal_types_have_weights(live_db):
     weights = cfg["scoring"]["intent"]
     for t in REVIEW_TYPES:
         assert t in weights, f"нет веса для {t} — сигнал не наберёт цену"
+    assert "service_catalog" not in weights, "service_catalog должен быть удалён"
 
 
 def test_reviews_missed_lead_picks_newest_one():
@@ -187,6 +188,15 @@ def test_reach_trend_skips_short_feeds():
     enrich.reach_declining(db, 1, "c", posts, {"ig_reach_declining": 3.0}, "2026-08-09T00:00:00Z")
     rows = db.execute("SELECT count(*) FROM signals_all WHERE company_id='c'").fetchone()[0]
     assert rows == 0, "короткая лента дала тренд"
+
+
+def test_old_ig_llm_signals_retired(live_db):
+    """ig_promo/ig_hiring_sales/ig_direct_selling — слой их больше не читает,
+    даже если в state.llm_answers остались исторические ответы kind='ig_signals'."""
+    db = live_db
+    families = {row[0] for row in db.execute("SELECT DISTINCT type FROM signals")}
+    retired = {"ig_promo", "ig_hiring_sales", "ig_direct_selling"}
+    assert not (families & retired), f"старый LLM-слой инстаграма всё ещё пишет: {families & retired}"
 
 
 def _memory_db():

@@ -35,7 +35,6 @@ SITE_MARKERS = [
     ("inbound_widget", r"jivo|talk-me|verbox|carrotquest|chat2desk", "виджет чата"),
     ("inbound_widget", r"wa\.me/|api\.whatsapp\.com|whatsapp://", "кнопка WhatsApp"),
     ("inbound_widget", r"<form[^>]*>(?:(?!</form>).)*?(?:заявк|заказать|обратн)", "форма заявки"),
-    ("service_catalog", r"прайс[- ]?лист|наши услуги|стоимость услуг", "прайс или каталог услуг"),
 ]
 
 IG_FEED_MARK = "feed/user/"
@@ -304,12 +303,9 @@ def reach_declining(db, run_id, company_id, posts, weights, horizon):
 
 
 def instagram_signals(db, run_id, pages, weights):
-    """Сигналы ленты: смысл подписей от модели, даты и темп — арифметикой здесь.
-
-    Находка модели привязывается к посту ПО ЦИТАТЕ, а не по номеру: номер модель
-    иногда сдвигает, а цитата обязана быть дословной. Поиск подписи, содержащей
-    цитату, — он же и проверка: не нашлась дословно, значит модель её испортила,
-    и в signals такой находке не место.
+    """Сигналы ленты: даты и темп — арифметикой. Смысл подписей больше не
+    спрашивается отдельной моделью (§4 v3, kind="ig_signals" retired) — эту
+    роль теперь играет слой instagram_ai_signals (Task 18), kind="instagram".
     """
     feeds = feeds_by_username(pages)
     companies = companies_by_username(db, run_id)
@@ -322,50 +318,6 @@ def instagram_signals(db, run_id, pages, weights):
             continue
         account = {"company_id": company_id, "username": username, "posts": posts}
         posting_rhythm_signals(db, run_id, account, weights, horizon)
-
-    for answer in ig_answers(db):
-        username = answer["subject"]   # логин: его же кладёт rebuild.subject_of
-        company_id = companies.get(username)
-        posts = feeds.get(username)
-        if not company_id or not posts:
-            continue
-        for signal_type, post, quote in newest_per_type(posts, answer["signals"]):
-            db.execute(
-                "INSERT INTO signals_all (run_id, company_id, type, observed_at, weight, quote, url)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    run_id,
-                    company_id,
-                    signal_type,
-                    post["taken_at"],
-                    weights.get(signal_type, 1.0),
-                    quote,
-                    post["url"],
-                ),
-            )
-
-
-def newest_per_type(posts, findings):
-    """По одному сигналу на тип — от самого свежего поста, где он найден.
-
-    Малый бизнес вставляет один и тот же призыв во все посты подряд: «пиши в
-    ватсап слово "доставка"» встретилось в девяти постах одного аккаунта. Это
-    один факт о компании, а не девять событий, и девятикратный вес за него —
-    то же удвоение, от которого site_signals защищается своим seen.
-
-    Дата берётся у свежего поста: важно, зовёт ли компания в директ сейчас, а не
-    звала ли когда-нибудь.
-    """
-    best = {}
-    for finding in findings:
-        post = post_with_quote(posts, finding["quote"])
-        if not post:
-            continue
-        signal_type = f"ig_{finding['type']}"
-        current = best.get(signal_type)
-        if not current or post["taken_at"] > current[0]["taken_at"]:
-            best[signal_type] = (post, finding["quote"])
-    return [(signal_type, post, quote) for signal_type, (post, quote) in sorted(best.items())]
 
 
 def posting_rhythm_signals(db, run_id, account, weights, horizon):
@@ -410,20 +362,6 @@ def posting_rhythm_signals(db, run_id, account, weights, horizon):
     )
 
 
-def post_with_quote(posts, quote):
-    """Самый свежий пост, в подписи которого цитата стоит дословно.
-
-    Свежий, а не первый попавшийся: шаблонный призыв повторяется в десятке постов,
-    и «первый» означал бы случайный из них — вместе с его случайной датой, по
-    которой потом считается затухание.
-
-    Нет такого поста — значит модель фразу выдумала или исказила, и находке в
-    signals не место.
-    """
-    found = [post for post in posts if quote and quote in post["caption"]]
-    return max(found, key=lambda post: post["taken_at"]) if found else None
-
-
 # --- сырьё -------------------------------------------------------------------
 
 
@@ -459,12 +397,6 @@ def companies_by_username(db, run_id):
     ):
         owners.setdefault(sources.ig_username(handle), set()).add(company_id)
     return {name: next(iter(ids)) for name, ids in owners.items() if len(ids) == 1}
-
-
-def ig_answers(db):
-    from services.pipeline import rebuild   # локально: rebuild импортирует enrich
-
-    return rebuild.load_llm_answers(db, "ig_signals")
 
 
 def days_between(observed_at, horizon):

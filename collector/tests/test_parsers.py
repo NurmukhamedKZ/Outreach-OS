@@ -116,7 +116,6 @@ def test_ig_parsing():
         "кириллица побита разбором JSON внутри <html><body>"
 
     test_ig_empty_caption_is_not_none()
-    test_ig_quote_binding(posts)
 
 
 def test_site_links_parsing():
@@ -169,23 +168,6 @@ def test_ig_profile_parsing():
     assert profile.get("follower_count") == 80, profile.get("follower_count")
     assert profile.get("full_name"), "full_name потерян"
     assert profile.get("is_private") is False, "эталонный аккаунт открытый"
-
-
-def test_ig_quote_binding(posts=None):
-    """Находка модели привязывается к посту по цитате, а не по её номеру.
-
-    Номер модель иногда сдвигает — в живом прогоне пришёл 0 при нумерации с
-    единицы. Цитата же обязана быть дословной, и её отсутствие в подписи значит,
-    что модель фразу испортила: такой находке в signals не место.
-    """
-    posts = posts or sources.parse_ig_feed(fixture_html("ig_feed"))["posts"]
-    real = next(p for p in posts if len(p["caption"]) > 40)
-    fragment = real["caption"][10:40]
-    bound = enrich.post_with_quote(posts, fragment)
-    assert bound and fragment in bound["caption"], "цитата не нашла свой пост"
-    assert enrich.post_with_quote(posts, "такой фразы в ленте нет") is None, \
-        "выдуманная цитата привязалась к посту — проверка дословности не работает"
-    assert enrich.post_with_quote(posts, "") is None, "пустая цитата привязалась к посту"
 
 
 def test_reviews_parsing():
