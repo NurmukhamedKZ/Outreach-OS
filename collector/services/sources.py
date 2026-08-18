@@ -230,3 +230,40 @@ def parse_site_links(html, base_url, domain, keywords, max_pages):
         if len(found) == max_pages:
             break
     return found
+
+
+def parse_ig_comments(body, media_pk):
+    """Комментарии поста media/{pk}/comments/.
+
+    Нужны, чтобы найти questions: публичный вопрос клиента без ответа компании.
+    Ответ API — JSON в <html><body>, режется json_body().
+    """
+    data = json.loads(json_body(body))
+    out = []
+    for item in data.get("comments") or []:
+        user = item.get("user") or {}
+        out.append({
+            "pk": item.get("pk"),
+            "media_pk": media_pk,
+            "user": user.get("username") or user.get("full_name"),
+            "text": (item.get("text") or "").strip(),
+            "created_at": item.get("created_at"),
+        })
+    return out
+
+
+def parse_ig_profile(body):
+    """Профиль users/{pk}/info/. Полнота не гарантируется: web_profile_info
+    отвечает 400 примерно на половине аккаунтов. feed/user biography не отдаёт,
+    поэтому био берётся отдельным запросом. Числовой pk — из ответа ленты."""
+    data = json.loads(json_body(body))
+    user = data.get("user") or {}
+    return {
+        "pk": user.get("pk"),
+        "username": user.get("username"),
+        "full_name": user.get("full_name"),
+        "biography": user.get("biography"),
+        "follower_count": user.get("follower_count"),
+        "category": user.get("category") or user.get("account_category"),
+        "is_private": bool(user.get("is_private")),
+    }

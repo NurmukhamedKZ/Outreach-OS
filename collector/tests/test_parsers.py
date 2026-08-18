@@ -148,6 +148,29 @@ def test_site_links_reject_foreign_domains():
     assert links == ["https://example.kz/services/"], links
 
 
+def test_ig_comments_parsing():
+    """Комментарии поста: текст, автор, дата. Эталон — фикстура ig_comments."""
+    body = fixture_html("ig_comments")
+    comments = sources.parse_ig_comments(body, "3893169020368624962")
+    assert isinstance(comments, list)
+    assert comments, "ни одного комментария в эталоне"
+    assert all(c["media_pk"] == "3893169020368624962" for c in comments), "чужой media_pk"
+    assert all(c["text"] for c in comments), "комментарий без текста"
+    assert all(c["user"] for c in comments), "комментарий без автора"
+    assert all(c["created_at"] for c in comments), "комментарий без даты"
+
+
+def test_ig_profile_parsing():
+    """Профиль users/{pk}/info/: био, подписчики, имя, приватность."""
+    profile = sources.parse_ig_profile(fixture_html("ig_profile"))
+    assert profile["username"] == "fulfillment_erbosco", profile["username"]
+    assert isinstance(profile.get("biography"), str) and profile["biography"], \
+        "био потеряно или не строка"
+    assert profile.get("follower_count") == 80, profile.get("follower_count")
+    assert profile.get("full_name"), "full_name потерян"
+    assert profile.get("is_private") is False, "эталонный аккаунт открытый"
+
+
 def test_ig_quote_binding(posts=None):
     """Находка модели привязывается к посту по цитате, а не по её номеру.
 
