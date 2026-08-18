@@ -24,9 +24,12 @@ OPERATIONS = {
 }
 
 PIPELINES = {
-    "discover": {"title": "Поиск новых лидов", "steps": ("collect.gis", "collect.sites",
-                 "collect.instagram", "rebuild", "export")},
-    "classify": {"title": "Анализ и досье", "steps": ("analyze.reviews", "analyze.site",
-                 "analyze.instagram", "analyze.dossier", "rebuild", "export")},
+    "discover": {"title": "Поиск новых лидов", "steps": (
+        "collect.gis", "collect.sites", "collect.site_pages", "collect.reviews",
+        "collect.instagram", "collect.ig_comments", "collect.ig_profile",
+        "rebuild", "export")},
+    "classify": {"title": "Анализ и досье", "steps": (
+        "analyze.reviews", "analyze.site", "analyze.instagram", "analyze.dossier",
+        "rebuild", "export")},
     "rebuild": {"title": "Пересборка из сырья", "steps": ("rebuild", "export")},
 }
