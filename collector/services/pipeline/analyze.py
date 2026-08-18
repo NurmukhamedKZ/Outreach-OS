@@ -1,28 +1,23 @@
-"""Анализ: один вызов модели на компанию/аккаунт. Ответы кэшируются в state.llm_answers.
+"""Анализ: послойные вызовы модели, ответы кэшируются в state.llm_answers.
 
 Сеть здесь есть (в отличие от rebuild): платится за компанию/аккаунт, увиденные
 впервые. Ответ сохраняется в невосстановимую state.llm_answers, поэтому
-пересборка остаётся чистой функцией от сырья и не стоит ни цента.
+пересборка остаётся чистой функцией от сырья и не стоит ни цента. Общие
+хелперы структурированного вывода и кэша — в services.pipeline.llm.
 """
 
-import json
-import os
 import sys
 import tomllib
 from pathlib import Path
 
-from langchain_openrouter import ChatOpenRouter
-
-from services import sources, storage
-from services.pipeline import rebuild
+from services import sources
+from services.pipeline import llm, rebuild
 
 CONFIG = Path("config.toml")
 
 ANSWER_KIND = "company_profile"
 IG_ANSWER_KIND = "ig_signals"
-MAX_RETRIES = 2
 CAPTION_CHARS = 700
-REASONING = {"enabled": False}
 
 SYSTEM = (
     "Ты аналитик B2B-лидогенерации в Казахстане. По данным о компании определи, "
@@ -52,17 +47,17 @@ def profile(ctx):
         config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))["llm"]
         companies = top_companies(db, config["top_n"])
         site_text = site_texts(db, [c["company_id"] for c in companies])
-        llm = structured_model(config["model"], CompanyProfile)
+        llm_model = llm.structured_model(config["model"], CompanyProfile)
         ctx.log(f"профили: {len(companies)} компаний, модель {config['model']}")
         spent = 0
         for number, company in enumerate(companies, 1):
             ctx.check_cancelled()
             prompt = build_prompt(company, site_text.get(company["company_id"], ""), config)
             subject = f"{company['name']} | {company['city']}"   # строка, не кортеж
-            if not answered(db, ANSWER_KIND, subject, config["model"], prompt):
-                answer = llm.invoke([("system", SYSTEM), ("human", prompt)])
-                store_answer(db, ANSWER_KIND, subject, config["model"], prompt,
-                             {"profile": answer.model_dump()})
+            if not llm.answered(db, ANSWER_KIND, subject, config["model"], prompt):
+                answer = llm_model.invoke([("system", SYSTEM), ("human", prompt)])
+                llm.store_answer(db, ANSWER_KIND, subject, config["model"], prompt,
+                                 {"profile": answer.model_dump()})
                 spent += 1
                 ctx.log(f"  {subject}: спросили модель")
             ctx.progress(number, len(companies), "профили")
@@ -82,18 +77,18 @@ def ig_signals(ctx):
         if not accounts:
             ctx.log("лент в raw/ нет — сначала сбор (collect.instagram)")
             return {"accounts": 0, "new_calls": 0, "failed": 0}
-        llm = structured_model(config["model"], IgSignals)
+        llm_model = llm.structured_model(config["model"], IgSignals)
         ctx.log(f"подписи инстаграма: {len(accounts)} аккаунтов, модель {config['model']}")
         spent = failed = 0
         for number, (username, posts) in enumerate(accounts, 1):
             ctx.check_cancelled()
             prompt = ig_prompt(username, posts)
             subject = username
-            if not answered(db, IG_ANSWER_KIND, subject, config["model"], prompt):
+            if not llm.answered(db, IG_ANSWER_KIND, subject, config["model"], prompt):
                 try:
-                    answer = llm.invoke([("system", IG_SYSTEM), ("human", prompt)])
-                    store_answer(db, IG_ANSWER_KIND, subject, config["model"], prompt,
-                                 {"signals": answer.model_dump()["signals"]})
+                    answer = llm_model.invoke([("system", IG_SYSTEM), ("human", prompt)])
+                    llm.store_answer(db, IG_ANSWER_KIND, subject, config["model"], prompt,
+                                     {"signals": answer.model_dump()["signals"]})
                     spent += 1
                 except Exception as error:
                     # Отказ модели на одном аккаунте — не повод терять прогон:
@@ -107,44 +102,94 @@ def ig_signals(ctx):
         db.close()
 
 
-def store_answer(db, kind, subject, model, prompt, answer):
-    """Ответ кладётся в state.llm_answers вместе с запросом: через месяц промпт
-    будет другим, и без запроса нельзя понять, на что модель отвечала."""
-    db.execute(
-        "INSERT INTO state.llm_answers (kind, subject, model, prompt, answer)"
-        " VALUES (?, ?, ?, ?, ?)",
-        (kind, subject, model, prompt, json.dumps(answer, ensure_ascii=False)),
-    )
-    db.commit()
+REVIEWS_KIND = "reviews"
+REVIEWS_SYSTEM = (
+    "Ты аналитик B2B-лидогенерации в Казахстане. По отзывам на компанию найди, "
+    "где клиенты сами говорят о боли, которую решает исходящий лидоген. "
+    "Типы «не дозвонились» и «не ответили на заявку» — это сказанное клиентом "
+    "вслух «у нас утекают лиды». Не выдумывай: quote обязана быть дословной "
+    "фразой из отзыва, date — датой из того же отзыва. Не нашёл жалоб — пустой список."
+)
 
 
-def answered(db, kind, subject, model, prompt):
-    """Есть ли уже оплаченный ответ на этот запрос — в базе или файлом в raw/.
+def reviews(ctx):
+    """Слой отзывов: жалобы и отзывчивость компании по отзывам 2GIS.
 
-    Спрашиваются оба хранилища, потому что оба читает пересборка
-    (rebuild.load_llm_answers). Проверять только базу значило бы платить второй
-    раз за ответы, оставшиеся файлами; проверять только файлы — не видеть
-    ничего, что записал analyze после переезда.
+    Один вызов на компанию, ответы кэшируются kind="reviews" в state.llm_answers.
+    Компания с филиалами, у которых отзывов нет, пропускается — её досье потом
+    соберётся из других слоёв или только из карточки.
     """
-    hit = db.execute(
-        "SELECT 1 FROM state.llm_answers WHERE kind = ? AND subject = ?"
-        " AND model = ? AND prompt = ? LIMIT 1",
-        (kind, subject, model, prompt),
-    ).fetchone()
-    return bool(hit) or storage.has_llm_answer(model, prompt)
+    from schemas.reviews import ReviewsAnalysis
+    from services import store as engine
+    db = engine.connect()
+    try:
+        config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+        model = config["llm"]["model"]
+        max_reviews = config["reviews"]["max_reviews_per_company"]
+        targets = review_targets(db, max_reviews)
+        if not targets:
+            ctx.log("отзывов в raw/ нет — сначала сбор (collect.reviews)")
+            return {"companies": 0, "new_calls": 0}
+        llm_model = llm.structured_model(model, ReviewsAnalysis)
+        ctx.log(f"отзывы: {len(targets)} компаний, модель {model}")
+        spent = 0
+        for number, (company_id, name, city, text) in enumerate(targets, 1):
+            ctx.check_cancelled()
+            prompt = reviews_prompt(name, city, text)
+            subject = f"{name} | {city}"
+            if not llm.answered(db, REVIEWS_KIND, subject, model, prompt):
+                answer = llm_model.invoke([("system", REVIEWS_SYSTEM), ("human", prompt)])
+                llm.store_answer(db, REVIEWS_KIND, subject, model, prompt,
+                                 {"analysis": answer.model_dump()})
+                spent += 1
+            ctx.progress(number, len(targets), "отзывы")
+        ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
+        return {"companies": len(targets), "new_calls": spent}
+    finally:
+        db.close()
 
 
-def structured_model(model, schema):
-    """Модель с валидацией схемы: разбор ответа и повторы при невалидной схеме —
-    на стороне LangChain. Схема параметром: у profile и ig_signals она разная."""
-    if not os.environ.get("OPENROUTER_API_KEY"):
-        raise RuntimeError(
-            "OPENROUTER_API_KEY пуст. Поднять бэкенд: "
-            "uv run --env-file .env uvicorn api:app --port 8787"
+def review_targets(db, max_reviews):
+    """(company_id, название, город, текст до max_reviews отзывов) по компаниям.
+
+    Отзывы филиалов компании собираются из raw/ (слой сырья), текст склеивается.
+    Компания с филиалами, у которых отзывов нет, в выборку не попадает.
+    """
+    from services.pipeline import rebuild
+    pages = {p["url"]: p for p in rebuild.load_pages()}
+    reviews_by_branch = {}
+    for page in pages.values():
+        if "reviews.2gis.com" not in page["url"]:
+            continue
+        branch = page["url"].split("/branches/", 1)[1].split("/", 1)[0]
+        reviews_by_branch[branch] = sources.parse_reviews(rebuild.html_of(page), branch)
+
+    rows = db.execute(
+        "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm), c.city,"
+        "       l.branch_id"
+        " FROM companies c JOIN company_links l ON l.company_id = c.company_id"
+        "   AND l.rule = 'self' JOIN orgs o ON o.branch_id = l.branch_id"
+        " ORDER BY c.company_id").fetchall()
+    targets = []
+    for company_id, name, city, branch_id in rows:
+        revs = reviews_by_branch.get(branch_id) or []
+        if not revs:
+            continue
+        text = "\n".join(
+            f"[{r['rating']}] {r['text']}" + (" [ОТВЕТИЛИ]" if r["official_answer"] else "")
+            for r in revs[:max_reviews]
         )
-    return ChatOpenRouter(
-        model=model, temperature=0, max_retries=MAX_RETRIES, reasoning=REASONING,
-    ).with_structured_output(schema, method="json_schema")
+        targets.append((company_id, name, city, text))
+    return targets
+
+
+def reviews_prompt(name, city, text):
+    return "\n".join([
+        f"Компания: {name}",
+        f"Город: {city}",
+        "Отзывы (дословно, с рейтингом; [ОТВЕТИЛИ] — компания ответила):",
+        text or "(отзывов нет)",
+    ])
 
 
 # --- данные ------------------------------------------------------------------
