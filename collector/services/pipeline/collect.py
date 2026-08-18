@@ -260,6 +260,106 @@ def instagram(ctx):
     return {"accounts": len(accounts), "collected": done, "failed": failures}
 
 
+def ig_comments(ctx):
+    """Комментарии постов с comment_count > 0. Основная защита от бана.
+
+    Правило «только посты с комментариями» вычёркивает половину запросов.
+    В один поток с паузой, как ленты: сессия личная, цена бана — аккаунт человека.
+    """
+    config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    media_url = config["instagram"]["comments_media_url"]
+    jar = instagram_cookies()
+    posts = posts_with_comments()
+    if not posts:
+        ctx.log("постов с комментариями в raw/ нет — сначала сбор (collect.instagram)")
+        return {"posts": 0, "collected": 0, "failed": 0}
+    ctx.log(f"инстаграм: комментарии к {len(posts)} постам")
+    budget = Budget(None)
+    done = failed = 0
+    for number, (pk, username) in enumerate(posts, 1):
+        ctx.check_cancelled()
+        url = media_url.format(pk=pk)
+        try:
+            budget.get(url, cookies=jar,
+                       headers={"x-ig-app-id": IG_APP_ID,
+                                "referer": f"https://www.instagram.com/{username}/"})
+            done += 1
+            time.sleep(IG_PAUSE_SECONDS)
+        except Exception as error:
+            failed += 1
+            ctx.log(f"\n  {pk}: {type(error).__name__}: {error}")
+        ctx.progress(number, len(posts), "комментарии инстаграма")
+    return {"posts": len(posts), "collected": done, "failed": failed}
+
+
+def ig_profile(ctx):
+    """Профили аккаунтов users/{pk}/info/. Полнота не гарантируется: часть откажет.
+
+    Эндпоинт требует числового pk пользователя, а не логина: карта username->pk
+    собирается из ответов лент (feed/user отдаёт user.pk). Био и подписчики
+    приходят только этим запросом — feed/user их не отдаёт.
+    """
+    config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    info_url = config["instagram"]["profile_info_url"]
+    jar = instagram_cookies()
+    accounts = instagram_user_ids()
+    if not accounts:
+        ctx.log("аккаунтов в raw/ нет — сначала сбор (collect.instagram)")
+        return {"accounts": 0, "collected": 0, "failed": 0}
+    ctx.log(f"инстаграм: профили {len(accounts)} аккаунтов")
+    budget = Budget(None)
+    done = failed = 0
+    for number, (pk, username) in enumerate(accounts, 1):
+        ctx.check_cancelled()
+        url = info_url.format(pk=pk)
+        try:
+            budget.get(url, cookies=jar,
+                       headers={"x-ig-app-id": IG_APP_ID,
+                                "referer": f"https://www.instagram.com/{username}/"})
+            done += 1
+            time.sleep(IG_PAUSE_SECONDS)
+        except Exception as error:
+            failed += 1
+            ctx.log(f"\n  {username}: {type(error).__name__}: {error}")
+        ctx.progress(number, len(accounts), "профили инстаграма")
+    return {"accounts": len(accounts), "collected": done, "failed": failed}
+
+
+def posts_with_comments():
+    """(media_pk, username) постов с comment_count > 0 из сырья лент в raw/."""
+    from services.pipeline import rebuild
+    out = []
+    for page in rebuild.load_pages():
+        if "feed/user/" not in page["url"]:
+            continue
+        feed = sources.parse_ig_feed(rebuild.html_of(page))
+        username = feed["username"] or page["url"].split("feed/user/", 1)[1].split("/", 1)[0]
+        for post in feed["posts"]:
+            if post.get("comments") and post.get("pk"):
+                out.append((post["pk"], username))
+    return out
+
+
+def instagram_user_ids():
+    """(числовой pk пользователя, username) из сырья лент в raw/.
+
+    users/{pk}/info/ принимает числовой id, а не логин: pk берётся из объекта
+    user ответа feed/user, где он есть всегда.
+    """
+    import json as _json
+    from services.pipeline import rebuild
+    out = []
+    for page in rebuild.load_pages():
+        if "feed/user/" not in page["url"]:
+            continue
+        data = _json.loads(sources.json_body(rebuild.html_of(page)))
+        user = data.get("user") or {}
+        pk, username = user.get("pk"), user.get("username")
+        if pk and username:
+            out.append((pk, username))
+    return out
+
+
 # --- бюджет ------------------------------------------------------------------
 
 

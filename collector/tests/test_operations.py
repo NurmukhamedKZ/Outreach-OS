@@ -102,6 +102,12 @@ def test_site_analyze_op_accepts_runcontext():
     assert callable(analyze.site)
 
 
+def test_ig_comments_op_accepts_runcontext():
+    """Сбор комментариев и профилей Instagram принимает RunContext."""
+    from services.pipeline import collect
+    assert callable(collect.ig_comments) and callable(collect.ig_profile)
+
+
 def test_operations_use_the_context_they_are_given():
     """Операция обязана говорить, что делает, и слушать отмену.
 
