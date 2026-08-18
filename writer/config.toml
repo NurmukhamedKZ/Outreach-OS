@@ -2,8 +2,8 @@
 # Пути относительны каталогу writer/, а не текущему: тот же конфиг читается и из
 # writer/ (uv run -m scripts.write), и из collector/ (uvicorn монтирует роутер).
 
-leads_db = "../collector/db/leads.db"
-threads_db = "threads.db"
+leads_db = "../collector/data/derived.db"
+threads_db = "../collector/data/state.db"
 
 [llm]
 # Та же модель, что у classify: проверена на русских текстах и дёшева.

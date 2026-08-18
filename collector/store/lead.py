@@ -1,33 +1,29 @@
-"""Доступ к базе: соединение и запросы, из которых собирается выдача.
+"""Запросы к базе, из которых собирается выдача. Читает view текущего прогона.
 
-Лежит рядом со schema.sql в store/: таблицы и запросы к ним меняются одной
-правкой. Только чтение, кроме add_refusal.
+Соединение даёт services.store.connect() — derived.db с ATTACH state. Только
+чтение, кроме записи в state.suppression (невосстановимый слой).
 """
-
-import sqlite3
-from pathlib import Path
-
-DB = Path("db/leads.db")
+from services import store as engine
 
 
 def connect():
-    return sqlite3.connect(DB)
+    return engine.connect()
 
 
 def suppression_handles(db):
-    return {row[0] for row in db.execute("SELECT handle FROM suppression")}
+    return {row[0] for row in db.execute("SELECT handle FROM state.suppression")}
 
 
 def refusals(db):
     rows = db.execute(
-        "SELECT handle, added_at, reason FROM suppression ORDER BY added_at DESC, handle"
+        "SELECT handle, added_at, reason FROM state.suppression ORDER BY added_at DESC, handle"
     ).fetchall()
     return [dict(zip(("handle", "added_at", "reason"), row)) for row in rows]
 
 
 def add_refusal(db, handle, reason, added_at):
     db.execute(
-        "INSERT OR IGNORE INTO suppression (handle, added_at, reason) VALUES (?, ?, ?)",
+        "INSERT OR IGNORE INTO state.suppression (handle, added_at, reason) VALUES (?, ?, ?)",
         (handle, added_at, reason),
     )
     db.commit()
@@ -49,6 +45,6 @@ def stats(db):
     return {
         "companies": scored,
         "with_intent": with_intent or 0,
-        "suppressed": db.execute("SELECT count(*) FROM suppression").fetchone()[0],
+        "suppressed": db.execute("SELECT count(*) FROM state.suppression").fetchone()[0],
         "cities": [row[0] for row in db.execute("SELECT DISTINCT city FROM companies ORDER BY city")],
     }

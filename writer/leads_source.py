@@ -12,6 +12,7 @@ scripts/check.py: он гоняет отбор на синтетической �
 
 import re
 import sqlite3
+from pathlib import Path
 
 CHANNEL_PRIORITY = ("whatsapp", "phone")
 
@@ -32,9 +33,11 @@ ONE_COMPANY = " WHERE c.company_id = ?"
 
 
 def connect(path):
-    """Только чтение: база collector'а пересобирается через DROP, и любая запись
-    сюда исчезнет на ближайшем build.py, успев при этом заблокировать сборку."""
-    return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    """Только чтение: derived.db + ATTACH state.db для фильтра отказов."""
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    state = Path(path).parent / "state.db"
+    db.execute(f"ATTACH DATABASE 'file:{state}?mode=ro' AS state", ())
+    return db
 
 
 def candidates(db, limit):
@@ -141,9 +144,9 @@ def is_suppressed(db, handle):
     """Проверяется перед каждым ходом, а не только при отборе: отказ мог прийти
     после того, как тред открыли (F21)."""
     return bool(db.execute(
-        "SELECT 1 FROM suppression WHERE handle = ?", (handle,)
+        "SELECT 1 FROM state.suppression WHERE handle = ?", (handle,)
     ).fetchone())
 
 
 def suppression_handles(db):
-    return {row[0] for row in db.execute("SELECT handle FROM suppression")}
+    return {row[0] for row in db.execute("SELECT handle FROM state.suppression")}

@@ -23,15 +23,19 @@ collector/data/raw/*
 # не воспроизводит. Удалять можно после того, как Ф4 добёрет сырьё.
 raw_jsonl_legacy/
 
-# Производное: пересобирается build.py из raw/ за секунды
+# Производное: пересобирается прогонами из raw/, в git не кладётся
+collector/data/derived.db
+collector/data/derived.db-wal
+collector/data/derived.db-shm
+
+# Порождённое: невосстановимо (как raw/), бэкапится отдельно
+collector/data/state.db
+collector/data/state.db-wal
+collector/data/state.db-shm
+
+# Устаревшие пути (удаляются при миграции)
 collector/db/leads.db
-# Недособранная база: остаётся на диске, если build.py упал на полпути
-collector/db/leads.building
-
-# История запусков: рабочие данные воркера джобов, как threads.db, но пересоздаётся
 collector/db/ops.db
-
-# Переписка системы 2: невосстановима (как data/raw/), бэкапится отдельно
 writer/threads.db
 
 # Ключи. Шаблон — в .env.example
