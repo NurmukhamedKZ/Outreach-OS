@@ -194,6 +194,43 @@ def emit(db, run_id, company_id, signal_type, observed_at, weights, quote, url):
     )
 
 
+def site_ai_signals(db, run_id, pages, weights):
+    """Сигналы сайта от модели: ищет продавца, продаёт через звонок.
+
+    Hiring-цитата обязана стоять дословно на странице вакансий — иначе модель
+    исказила, и сигналу не место. pricing_visible=False -> site_no_pricing.
+    """
+    from services.pipeline import rebuild
+    by_url = {p["url"]: p for p in pages}
+    site_texts_by_company = {}
+    for company_id, name, city, domain in db.execute(
+        "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm), c.city, c.domain"
+        " FROM companies_all c LEFT JOIN company_links_all l ON l.company_id = c.company_id"
+        "   AND l.run_id = ? AND l.rule = 'self' LEFT JOIN orgs_all o"
+        "   ON o.branch_id = l.branch_id AND o.run_id = ?"
+        " WHERE c.run_id = ? AND c.domain IS NOT NULL",
+        (run_id, run_id, run_id)).fetchall():
+        home = next((u for u in (f"https://{domain}/", f"http://{domain}/") if u in by_url), None)
+        if home:
+            site_texts_by_company[(name, city)] = rebuild.html_of(by_url[home])
+
+    for answer in rebuild.load_llm_answers(db, "site"):
+        company_id = company_by_subject(db, run_id, answer["subject"])
+        if not company_id:
+            continue
+        name, _, city = answer["subject"].partition(" | ")
+        html = site_texts_by_company.get((name, city), "")
+        analysis = answer.get("analysis") or {}
+        if analysis.get("hiring"):
+            for hiring in analysis["hiring"]:
+                quote = hiring.get("quote") or ""
+                if quote and quote in html:
+                    emit(db, run_id, company_id, "site_hiring_sales", None, weights, quote, "")
+        if analysis.get("pricing_visible") is False:
+            emit(db, run_id, company_id, "site_no_pricing", None, weights,
+                 "цены не выложены — продают через звонок", "")
+
+
 def instagram_signals(db, run_id, pages, weights):
     """Сигналы ленты: смысл подписей от модели, даты и темп — арифметикой здесь.
 

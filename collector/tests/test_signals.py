@@ -143,3 +143,14 @@ def test_reviews_quote_is_verbatim(live_db):
         raw_text += gzip.open(storage.RAW / f"{sha}.html.gz", "rt", encoding="utf-8").read()
     for (quote,) in quotes:
         assert quote in raw_text, f"цитата отзыва не дословна в сырье: {quote!r}"
+
+
+SITE_AI_TYPES = {"site_hiring_sales", "site_no_pricing"}
+
+
+def test_site_ai_types_have_weights(live_db):
+    import tomllib
+    from pathlib import Path
+    weights = tomllib.loads(Path("config.toml").read_text(encoding="utf-8"))["scoring"]["intent"]
+    for t in SITE_AI_TYPES:
+        assert t in weights, f"нет веса для {t}"
