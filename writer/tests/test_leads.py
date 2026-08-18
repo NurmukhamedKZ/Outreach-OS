@@ -29,9 +29,12 @@ def _seed(db, run_id=1):
                    (run_id, branch, name, name))
         db.execute("INSERT INTO company_links_all (run_id, company_id, branch_id, rule, confidence)"
                    " VALUES (?, ?, ?, 'self', 1.0)", (run_id, company_id, branch))
-        db.execute("INSERT INTO profiles_all (run_id, company_id, model, industry,"
-                   " why_now, quote, confidence) VALUES (?, ?, 'модель', 'бухгалтерия',"
-                   " 'ищет клиентов', 'оставьте заявку', 0.8)", (run_id, company_id))
+        db.execute("INSERT INTO dossiers_all (run_id, company_id, model, summary,"
+                   " hooks, pains, approach, sources, confidence)"
+                   " VALUES (?, ?, 'модель', 'бухгалтерия', '[]',"
+                   " '[{\"statement\": \"ищет клиентов\", \"evidence\": [], \"severity\": \"видно явно\"}]',"
+                   " 'заходить через рост', '[\"reviews\"]', 0.8)",
+                   (run_id, company_id))
         db.execute("INSERT INTO signals_all (run_id, company_id, type, observed_at, weight,"
                    " quote, url) VALUES (?, ?, 'crm_widget', '2026-08-01', 3.0,"
                    " 'виджет Bitrix24', 'https://romashka.kz/')", (run_id, company_id))
@@ -69,7 +72,8 @@ def test_candidates_follow_f19_and_f21(leads_db):
     assert lead["thread_id"] == "+77010000001", lead["thread_id"]
     assert lead["channel_kind"] == "whatsapp", lead["channel_kind"]
     assert lead["seed"]["name"] == "Ромашка", lead["seed"]
-    assert lead["seed"]["why_now"] == "ищет клиентов", lead["seed"]
+    assert lead["seed"]["dossier"]["summary"] == "бухгалтерия", lead["seed"]
+    assert lead["seed"]["dossier"]["approach"] == "заходить через рост", lead["seed"]
     assert [s["type"] for s in lead["seed"]["signals"]] == ["crm_widget"], lead["seed"]
 
     assert leads_source.is_suppressed(db, "+77010000002"), "отказ не виден по handle"

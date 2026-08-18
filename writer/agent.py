@@ -88,17 +88,21 @@ def unused_angles(seed, used):
 
 
 def prompt(seed, history, task):
+    dossier = seed.get("dossier") or {}
     parts = [
         f"Компания: {seed['name']}",
         f"Город: {seed['city']}",
-        f"Чем занимается: {seed['industry'] or 'неизвестно'}",
     ]
-    if seed.get("why_now"):
-        parts.append(f"Почему пишем сейчас: {seed['why_now']}")
-    if seed.get("quote"):
-        parts.append(f"Цитата с её сайта: «{seed['quote']}»")
+    if dossier.get("summary"):
+        parts.append(f"Чем занимается: {dossier['summary']}")
+    if dossier.get("approach"):
+        parts.append(f"Как заходить: {dossier['approach']}")
+    if dossier.get("hooks"):
+        parts.append("Зацепки:")
+        parts += [f"  [{h['source']}] {h['angle']}: «{h['quote']}»"
+                  for h in dossier["hooks"]]
     if seed["signals"]:
-        parts.append("Сигналы (это и есть возможные поводы):")
+        parts.append("Сигналы (возможные поводы):")
         parts += [f"  {s['type']}: {s['quote'] or ''}".rstrip() for s in seed["signals"]]
     if history:
         parts.append("Переписка:")

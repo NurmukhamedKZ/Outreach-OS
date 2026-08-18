@@ -10,6 +10,7 @@ scripts/check.py: он гоняет отбор на синтетической �
 отдаёт, и система 3 для неё ещё не построена.
 """
 
+import json
 import re
 import sqlite3
 from pathlib import Path
@@ -22,11 +23,11 @@ MIN_PHONE_DIGITS = 10
 
 CANDIDATES = (
     "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm), c.city,"
-    "       p.industry, p.why_now, p.quote"
+    "       d.summary, d.hooks, d.pains, d.approach, d.sources"
     " FROM companies c JOIN scores s USING (company_id)"
     " LEFT JOIN company_links l ON l.company_id = c.company_id AND l.rule = 'self'"
     " LEFT JOIN orgs o ON o.branch_id = l.branch_id"
-    " LEFT JOIN profiles p USING (company_id)"
+    " LEFT JOIN dossiers d USING (company_id)"
 )
 WITH_INTENT = " WHERE s.intent_score > 0 ORDER BY s.intent_score DESC, s.fit_score DESC, c.company_id"
 ONE_COMPANY = " WHERE c.company_id = ?"
@@ -45,7 +46,8 @@ def candidates(db, limit):
     suppressed = suppression_handles(db)
     channels = channels_by_company(db)
     found = []
-    for company_id, name, city, industry, why_now, quote in db.execute(CANDIDATES + WITH_INTENT):
+    for (company_id, name, city, summary, hooks, pains, approach,
+         sources) in db.execute(CANDIDATES + WITH_INTENT):
         channel = best_channel(channels.get(company_id, []), suppressed)
         if not channel:
             continue
@@ -56,9 +58,13 @@ def candidates(db, limit):
             "seed": {
                 "name": name,
                 "city": city,
-                "industry": industry,
-                "why_now": why_now,
-                "quote": quote,
+                "dossier": {
+                    "summary": summary,
+                    "hooks": json.loads(hooks or "[]"),
+                    "pains": json.loads(pains or "[]"),
+                    "approach": approach,
+                    "sources": json.loads(sources or "[]"),
+                },
                 "signals": signals_of(db, company_id),
             },
         })
@@ -89,10 +95,17 @@ def seed_of(db, company_id):
     row = db.execute(CANDIDATES + ONE_COMPANY, (company_id,)).fetchone()
     if not row:
         return None
-    _, name, city, industry, why_now, quote = row
+    _, name, city, summary, hooks, pains, approach, sources = row
     return {
-        "name": name, "city": city, "industry": industry,
-        "why_now": why_now, "quote": quote, "signals": signals_of(db, company_id),
+        "name": name, "city": city,
+        "dossier": {
+            "summary": summary,
+            "hooks": json.loads(hooks or "[]"),
+            "pains": json.loads(pains or "[]"),
+            "approach": approach,
+            "sources": json.loads(sources or "[]"),
+        },
+        "signals": signals_of(db, company_id),
     }
 
 

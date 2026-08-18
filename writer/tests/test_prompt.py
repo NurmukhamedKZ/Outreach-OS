@@ -9,8 +9,9 @@ CONFIG = config.load()
 
 def test_prompt_carries_context_history_and_task():
     seed = {
-        "name": "Ромашка", "city": "almaty", "industry": "бухгалтерия",
-        "why_now": "ищет клиентов", "quote": "оставьте заявку",
+        "name": "Ромашка", "city": "almaty",
+        "dossier": {"summary": "бухгалтерия", "hooks": [], "pains": [],
+                    "approach": "заходить через рост", "sources": []},
         "signals": [{"type": "crm_widget", "quote": "виджет Bitrix24"},
                     {"type": "ads_platform", "quote": "Google Ads"}],
     }
@@ -35,8 +36,10 @@ def test_prompt_carries_context_history_and_task():
 def test_system_role_carries_offer():
     # Системная роль несёт оффер из конфига: без него модель напишет письмо про
     # услугу, которой у нас нет.
-    seed = {"name": "Ромашка", "city": "almaty", "industry": "бухгалтерия",
-            "why_now": "ищет клиентов", "quote": "оставьте заявку", "signals": []}
+    seed = {"name": "Ромашка", "city": "almaty",
+            "dossier": {"summary": "бухгалтерия", "hooks": [], "pains": [],
+                        "approach": "заходить через рост", "sources": []},
+            "signals": []}
     fake = FakeModel(Draft(text="Здравствуйте!", angle="ads_platform"))
     result = agent.draft(fake, seed, [], agent.REPLY, offer=CONFIG["offer"]["text"])
     assert result.angle == "ads_platform", result
