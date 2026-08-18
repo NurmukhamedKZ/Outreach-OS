@@ -89,14 +89,22 @@ writer/scripts/check.py      226 строк
 ## 1. Две базы по классу данных
 
 ```
-db/state.db     порождённое: suppression, jobs, threads, messages, llm_answers
-db/derived.db   вычислимое: runs, current_run, fetches, orgs, contacts,
-                companies, company_links, signals, scores, dossiers
-data/raw/       сырьё: страницы и ответы API, через адаптер хранилища
+data/state.db     порождённое: suppression, jobs, threads, messages, llm_answers
+data/derived.db   вычислимое: runs, current_run, fetches, orgs, contacts,
+                  companies, company_links, signals, scores, dossiers
+data/raw/         сырьё: страницы и ответы API, через адаптер хранилища
 ```
 
 Исчезают `leads.db`, `ops.db`, `threads.db`, `suppression.csv` и не заводится
 `llm_cache.db`. Обе базы в режиме WAL.
+
+Всё, что является данными, лежит в `data/` — и сырьё, и базы. В `db/` остаются
+только `schema.sql` и `lead.py`, то есть описание схемы и запросы: код, а не
+данные. Папка переименовывается в `store/` при реализации, чтобы имя не обещало
+баз, которых там больше нет.
+
+`.gitignore` правится соответственно: `data/state.db`, `data/derived.db` и их
+`-wal`/`-shm` спутники.
 
 Граница проходит по одному правилу: **выводится из `raw/` и `config.toml` —
 значит вычислимое; не выводится — порождённое.** Правило перестаёт быть устным
@@ -334,7 +342,7 @@ def iter_pages()                        # сайдкары снимка
 
 ```
 services/storage.py      адаптер сырья
-services/store.py        подключение (derived + ATTACH state), прогоны, запись
+services/store.py        подключение (data/derived.db + ATTACH state), прогоны, запись
 services/pipeline/
     collect.py     gis, sites, instagram
     analyze.py     profile, ig_signals        (существующие два слоя, 1:1)
@@ -485,11 +493,11 @@ writer/tests/
 
 | откуда | куда |
 |---|---|
-| `db/leads.db` | `derived.db`, прогон №1 с `note = 'миграция'` |
-| `db/ops.db` | `state.db.jobs` |
-| `writer/threads.db` | `state.db.threads`, `state.db.messages` |
-| `data/suppression.csv` | `state.db.suppression` |
-| `data/raw/*.llm.json` | `state.db.llm_answers`, `kind` и `subject` восстанавливаются тем же разбором первой строки промпта, что делает сегодня `fill_profiles` |
+| `db/leads.db` | `data/derived.db`, прогон №1 с `note = 'миграция'` |
+| `db/ops.db` | `data/state.db`, таблица `jobs` |
+| `writer/threads.db` | `data/state.db`, таблицы `threads` и `messages` |
+| `data/suppression.csv` | `data/state.db`, таблица `suppression` |
+| `data/raw/*.llm.json` | `data/state.db`, таблица `llm_answers`; `kind` и `subject` восстанавливаются тем же разбором первой строки промпта, что делает сегодня `fill_profiles` |
 
 157 ответов модели переносятся, а не переспрашиваются: они оплачены. Ответ, для
 которого компания не нашлась, не переносится — сегодня он всё равно молча
