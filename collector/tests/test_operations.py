@@ -64,6 +64,33 @@ def test_collect_ops_accept_runcontext():
     assert callable(collect.gis) and callable(collect.sites) and callable(collect.instagram)
 
 
+def test_all_operations_callable():
+    from services.pipeline import OPERATIONS
+    for name, fn in OPERATIONS.items():
+        assert callable(fn), name
+
+
+def test_no_write_module_opens_both_dbs():
+    """Ни один модуль записи не открывает обе базы напрямую (спека §1).
+
+    Единственное место с обоими путями — services/store.py (ATTACH). Модули
+    записи (rebuild/suppression/jobs/thread_store) пишут через store.connect()
+    в свою схему и не держат оба файла сами; транзакция через две базы не
+    атомарна, и такого по построению быть не должно.
+    """
+    from services import store as engine
+    write_modules = [
+        Path(engine.__file__).resolve().parent.parent / "services" / "pipeline" / "rebuild.py",
+        Path(engine.__file__).resolve().parent.parent / "services" / "suppression.py",
+        Path(engine.__file__).resolve().parent.parent / "services" / "jobs.py",
+        Path(engine.__file__).resolve().parent.parent.parent / "writer" / "thread_store.py",
+    ]
+    for path in write_modules:
+        text = path.read_text(encoding="utf-8")
+        assert not ("derived.db" in text and "state.db" in text), \
+            f"{path.name} открывает обе базы — нарушение атомарности"
+
+
 class DummyContext:
     def progress(self, current, total, label): ...
     def log(self, message): ...

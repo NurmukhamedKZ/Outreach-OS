@@ -1,95 +1,80 @@
-"""Слой джобов: очередь исполняет, провал и отмена не вешают воркера.
+"""Слой джобов: очередь исполняет операции, провал и отмена не вешают воркера.
 
 Как runs раньше, только состояние в базе: история и прогресс переживают
-перезапуск, а «бегущая» джоба видна любому клиенту.
+перезапуск, а «бегущая» джоба видна любому клиенту. Джоба теперь — список имён
+операций (services.pipeline), и воркер зовёт их через asyncio.to_thread.
 """
 
 import asyncio
 import sys
-from contextlib import contextmanager
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from services import events, jobs, metrics
 
 
-@contextmanager
-def temp_ops_db():
-    """Подменяет базу джобов на временную: проверки не пачкают историю запусков."""
-    original = jobs.OPS_DB
-    tmp = TemporaryDirectory()
-    jobs.OPS_DB = Path(tmp.name) / "ops.db"
-    try:
-        yield
-    finally:
-        jobs.OPS_DB = original
-        tmp.cleanup()
-
-
-def step(script):
-    return {"name": script[:30], "argv": ["python", "-c", script], "cwd": Path.cwd()}
-
-
-def test_pipelines_catalogue_consistent():
+def test_pipelines_catalogue_consistent(stores):
     jobs.check_pipelines()
 
 
-def test_job_lifecycle():
-    """Успех, провал и #progress — три исхода шага, каждый виден в базе."""
-    with temp_ops_db():
-        ok = jobs.enqueue_steps("custom", "Успешная", [step("print('привет')")])
-        assert asyncio.run(jobs.run_pending()) == ok, "воркер взял не свою джобу"
-        assert jobs.job(ok)["status"] == "done", jobs.job(ok)
-        assert "привет" in jobs.tail(ok)["lines"], "вывод шага не дошёл до лога"
-
-        failed = jobs.enqueue_steps("custom", "Провальная", [step("raise SystemExit(3)")])
-        asyncio.run(jobs.run_pending())
-        record = jobs.job(failed)
-        assert record["status"] == "failed" and record["exit_code"] == 3, record
-        assert "не прошёл" in record["error"], record["error"]
-
-        progress = "print('#progress " + '{"current": 3, "total": 12}' + "')"
-        with_progress = jobs.enqueue_steps("custom", "С прогрессом", [step(progress)])
-        asyncio.run(jobs.run_pending())
-        assert jobs.job(with_progress)["progress"] == {"current": 3, "total": 12}, \
-            jobs.job(with_progress)["progress"]
-
-        missing = jobs.enqueue_steps("custom", "Без команды", [
-            {"name": "нет такой", "argv": ["нет-такой-команды"], "cwd": Path.cwd()}
-        ])
-        asyncio.run(jobs.run_pending())
-        assert jobs.job(missing)["status"] == "failed", "провал запуска повесил бы очередь"
+def test_job_lifecycle(stores, tmp_path, monkeypatch):
+    """Джоба доходит до done; результат операции попадает в state.jobs."""
+    from services.pipeline import export as export_op
+    monkeypatch.setattr(export_op, "OUT", tmp_path / "leads.csv")   # не трогать боевой CSV
+    job_id = jobs.enqueue_steps("custom", "Тест", ["export"])
+    asyncio.run(jobs.run_pending())
+    record = jobs.job(job_id)
+    assert record["status"] == "done"
+    assert record["result"] is not None      # json результата export.run
 
 
-def test_job_cancel():
-    """Отмена running убивает процесс, queued снимается без запуска."""
-    with temp_ops_db():
-        long = jobs.enqueue_steps("custom", "Долгая", [step("import time; time.sleep(30)")])
-        queued = jobs.enqueue_steps("custom", "Вслед", [step("print('не должен был')")])
+def test_job_failure_is_typed(stores):
+    job_id = jobs.enqueue_steps("custom", "Провал", ["нет_такой_операции"])
+    asyncio.run(jobs.run_pending())
+    record = jobs.job(job_id)
+    assert record["status"] == "failed"
+    assert "KeyError" in record["error"] or "нет_такой" in record["error"]
+
+
+def test_job_cancel(stores):
+    """Отмена running кооперативна: флаг в контексте, операция выходит сама."""
+    from services import jobs as jobs_module
+    from services.pipeline import OPERATIONS
+
+    def slow(ctx):
+        import time
+        while True:
+            ctx.check_cancelled()
+            time.sleep(0.05)
+
+    OPERATIONS["_slow_test"] = slow
+    try:
+        long = jobs_module.enqueue_steps("custom", "Долгая", ["_slow_test"])
+        queued = jobs_module.enqueue_steps("custom", "Вслед", ["_slow_test"])
 
         async def cancel_when_running():
-            while jobs._current is None:
+            while jobs_module.job(long)["status"] != "running":
                 await asyncio.sleep(0.05)
-            jobs.cancel(long)
+            jobs_module.cancel(long)
 
         async def scenario():
-            running = asyncio.ensure_future(jobs.run_pending())
+            running = asyncio.ensure_future(jobs_module.run_pending())
             await asyncio.gather(running, cancel_when_running())
 
         asyncio.run(scenario())
-        assert jobs.job(long)["status"] == "cancelled", jobs.job(long)
-        assert jobs.job(queued)["status"] == "queued", "отмена задела чужую джобу"
+        assert jobs_module.job(long)["status"] == "cancelled", jobs_module.job(long)
+        assert jobs_module.job(queued)["status"] == "queued", "отмена задела чужую джобу"
 
-        assert jobs.cancel(queued)["status"] == "cancelled"
-        assert asyncio.run(jobs.run_pending()) is None, "отменённая джоба исполнилась"
+        assert jobs_module.cancel(queued)["status"] == "cancelled"
+        assert asyncio.run(jobs_module.run_pending()) is None, "отменённая джоба исполнилась"
+    finally:
+        OPERATIONS.pop("_slow_test", None)
 
 
-def test_job_orphans_fail_on_restart():
-    with temp_ops_db():
-        orphan = jobs.enqueue_steps("custom", "Сирота", [step("pass")])
-        jobs._update(orphan, status="running")
-        jobs.fail_orphans()
-        assert jobs.job(orphan)["status"] == "failed", "перезапуск оставил бы джобу «бегущей»"
+def test_job_orphans_fail_on_restart(stores):
+    job_id = jobs.enqueue_steps("custom", "Сирота", ["export"])
+    jobs._update(job_id, status="running")
+    jobs.fail_orphans()
+    assert jobs.job(job_id)["status"] == "failed", "перезапуск оставил бы джобу «бегущей»"
 
 
 def test_events_broker():

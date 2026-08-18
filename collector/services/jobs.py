@@ -1,108 +1,63 @@
-"""Слой джобов: очередь в db/ops.db и один воркер, исполняющий шаги.
+"""Слой джобов: очередь в state.jobs и один воркер, вызывающий операции.
 
-Продуктовые эндпоинты (/api/pipeline/*) не запускают скрипты по одному —
-они ставят джобу из шагов, и воркер проводит её от «в очереди» до «готово».
-Состояние живёт в базе, а не в памяти: история запусков и прогресс переживают
-перезагрузку страницы и перезапуск бэкенда, а идущий процесс виден всем
+Продуктовые эндпоинты (/api/pipeline/*, /api/operations/*) не запускают
+процессы — они ставят джобу из имён операций, и воркер проводит её от
+«в очереди» до «готово», вызывая функции через asyncio.to_thread. Состояние
+живёт в базе, а не в памяти: история запусков и прогресс переживают
+перезагрузку страницы и перезапуск бэкенда, а идущая операция видна всем
 операторам сразу — по SSE и по GET /api/jobs.
 
-Один воркер — не недоделка, а ограничение системы 1: build.py пересобирает
-leads.db через DROP, и параллельный сбор писал бы в ту же базу. Очередь при
+Один воркер — не недоделка, а ограничение системы 1: rebuild пересобирает
+derived прогоном, и параллельный сбор писал бы в ту же базу. Очередь при
 этом честная: поставить можно несколько, исполняются они по одной.
 
-Джоба ≠ команда: у джобы есть шаги с именами, и фронт показывает «шаг 2 из 3:
-пересборка базы», а не хвост консоли. Шаги — те же `uv run ...` из README,
-своей логики здесь нет, белый список argv остаётся единственной защитой.
+Джоба ≠ команда: у джобы есть шаги с именами операций, и фронт показывает
+«шаг 2 из 3: пересборка базы», а не хвост консоли. Сами операции —
+services/pipeline (реестр OPERATIONS): своей логики здесь нет, реестр
+остаётся единственной точкой, где имя становится функцией.
 
-Соглашение о прогрессе внутри шага: строка вывода вида
-`#progress {"label": "...", "current": 34, "total": 120}`
-разбирается воркером и уходит в событие job — счётчики появляются в UI без
-второго канала связи. Скрипты таких строк пока не пишут; парсер ждёт их.
+Отмена кооперативная: флаг в активном контексте шага, а не SIGKILL процессу.
+Операции проверяют его в check_cancelled между единицами работы.
 """
 
 import asyncio
 import json
-import os
-import shlex
-import signal
-import sqlite3
 import time
 from contextlib import closing
 from datetime import datetime, timezone
-from pathlib import Path
+from types import SimpleNamespace
 
-from services import events
+from services import events, store as engine
+from services.pipeline import OPERATIONS, PIPELINES
 
-BACKEND = Path(__file__).resolve().parent.parent
-WRITER = BACKEND.parent / "writer"
-OPS_DB = Path("db/ops.db")
 LOG_LIMIT = 20_000
-LOG_FLUSH_LINES = 20
-LOG_FLUSH_SECONDS = 0.5
-PROGRESS_PREFIX = "#progress "
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS jobs (
-  id         INTEGER PRIMARY KEY,
-  kind       TEXT NOT NULL,          -- имя пайплайна; "custom" — служебные запуски проверок
-  title      TEXT NOT NULL,
-  status     TEXT NOT NULL CHECK (status IN ('queued', 'running', 'done', 'failed', 'cancelled')),
-  step       INTEGER NOT NULL DEFAULT 0,
-  steps      TEXT NOT NULL,          -- json: [{name, argv, cwd}]
-  log        TEXT NOT NULL DEFAULT '',
-  progress   TEXT,                   -- json последнего #progress шага
-  exit_code  INTEGER,
-  error      TEXT,
-  created_at TEXT NOT NULL,
-  started_at TEXT,
-  finished_at TEXT
-);
-"""
-
-STEPS = {
-    "collect": {"name": "Сбор сырья", "argv": ["uv", "run", "-m", "scripts.collect"], "cwd": BACKEND},
-    "classify": {
-        "name": "Профиль и why_now",
-        "argv": ["uv", "run", "--env-file", ".env", "-m", "scripts.classify"],
-        "cwd": BACKEND,
-    },
-    "classify_ig": {
-        "name": "Смысл подписей Instagram",
-        "argv": ["uv", "run", "--env-file", ".env", "-m", "scripts.classify_ig"],
-        "cwd": BACKEND,
-    },
-    "build": {"name": "Пересборка базы", "argv": ["uv", "run", "build.py"], "cwd": BACKEND},
-    "report": {"name": "Выгрузка leads.csv", "argv": ["uv", "run", "report.py"], "cwd": BACKEND},
-}
-
-PIPELINES = {
-    "discover": {"title": "Поиск новых лидов", "steps": ("collect", "build", "report")},
-    "classify": {"title": "Обогащение и оценка", "steps": ("classify", "classify_ig", "build", "report")},
-    "rebuild": {"title": "Пересборка из сырья", "steps": ("build", "report")},
-    "write": {"title": "Черновики топ-N лидам", "steps": ("write",)},
-}
 
 COLUMNS = (
     "id", "kind", "title", "status", "step", "steps", "log", "progress",
-    "exit_code", "error", "created_at", "started_at", "finished_at",
+    "result", "exit_code", "error", "created_at", "started_at", "finished_at",
 )
+
+_current_ctx = None   # активный контекст шага для кооперативной отмены
+
+
+class _Cancelled(Exception):
+    pass
 
 
 def connect():
-    db = sqlite3.connect(OPS_DB)
-    db.executescript(SCHEMA)
-    return db
+    """Соединение для джоб: state.jobs живёт в state.db, attached к derived."""
+    return engine.connect()
 
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def pipeline_steps(kind, limit):
-    if kind == "write":
-        argv = ["uv", "run", "--env-file", ".env", "-m", "scripts.write", str(limit)]
-        return [{"name": f"Черновики топ-{limit}", "argv": argv, "cwd": WRITER}]
-    return [dict(STEPS[name]) for name in PIPELINES[kind]["steps"]]
+def pipeline_steps(kind, limit=None):
+    """Имена операций пайплайна. limit игнорируется: у операций параметров нет."""
+    if kind not in PIPELINES:
+        raise KeyError(kind)
+    return list(PIPELINES[kind]["steps"])
 
 
 def enqueue(kind, limit=10):
@@ -111,16 +66,14 @@ def enqueue(kind, limit=10):
     return enqueue_steps(kind, PIPELINES[kind]["title"], pipeline_steps(kind, limit))
 
 
-def enqueue_steps(kind, title, steps):
-    """Примитив очереди: принимает готовые шаги. Каталожные пайплайны и проверки
-    сходятся здесь — логика постановки одна. cwd хранится строкой: база не должна
-    знать о pathlib."""
-    steps = [{**step, "cwd": str(step["cwd"])} for step in steps]
+def enqueue_steps(kind, title, names):
+    """Примитив очереди: принимает готовые имена операций. Каталожные пайплайны
+    и одиночные операции сходятся здесь — логика постановки одна."""
     with closing(connect()) as db:
         cursor = db.execute(
-            "INSERT INTO jobs (kind, title, steps, status, created_at)"
+            "INSERT INTO state.jobs (kind, title, steps, status, created_at)"
             " VALUES (?, ?, ?, 'queued', ?)",
-            (kind, title, json.dumps(steps, ensure_ascii=False), now()),
+            (kind, title, json.dumps(names, ensure_ascii=False), now()),
         )
         db.commit()
         job_id = cursor.lastrowid
@@ -130,13 +83,17 @@ def enqueue_steps(kind, title, steps):
 
 def job(job_id):
     with closing(connect()) as db:
-        row = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        row = db.execute(
+            "SELECT * FROM state.jobs WHERE id = ?", (job_id,)
+        ).fetchone()
     return as_job(row) if row else None
 
 
 def recent(limit=20):
     with closing(connect()) as db:
-        rows = db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        rows = db.execute(
+            "SELECT * FROM state.jobs ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
     return [as_job(row) for row in rows]
 
 
@@ -155,17 +112,19 @@ def tail(job_id, offset=0):
 
 def log_of(job_id):
     with closing(connect()) as db:
-        return db.execute("SELECT log FROM jobs WHERE id = ?", (job_id,)).fetchone()[0]
+        return db.execute(
+            "SELECT log FROM state.jobs WHERE id = ?", (job_id,)
+        ).fetchone()[0]
 
 
 def as_job(row):
     record = dict(zip(COLUMNS, row))
-    steps = json.loads(record.pop("steps"))
+    names = json.loads(record.pop("steps") or "[]")
     log = record.pop("log") or ""
     return {
         **record,
-        "steps": [{"name": s["name"], "command": shlex.join(s["argv"])} for s in steps],
-        "step_count": len(steps),
+        "steps": [{"name": n, "command": n} for n in names],
+        "step_count": len(names),
         "log_lines": log.count("\n") + 1 if log else 0,
         "progress": json.loads(record["progress"]) if record["progress"] else None,
     }
@@ -194,92 +153,72 @@ async def run_pending():
 def _claim():
     with closing(connect()) as db:
         row = db.execute(
-            "SELECT id FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1"
+            "SELECT id FROM state.jobs WHERE status = 'queued' ORDER BY id LIMIT 1"
         ).fetchone()
         if not row:
             return None
         db.execute(
-            "UPDATE jobs SET status = 'running', started_at = ? WHERE id = ?",
+            "UPDATE state.jobs SET status = 'running', started_at = ? WHERE id = ?",
             (now(), row[0]),
         )
         db.commit()
         return row[0]
 
 
+def _raw_steps(job_id):
+    """Сырая json-строка steps из state.jobs (не через as_job, который её разбирает)."""
+    with closing(connect()) as db:
+        return db.execute(
+            "SELECT steps FROM state.jobs WHERE id = ?", (job_id,)
+        ).fetchone()[0]
+
+
+def make_context(job_id):
+    global _current_ctx
+    state = {"cancelled": False}
+
+    def check_cancelled():
+        if state["cancelled"]:
+            raise _Cancelled()
+
+    def progress(current, total, label):
+        _update(job_id, progress=json.dumps({"current": current, "total": total,
+                                             "label": label}, ensure_ascii=False))
+
+    def log(message):
+        _append_log(job_id, [message])
+        events.publish({"type": "log", "job_id": job_id, "lines": [message]})
+
+    ctx = SimpleNamespace(
+        check_cancelled=check_cancelled, progress=progress, log=log,
+        cancel=lambda: state.update(cancelled=True),
+    )
+    _current_ctx = (job_id, ctx)   # cancel(job_id) находит активный контекст
+    return ctx, state
+
+
 async def _execute(job_id):
-    steps = json.loads(_raw_steps(job_id))
-    for index, step in enumerate(steps):
+    names = json.loads(_raw_steps(job_id))   # json-строка имён из state.jobs
+    for index, name in enumerate(names):
         _update(job_id, step=index)
-        outcome = await _run_step(job_id, step)
-        if outcome == "cancelled":
+        ctx, _state = make_context(job_id)
+        try:
+            result = await asyncio.to_thread(OPERATIONS[name], ctx)
+            _update(job_id, result=json.dumps(result, ensure_ascii=False))
+        except _Cancelled:
             _finish(job_id, "cancelled")
             return
-        if outcome != 0:
-            _finish(job_id, "failed", exit_code=outcome, error=f"шаг «{step['name']}» не прошёл")
+        except Exception as error:
+            _finish(job_id, "failed", error=f"{type(error).__name__}: {error}")
             return
     _finish(job_id, "done", exit_code=0)
 
 
-def _raw_steps(job_id):
-    with closing(connect()) as db:
-        return db.execute("SELECT steps FROM jobs WHERE id = ?", (job_id,)).fetchone()[0]
-
-
-async def _run_step(job_id, step):
-    global _current
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *step["argv"],
-            cwd=step["cwd"],
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
-            start_new_session=True,
-        )
-    except OSError as failure:
-        _append_log(job_id, [f"— запуск не удался: {failure}"])
-        return -1
-
-    _current = {"job_id": job_id, "process": process, "cancelled": False}
-    buffered, flushed_at = [], time.monotonic()
-    async for raw in process.stdout:
-        buffered.append(raw.decode(errors="replace").rstrip("\n"))
-        if len(buffered) >= LOG_FLUSH_LINES or time.monotonic() - flushed_at >= LOG_FLUSH_SECONDS:
-            _flush_log(job_id, buffered)
-            buffered, flushed_at = [], time.monotonic()
-    _flush_log(job_id, buffered)
-    await process.wait()
-
-    cancelled, _current = _current["cancelled"], None
-    if cancelled and process.returncode != 0:
-        return "cancelled"
-    return process.returncode
-
-
-def _flush_log(job_id, lines):
-    if not lines:
-        return
-    _append_log(job_id, lines)
-    progress = _parse_progress(lines)
-    if progress:
-        _update(job_id, progress=json.dumps(progress, ensure_ascii=False))
-    events.publish({"type": "log", "job_id": job_id, "lines": lines})
-
-
-def _parse_progress(lines):
-    for line in reversed(lines):
-        if not line.startswith(PROGRESS_PREFIX):
-            continue
-        try:
-            return json.loads(line[len(PROGRESS_PREFIX):])
-        except json.JSONDecodeError:
-            return None
-    return None
-
-
 def _append_log(job_id, lines):
     with closing(connect()) as db:
-        stored = db.execute("SELECT log FROM jobs WHERE id = ?", (job_id,)).fetchone()[0]
+        stored = db.execute(
+            "SELECT log FROM state.jobs WHERE id = ?", (job_id,)
+        ).fetchone()[0]
         stored_lines = stored.split("\n") if stored else []
         room = LOG_LIMIT - len(stored_lines)
         if room <= 0:
@@ -287,7 +226,10 @@ def _append_log(job_id, lines):
         stored_lines.extend(lines[:room])
         if len(lines) > room:
             stored_lines.append(f"— вывод длиннее {LOG_LIMIT} строк, дальше не пишем")
-        db.execute("UPDATE jobs SET log = ? WHERE id = ?", ("\n".join(stored_lines), job_id))
+        db.execute(
+            "UPDATE state.jobs SET log = ? WHERE id = ?",
+            ("\n".join(stored_lines), job_id),
+        )
         db.commit()
 
 
@@ -296,7 +238,10 @@ def _update(job_id, **fields):
         return
     assignments = ", ".join(f"{name} = ?" for name in fields)
     with closing(connect()) as db:
-        db.execute(f"UPDATE jobs SET {assignments} WHERE id = ?", (*fields.values(), job_id))
+        db.execute(
+            f"UPDATE state.jobs SET {assignments} WHERE id = ?",
+            (*fields.values(), job_id),
+        )
         db.commit()
     publish_job(job_id)
 
@@ -307,29 +252,24 @@ def _finish(job_id, status, exit_code=None, error=None):
 
 
 def cancel(job_id):
-    """Снимает queued мгновенно; running убивает всю группу процессов —
-    `uv run` порождает python, и выживший потомок держал бы трубу открытой."""
+    """Снимает queued мгновенно; running — кооперативно, между единицами работы."""
     record = job(job_id)
     if not record:
         raise KeyError(job_id)
     if record["status"] == "queued":
         _finish(job_id, "cancelled")
         return job(job_id)
-    if record["status"] == "running" and _current and _current["job_id"] == job_id:
-        _current["cancelled"] = True
-        try:
-            os.killpg(os.getpgid(_current["process"].pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    if record["status"] == "running" and _current_ctx and _current_ctx[0] == job_id:
+        _current_ctx[1].cancel()   # флаг — операция проверит его в check_cancelled
     return job(job_id)
 
 
 def fail_orphans():
-    """Перезапуск бэкенда убил процессы, но не записи: «running» без процесса —
+    """Перезапуск бэкенда оборвал воркер, но не записи: «running» без воркера —
     ложь оператору. «queued» не трогаем: воркер продолжит их при старте."""
     with closing(connect()) as db:
         db.execute(
-            "UPDATE jobs SET status = 'failed', error = 'прерван перезапуском бэкенда',"
+            "UPDATE state.jobs SET status = 'failed', error = 'прерван перезапуском бэкенда',"
             " finished_at = ? WHERE status = 'running'",
             (now(),),
         )
@@ -337,14 +277,13 @@ def fail_orphans():
 
 
 def check_pipelines():
-    """Каталог пайплайнов цел: шаги существуют, каталоги на месте, argv — uv run."""
+    """Каталог пайплайнов цел: каждый шаг — существующая операция."""
     for kind, pipeline in PIPELINES.items():
         assert pipeline["title"], f"{kind}: нет названия"
-        for step in pipeline_steps(kind, limit=5):
-            assert step["argv"][:2] == ["uv", "run"], f"{kind}: {step['argv']} — не uv run"
-            assert step["cwd"].is_dir(), f"{kind}: {step['cwd']} — не каталог"
+        for name in pipeline["steps"]:
+            assert name in OPERATIONS, f"{kind}: шаг {name} не в реестре операций"
 
 
 if __name__ == "__main__":
     check_pipelines()
-    print("jobs ok — каталог пайплайнов цел; очередь проверяет раздел jobs в scripts/check.py")
+    print("jobs ok — каталог пайплайнов цел; очередь проверяет pytest")
