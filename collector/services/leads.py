@@ -1,11 +1,11 @@
-"""Отбор лидов для веба — тот же, что печатает report.py.
+"""Отбор лидов для веба — тот же, что печатает export.py.
 
 Правило «нет канала — нет лида» и проверка suppression до выдачи (PRD F19, F21)
-не дублируются, а импортируются из report.py: две копии одного закона
-разъезжаются на первой же правке.
+не дублируются, а импортируются из services.pipeline.export: две копии одного
+закона разъезжаются на первой же правке.
 """
 
-import report
+from services.pipeline import export as report
 from store import lead as store
 
 

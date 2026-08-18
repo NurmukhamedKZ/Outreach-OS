@@ -12,17 +12,18 @@
 человека в его таблице, и электронная таблица подходит для неё лучше любой схемы.
 Обратно в систему приходит только suppression.
 
-Запуск: uv run report.py [сколько]
+Операция воркера: run(ctx, limit) пишет data/leads.csv тем же проходом, что
+печатал report.py. Отказы читаются из state.suppression — в derived таблицы
+suppression нет (view не может ссылаться на attached базу).
 """
 
 import csv
 import json
 import re
-import sqlite3
-import sys
 from pathlib import Path
 
-DB = Path("db/leads.db")
+from services import store as engine
+
 OUT = Path("data/leads.csv")
 
 # Каналы, которыми в Казахстане реально пользуются, в порядке приоритета
@@ -39,17 +40,18 @@ MIN_PHONE_DIGITS = 10
 DEFAULT_LIMIT = 30
 
 
-def main():
-    limit = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_LIMIT
-    db = sqlite3.connect(DB)
-    leads = build_leads(db, limit)
-    write_csv(leads)
-    report(db, leads, limit)
-    db.close()
+def run(ctx, limit=DEFAULT_LIMIT):
+    db = engine.connect()
+    try:
+        leads = build_leads(db, limit)
+        write_csv(leads)
+        return {"wrote": len(leads), "path": str(OUT)}
+    finally:
+        db.close()
 
 
 def build_leads(db, limit):
-    suppressed = {row[0] for row in db.execute("SELECT handle FROM suppression")}
+    suppressed = {row[0] for row in db.execute("SELECT handle FROM state.suppression")}
     leads = []
     for row in candidates(db):
         channel = best_channel(row["channels"], suppressed)
@@ -209,9 +211,11 @@ def sources_of(breakdown):
 
 
 def write_csv(leads):
-    if not leads:
-        sys.exit("ни одного лида с рабочим каналом — проверь uv run -m scripts.check")
+    """Пустой список — пустой CSV и ноль, а не sys.exit: воркер обязан дойти
+    до done и показать диагностику в логе, а не зависнуть в running."""
     with OUT.open("w", encoding="utf-8-sig", newline="") as fh:
+        if not leads:
+            return
         writer = csv.DictWriter(fh, fieldnames=list(leads[0]))
         writer.writeheader()
         writer.writerows(leads)
@@ -225,20 +229,7 @@ def available(db):
     достижимость номера, и врал бы оператору тем сильнее, чем длиннее список
     отказов. Полный проход стоит сотые доли секунды на 1660 компаниях.
     """
-    suppressed = {row[0] for row in db.execute("SELECT handle FROM suppression")}
+    suppressed = {row[0] for row in db.execute("SELECT handle FROM state.suppression")}
     return sum(
         1 for row in candidates(db) if best_channel(row["channels"], suppressed)
     )
-
-
-def report(db, leads, limit):
-    total = db.execute("SELECT count(*) FROM scores WHERE intent_score > 0").fetchone()[0]
-    without_channel = total - available(db)
-    print(f"компаний с intent > 0: {total}, из них без рабочего канала: {without_channel}")
-    print(f"в выдаче {len(leads)} из запрошенных {limit} -> {OUT}")
-    if leads:
-        print(f"верхний: {leads[0]['компания']} — {leads[0]['канал']}")
-
-
-if __name__ == "__main__":
-    main()

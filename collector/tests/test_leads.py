@@ -74,3 +74,18 @@ def test_every_lead_has_why_now(stores):
     found = service.pick(db, limit=10)
     assert len(found) == 1
     assert found[0]["why_now"], "у лида нет why_now (F20)"
+
+
+def test_export_filters_refusals(stores, tmp_path, monkeypatch):
+    """F21: отказ из state.suppression убирает канал, а без канала — лид."""
+    from services.pipeline import export as export_op
+    monkeypatch.setattr(export_op, "OUT", tmp_path / "leads.csv")   # не трогать боевой CSV
+    db = stores
+    _published_run(db)
+    db.execute("INSERT INTO state.suppression (handle, added_at, reason)"
+               " VALUES ('+77010000001', '2026-08-10', 'просил')")
+    db.execute("INSERT INTO state.suppression (handle, added_at, reason)"
+               " VALUES ('+77010000002', '2026-08-10', 'просил')")
+    db.commit()
+    leads = export_op.build_leads(db, limit=10)
+    assert leads == [], "отказ обязан убрать лида из выдачи (F21)"

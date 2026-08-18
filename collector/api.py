@@ -22,7 +22,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-import report
+from services.pipeline import export as report
 from store import lead as store
 from routes import events, jobs, leads, pipeline, stats, suppression
 from services import jobs as queue, suppression as refusals

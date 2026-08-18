@@ -1,4 +1,4 @@
-import report
+from services.pipeline import export as report
 from fastapi import APIRouter, HTTPException
 
 from store import lead as store
