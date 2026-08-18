@@ -199,6 +199,33 @@ def test_old_ig_llm_signals_retired(live_db):
     assert not (families & retired), f"старый LLM-слой инстаграма всё ещё пишет: {families & retired}"
 
 
+def test_quote_is_verbatim_for_ai_signals(live_db):
+    """Главная проверка спеки §6: цитата каждого AI-сигнала стоит дословно в сырье.
+
+    reviews/site/instagram — единственная защита от выдуманного факта в письме
+    живому человеку. Собирается весь текст raw/ и каждая цитата ищется в нём.
+    """
+    import gzip
+    import services.storage as storage
+
+    raw_text = ""
+    for sidecar in sorted(storage.RAW.glob("*.json")):
+        if sidecar.name.count(".") != 1:
+            continue
+        sha = sidecar.name.removesuffix(".json")
+        gz = storage.RAW / f"{sha}.html.gz"
+        if gz.exists():
+            raw_text += gzip.open(gz, "rt", encoding="utf-8").read()
+
+    ai_types = ("reviews_missed_lead", "reviews_unanswered_complaint",
+                "site_hiring_sales", "ig_unanswered_question")
+    rows = live_db.execute(
+        f"SELECT type, quote FROM signals WHERE type IN ({','.join('?'*len(ai_types))})"
+        " AND length(quote) > 2", ai_types).fetchall()
+    for signal_type, quote in rows:
+        assert quote in raw_text, f"{signal_type}: цитата не дословна в сырье: {quote!r}"
+
+
 def _memory_db():
     import sqlite3
     db = sqlite3.connect(":memory:")
