@@ -9,18 +9,20 @@
 
 import { useEffect, useState } from "react";
 import { PaperPlaneTiltIcon } from "@phosphor-icons/react";
-import { fetchPipelines, type Pipeline } from "./api";
+import { fetchCatalogue, type PipelineCatalogue } from "./api";
 import { JobMonitor, PipelineActions } from "@/components/JobMonitor";
+import { OperationsPanel } from "@/components/OperationsPanel";
+import { RunsHistory } from "@/components/RunsHistory";
 import { useLive } from "@/components/live";
 
 const WHEN = new Intl.DateTimeFormat("ru", { hour: "2-digit", minute: "2-digit" });
 
 export default function Overview() {
   const { stats, jobs, connected } = useLive();
-  const [pipelines, setPipelines] = useState<Pipeline[]>([]);
+  const [catalogue, setCatalogue] = useState<PipelineCatalogue | null>(null);
 
   useEffect(() => {
-    fetchPipelines().then(setPipelines).catch(() => undefined);
+    fetchCatalogue().then(setCatalogue).catch(() => undefined);
   }, []);
 
   return (
@@ -104,7 +106,8 @@ export default function Overview() {
         </div>
       )}
 
-      <PipelineActions pipelines={pipelines} />
+<PipelineActions pipelines={catalogue?.pipelines ?? []} />
+      <OperationsPanel operations={catalogue?.operations ?? []} />
       <JobMonitor />
 
       <section className="card">
@@ -124,9 +127,11 @@ export default function Overview() {
               </span>
             </div>
           ))}
-          {jobs.length === 0 && <p className="note">Пока ничего не запускали.</p>}
         </div>
       </section>
+
+      {/* после «Истории запусков» */}
+      <RunsHistory />
     </>
   );
 }

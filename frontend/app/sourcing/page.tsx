@@ -6,7 +6,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { fetchLeads, fetchPipelines, type Lead, type Pipeline, type Stats } from "../api";
+import { fetchCatalogue, fetchLeads, type Lead, type Pipeline, type Stats } from "../api";
 import LeadCard from "../LeadCard";
 import { JobMonitor, PipelineActions } from "@/components/JobMonitor";
 import { useLive } from "@/components/live";
@@ -31,8 +31,8 @@ export default function Sourcing() {
   const reload = useCallback(() => setRevision((n) => n + 1), []);
 
   useEffect(() => {
-    fetchPipelines()
-      .then((all) => setPipelines(all.filter((p) => p.kind !== "write")))
+    fetchCatalogue()
+      .then((c) => setPipelines(c.pipelines.filter((p) => p.kind !== "write")))
       .catch(() => undefined);
   }, []);
 

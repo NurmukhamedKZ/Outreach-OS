@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { fetchPipelines, fetchThreads, type Pipeline, type ThreadSummary } from "../api";
+import { fetchCatalogue, fetchThreads, type Pipeline, type ThreadSummary } from "../api";
 import LeadCard from "../LeadCard";
 import { JobMonitor, PipelineActions } from "@/components/JobMonitor";
 import { useLive } from "@/components/live";
@@ -21,8 +21,8 @@ export default function Writer() {
   const [failure, setFailure] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchPipelines()
-      .then((all) => setPipelines(all.filter((p) => p.kind === "write")))
+    fetchCatalogue()
+      .then((c) => setPipelines(c.pipelines.filter((p) => p.kind === "write")))
       .catch(() => undefined);
   }, []);
 

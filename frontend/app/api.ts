@@ -79,6 +79,32 @@ export function refuse(handle: string, reason: string) {
 
 export type Pipeline = { kind: string; title: string; steps: string[] };
 
+export type Operation = { name: string };
+
+export type Run = { run_id: number; started_at: string; finished_at: string | null;
+  code_version: string | null; config_hash: string | null; note: string | null };
+
+export type PipelineCatalogue = {
+  pipelines: Pipeline[];
+  operations: string[];
+};
+
+export function fetchCatalogue() {
+  return json<PipelineCatalogue>("/api/pipeline");
+}
+
+export function startOperation(name: string) {
+  return json<{ job: Job }>(`/api/operations/${encodeURIComponent(name)}`, { method: "POST" });
+}
+
+export function fetchRuns() {
+  return json<{ runs: Run[] }>("/api/runs");
+}
+
+export function activateRun(runId: number) {
+  return json<{ run_id: number }>(`/api/runs/${runId}/activate`, { method: "POST" });
+}
+
 export type JobStep = { name: string; command: string };
 
 export type Job = {
