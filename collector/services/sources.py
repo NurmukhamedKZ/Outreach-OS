@@ -199,3 +199,34 @@ def parse_reviews(body, branch_id):
                 if isinstance(answer, dict) else None,
         })
     return rows
+
+
+def parse_site_links(html, base_url, domain, keywords, max_pages):
+    """Внутренние ссылки с главной по словарю ключевых слов.
+
+    Детерминированный выбор — regex намеренно (§1.2): модель нужна там, где надо
+    понять смысл живого текста, а не выбрать ссылку. Словарь применяется и к
+    тексту ссылки, и к её адресу: у .kz-сайтов слоги латиницей (/services/), а
+    словарь на русском («о компании», «услуги») — по одному адресу обход находил
+    бы ноль страниц. Только тот же домен, до max_pages.
+    """
+    from urllib.parse import urljoin, urlparse
+    found, seen = [], set()
+    for href, text in re.findall(
+        r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html, re.I | re.S
+    ):
+        label = " ".join(re.sub(r"(?s)<[^>]+>", " ", text).split()).lower()
+        full = urljoin(base_url, href)
+        parsed = urlparse(full)
+        if parsed.netloc and parsed.netloc.split(":")[0] != domain:
+            continue
+        haystack = f"{label} {parsed.path} {href}".lower()
+        if not any(k.lower() in haystack for k in keywords):
+            continue
+        if full in seen:
+            continue
+        seen.add(full)
+        found.append(full)
+        if len(found) == max_pages:
+            break
+    return found

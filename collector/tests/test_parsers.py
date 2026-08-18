@@ -119,6 +119,35 @@ def test_ig_parsing():
     test_ig_quote_binding(posts)
 
 
+def test_site_links_parsing():
+    """Выбор внутренних ссылок с главной: только тот же домен, по словарю.
+
+    Эталон — главная intercomp.kz (снята из raw/): навигация «Услуги»
+    (/services/), «Кейсы» (/projects/), «О компании» (/company/), «Команда»
+    (/company/staff/). Словарь применяется и к тексту ссылки, и к её адресу —
+    иначе .kz-сайт с латинскими слотами не нашёл бы ни одной страницы.
+    """
+    html = fixture_html("site_home_links")
+    links = sources.parse_site_links(html, "https://intercomp.kz/", "intercomp.kz",
+                                     ["о компании", "услуги", "цены", "кейсы", "команда", "вакансии"], 6)
+    assert isinstance(links, list)
+    assert links, "по словарю не нашлось ни одной ссылки"
+    assert all(l.startswith("https://intercomp.kz/") for l in links), \
+        f"утекли чужие домены: {links}"
+    assert len(links) <= 6, "больше потолка страниц"
+    assert any("/services" in l for l in links), "ссылка «Услуги» потеряна"
+    assert any("/company" in l for l in links), "ссылка «О компании» потеряна"
+
+
+def test_site_links_reject_foreign_domains():
+    """Ссылки на чужие домены в обход не попадают: читать чужой сайт незачем."""
+    html = ('<a href="https://other.kz/services/">чужой</a>'
+            '<a href="/services/">Услуги</a>')
+    links = sources.parse_site_links(html, "https://example.kz/", "example.kz",
+                                     ["услуги"], 6)
+    assert links == ["https://example.kz/services/"], links
+
+
 def test_ig_quote_binding(posts=None):
     """Находка модели привязывается к посту по цитате, а не по её номеру.
 

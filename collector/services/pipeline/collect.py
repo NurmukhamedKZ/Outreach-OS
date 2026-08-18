@@ -11,6 +11,7 @@
 Параметры (города, рубрики) берутся из config.toml.
 """
 
+import hashlib
 import json
 import time
 import tomllib
@@ -22,6 +23,7 @@ from threading import Lock
 
 from services import fetch
 from services import sources
+from services import storage
 
 CONFIG = Path("config.toml")
 
@@ -158,6 +160,40 @@ def reviews(ctx):
 
     collected, skipped = download_all(fetch_reviews, budget, branches, ctx, "отзывы 2GIS")
     return {"branches": len(branches), "collected": collected, "skipped": skipped}
+
+
+def site_pages(ctx):
+    """Внутренние страницы сайта — по ссылкам с главной из словаря config.toml.
+
+    Главная уже собрана (collect.sites). Здесь достраивается глубина: до
+    max_pages внутренних страниц (о компании, услуги, цены, кейсы, вакансии).
+    Страница вакансий возвращает hiring-сигнал, потерянный с удалением hh.
+    """
+    from services import store as engine
+    config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    links_cfg = config["site"]["links"]
+    db = engine.connect()
+    try:
+        rows = db.execute("SELECT DISTINCT domain FROM companies WHERE domain IS NOT NULL"
+                          " ORDER BY domain").fetchall()
+    finally:
+        db.close()
+    if not rows:
+        ctx.log("выдача пуста — собирать нечего. Сначала пересборка (rebuild)")
+        return {"sites": 0, "collected": 0, "skipped": 0}
+    budget = Budget(None)
+    jobs = [(row[0], SITE_HOME.format(domain=row[0])) for row in rows]
+    ctx.log(f"внутренние страницы сайтов: {len(jobs)} главных")
+
+    def inner_pages(budget, job):
+        domain, home = job
+        html = budget.get(home)
+        for url in sources.parse_site_links(html, home, domain,
+                                            links_cfg["keywords"], links_cfg["max_pages"]):
+            budget.get(url)
+
+    collected, skipped = download_all(inner_pages, budget, jobs, ctx, "внутренние страницы")
+    return {"sites": len(jobs), "collected": collected, "skipped": skipped}
 
 
 def instagram(ctx):
