@@ -22,21 +22,8 @@ GIS_FIRM_URL = re.compile(r"2gis\.kz/([a-z]+)/firm/(\d+)$")
 
 
 def load_pages():
-    """Сайдкары raw/, отсортированные. Временная локальная копия build.load_pages;
-    Task 4 вводит services/storage.iter_pages, и rebuild переходит на него в Task 7."""
-    pages = []
-    for sidecar in sorted(RAW.glob("*.json")):
-        if sidecar.name.count(".") != 1:
-            continue
-        sha = sidecar.name.removesuffix(".json")
-        page = RAW / f"{sha}.html.gz"
-        if not page.exists():
-            continue
-        meta = json.loads(sidecar.read_text(encoding="utf-8"))
-        meta["sha"] = sha
-        meta["path"] = page
-        pages.append(meta)
-    return sorted(pages, key=lambda p: (p["url"], p["sha"]))
+    from services import storage
+    return storage.iter_pages()
 
 
 def html_of(page):

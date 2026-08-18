@@ -4,13 +4,12 @@ raw/ — не кэш, а невосстановимое сырьё: страни
 перекачать нельзя. Оно же условие отладки (разбор правится без похода в сеть) и
 хранилище фикстур для demo()-проверок в скриптах.
 
-Страница лежит как raw/<sha1(url)>.html.gz, рядом сайдкар raw/<sha1(url)>.json
-с адресом запроса, конечным адресом, статусом и временем забора.
+Чтение и запись страниц — через services.storage (адаптер сырья): здесь только
+HTTP и сайдкар, а не путь к файлу.
 
 Повторы делает сам Fetcher (retries=3, retry_delay=1 по умолчанию) — своего цикла нет.
 """
 
-import gzip
 import hashlib
 import json
 import logging
@@ -19,11 +18,12 @@ from pathlib import Path
 
 from scrapling.fetchers import Fetcher
 
+from services import storage
+
 # Scrapling пишет INFO на каждый запрос, включая штатные 404 (у листовой рубрики
 # нет страницы подрубрик). Это тонет прогресс скриптов в потоке ложных «ошибок».
 logging.getLogger("scrapling").setLevel(logging.WARNING)
 
-RAW = Path("data/raw")
 # Производные JSONL до Ф3 живут отдельно от сырья: build.py пересоберёт их из raw/.
 JSONL_DIR = Path("data/raw_jsonl_legacy")
 
@@ -45,35 +45,19 @@ class BotCheck(RuntimeError):
     """
 
 
-def _paths(url):
-    h = hashlib.sha1(url.encode()).hexdigest()
-    return RAW / f"{h}.html.gz", RAW / f"{h}.json"
-
-
 def is_cached(url):
     """Лежит ли страница в raw/ целиком — со страницей и сайдкаром.
 
     Нужен вызывающему, чтобы отличить бесплатное чтение с диска от похода в сеть:
     на этом держится учёт запросов в collect.py.
     """
-    page_path, sidecar_path = _paths(url)
-    if not (page_path.exists() and sidecar_path.exists()):
-        return False
-    # Заглушка капчи, записанная до появления BotCheck, занимает имя настоящей
-    # страницы. Считаем её отсутствующей: страница доберётся и перезапишет отказ.
-    landed = json.loads(sidecar_path.read_text(encoding="utf-8"))["final_url"]
-    return "captcha" not in landed.lower()
+    return storage.exists(url)
 
 
 def get(url, **kw):
     """GET через слой сырья. Возвращает сырой HTML."""
-    RAW.mkdir(exist_ok=True)
-    page_path, sidecar_path = _paths(url)
-    # Сайдкар пишется последним: страница без него считается недокачанной и берётся заново,
-    # иначе потерялся бы final_url, на котором держится обнаружение подмены.
     if is_cached(url):
-        with gzip.open(page_path, "rt", encoding="utf-8") as fh:
-            return fh.read()
+        return storage.get(hashlib.sha1(url.encode()).hexdigest())
 
     page = Fetcher.get(url, impersonate="chrome", **kw)
     if page.status != 200:
@@ -83,19 +67,15 @@ def get(url, **kw):
         raise BotCheck(f"{url}: источник увёл на проверку робота {landed}")
     # .text у Response — текст корневого элемента (пустой), сырая разметка в .html_content
     html = str(page.html_content)
-    with gzip.open(page_path, "wt", encoding="utf-8") as fh:
-        fh.write(html)
-    sidecar_path.write_text(
-        json.dumps(
-            {
-                "url": url,
-                "final_url": landed,
-                "status": page.status,
-                "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+    storage.put(
+        url,
+        html,
+        {
+            "url": url,
+            "final_url": landed,
+            "status": page.status,
+            "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
     )
     return html
 
@@ -107,10 +87,8 @@ def final_url(url):
     и запредельная страница 2GIS отвечают HTTP 200 и отдают чужое содержимое.
     Статус тут не помогает — помогает только конечный адрес.
     """
-    _, sidecar_path = _paths(url)
-    if not sidecar_path.exists():
-        return None
-    return json.loads(sidecar_path.read_text(encoding="utf-8"))["final_url"]
+    sidecar = storage.meta(url)
+    return sidecar["final_url"] if sidecar else None
 
 
 def jsonl(name, rows, key):
@@ -147,17 +125,17 @@ def demo():
     """Дедуп и дозапись: повторный прогон не плодит строк. Сайдкар отдаёт final_url."""
     import tempfile
 
-    global RAW, JSONL_DIR
+    global JSONL_DIR
     with tempfile.TemporaryDirectory() as tmp:
-        RAW = Path(tmp)
-        _, sidecar_path = _paths("https://2gis.kz/almaty/rubric/653/page/7")
-        sidecar_path.write_text(
-            json.dumps({"url": "https://2gis.kz/almaty/rubric/653/page/7",
-                        "final_url": "https://2gis.kz/almaty/rubric/653",
-                        "status": 200, "fetched_at": "2026-08-12T09:14:03Z"}),
-            encoding="utf-8",
+        storage.RAW = Path(tmp)
+        url = "https://2gis.kz/almaty/rubric/653/page/7"
+        storage.put(
+            url,
+            "<html>ф</html>",
+            {"url": url, "final_url": "https://2gis.kz/almaty/rubric/653",
+             "status": 200, "fetched_at": "2026-08-12T09:14:03Z"},
         )
-        assert final_url("https://2gis.kz/almaty/rubric/653/page/7") == "https://2gis.kz/almaty/rubric/653", \
+        assert final_url(url) == "https://2gis.kz/almaty/rubric/653", \
             "сайдкар перестал отдавать конечный адрес — проверка подмены страницы слепа"
         assert final_url("https://2gis.kz/almaty/rubric/653/page/99") is None
 
