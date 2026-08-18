@@ -48,3 +48,5 @@ frontend/next-env.d.ts
 
 # Отладка браузером
 .playwright-mcp/
+
+.DS_Store
