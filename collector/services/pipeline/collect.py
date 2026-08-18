@@ -101,8 +101,10 @@ def sites(ctx):
     и кнопка WhatsApp живут на ней. Обход 30 страниц на сайт по ARCHITECTURE §8.1
     стоил бы в пятнадцать раз дороже ради того же набора сигналов.
 
-    Домены берутся из view текущего прогона, поэтому шаг идёт вторым проходом.
-    Всё идемпотентно, порядок восстанавливается сам.
+    Домены берутся из view текущего прогона, поэтому шаг идёт вторым проходом:
+    компании, найденные сбором выше, появятся в выдаче только после rebuild, и
+    их сайты соберёт следующий запуск. Всё идемпотентно, порядок восстанавливается
+    сам — но пустая выдача значит «сначала пересборка», а не «сайтов нет».
     """
     from services import store as engine
     db = engine.connect()
@@ -112,6 +114,9 @@ def sites(ctx):
             " ORDER BY domain")]
     finally:
         db.close()
+    if not domains:
+        ctx.log("выдача пуста — собирать нечего. Сначала пересборка (rebuild)")
+        return {"domains": 0, "collected": 0, "skipped": 0}
     budget = Budget(None)   # без потолка: только главные страницы, дедуп по raw/
     ctx.log(f"сайты компаний: {len(domains)}")
     collected, skipped = download_all(site_page, budget, domains, ctx, "сайты компаний")
@@ -141,6 +146,9 @@ def instagram(ctx):
     finally:
         db.close()
     accounts = [sources.ig_username(row[0]) for row in rows]
+    if not accounts:
+        ctx.log("аккаунтов в выдаче нет — сначала пересборка (rebuild)")
+        return {"accounts": 0, "collected": 0, "failed": 0}
     if not IG_COOKIES.exists():
         raise RuntimeError(f"нет {IG_COOKIES}: сначала uv run -m ig.login")
     jar = json.loads(IG_COOKIES.read_text(encoding="utf-8"))

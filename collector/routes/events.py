@@ -26,7 +26,8 @@ HEARTBEAT_SECONDS = 15
 async def stream():
     async def generate():
         async with events.subscribe() as queue:
-            yield sse({"type": "snapshot", "stats": metrics.snapshot()})
+            snapshot = await asyncio.to_thread(metrics.snapshot)   # sqlite: не в цикле
+            yield sse({"type": "snapshot", "stats": snapshot})
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)

@@ -3,6 +3,10 @@
 Переезд на объектное хранилище (R2/MinIO) — второй файл с тем же интерфейсом:
 схема и разбор не знают, откуда приходят страницы. raw/ невосстановимо:
 страница удаляется, перекачать нельзя.
+
+Путь к raw/ живёт здесь и больше нигде: адаптер, мимо которого читают файлы
+по Path из чужого словаря, ничего не изолирует. Отсюда же читаются оплаченные
+ответы модели — они лежат в том же raw/ и по тому же правилу невосстановимы.
 """
 
 import gzip
@@ -13,8 +17,12 @@ from pathlib import Path
 RAW = Path("data/raw")
 
 
+def sha_of(url):
+    return hashlib.sha1(url.encode()).hexdigest()
+
+
 def _paths(url):
-    h = hashlib.sha1(url.encode()).hexdigest()
+    h = sha_of(url)
     return RAW / f"{h}.html.gz", RAW / f"{h}.json"
 
 
@@ -22,11 +30,11 @@ def put(url, body, meta):
     """Записать страницу + сайдкар. Сайдкар пишется последним: страница без него
     считается недокачанной и берётся заново (иначе потерялся бы final_url)."""
     page_path, sidecar_path = _paths(url)
-    RAW.mkdir(exist_ok=True)
+    RAW.mkdir(parents=True, exist_ok=True)
     with gzip.open(page_path, "wt", encoding="utf-8") as fh:
         fh.write(body)
     sidecar_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-    return hashlib.sha1(url.encode()).hexdigest()
+    return sha_of(url)
 
 
 def get(sha):
@@ -64,6 +72,23 @@ def iter_pages():
             continue
         meta = json.loads(sidecar.read_text(encoding="utf-8"))
         meta["sha"] = sha
-        meta["path"] = page
         pages.append(meta)
     return sorted(pages, key=lambda p: (p["url"], p["sha"]))
+
+
+LLM_SUFFIX = ".llm.json"
+
+
+def llm_answers():
+    """Оплаченные ответы модели, лежащие файлами в raw/ (кэш до переезда в базу).
+
+    Порядок фиксирован именем файла: пересборка обязана быть функцией снимка.
+    """
+    for path in sorted(RAW.glob(f"*{LLM_SUFFIX}")):
+        yield json.loads(path.read_text(encoding="utf-8"))
+
+
+def has_llm_answer(model, prompt):
+    """Оплачен ли уже этот запрос файлом. Ключ файлового кэша — sha256(model+prompt)."""
+    digest = hashlib.sha256(f"{model}\n{prompt}".encode()).hexdigest()
+    return (RAW / f"{digest}{LLM_SUFFIX}").exists()

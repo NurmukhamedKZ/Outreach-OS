@@ -106,7 +106,7 @@ export default function Overview() {
         </div>
       )}
 
-<PipelineActions pipelines={catalogue?.pipelines ?? []} />
+      <PipelineActions pipelines={catalogue?.pipelines ?? []} />
       <OperationsPanel operations={catalogue?.operations ?? []} />
       <JobMonitor />
 
@@ -127,10 +127,10 @@ export default function Overview() {
               </span>
             </div>
           ))}
+          {jobs.length === 0 && <p className="note">Пока ничего не запускали.</p>}
         </div>
       </section>
 
-      {/* после «Истории запусков» */}
       <RunsHistory />
     </>
   );

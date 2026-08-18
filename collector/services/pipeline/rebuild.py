@@ -6,88 +6,140 @@ fetches вернули бы чужие данные. Продуктовые чи
 прогона (только запрос отказов сменил префикс на state.suppression, Task 6/2).
 """
 
-import gzip
 import json
 import re
 import tomllib
 from pathlib import Path
 
-from services import enrich, resolve, score, sources
+from services import enrich, resolve, score, sources, storage
 
-RAW = Path("data/raw")
-SCHEMA = Path("store/schema.sql")
+CONFIG = Path("config.toml")
 
 GIS_LIST_URL = re.compile(r"2gis\.kz/([a-z]+)/rubric/(\d+)(?:/page/(\d+))?$")
 GIS_FIRM_URL = re.compile(r"2gis\.kz/([a-z]+)/firm/(\d+)$")
 
 
 def load_pages():
-    from services import storage
     return storage.iter_pages()
 
 
 def html_of(page):
-    with gzip.open(page["path"], "rt", encoding="utf-8") as fh:
-        return fh.read()
+    """HTML страницы снимка — через адаптер по sha, а не по пути из словаря:
+    иначе переезд хранилища ломался бы на первом же чтении."""
+    return storage.get(page["sha"])
 
 
-def load_llm_answers(db, run_id, kind):
-    """Кэшированные ответы модели заданного вида.
+def load_llm_answers(db, kind):
+    """Оплаченные ответы модели заданного вида — из обоих хранилищ, без дублей.
 
-    Источник — state.llm_answers (Task 8). Пока таблица не заполнена (до
-    миграции Task 11) читает raw/*.llm.json тем же разбором, что build.py:
-    kind берётся из поля answer, subject не нужен.
+    Источники два и оба читаются: state.llm_answers (сюда пишет analyze) и
+    файлы raw/*.llm.json (так платили до переезда). Выбирать источник по
+    признаку «таблица пуста» нельзя: первый же новый ответ сделал бы таблицу
+    непустой и спрятал бы все ответы, оставшиеся файлами.
+
+    Ключ дедупа — (model, prompt): промпт уникален по компании/аккаунту и им же
+    ключуется файловый кэш. Совпало — выигрывает таблица. Порядок фиксирован:
+    пересборка обязана быть функцией снимка, а не порядка строк на диске.
     """
-    rows = db.execute(
-        "SELECT subject, model, prompt, answer FROM state.llm_answers WHERE kind = ?",
-        (kind,),
-    ).fetchall()
-    if rows:
-        return [{"subject": r["subject"], "model": r["model"], "prompt": r["prompt"],
-                 "answer": json.loads(r["answer"])} for r in rows]
-    answers = []
-    for path in sorted(RAW.glob("*.llm.json")):
-        answer = json.loads(path.read_text(encoding="utf-8"))
+    answers = {}
+    for answer in storage.llm_answers():
         if answer.get("kind", "company_profile") == kind:
-            answers.append(answer)
-    return answers
+            answers[(answer["model"], answer["prompt"])] = {
+                "subject": subject_of(kind, answer["prompt"]), **answer,
+            }
+    for row in db.execute(
+        "SELECT subject, model, prompt, answer FROM state.llm_answers WHERE kind = ?"
+        " ORDER BY subject, id",
+        (kind,),
+    ):
+        answers[(row["model"], row["prompt"])] = {
+            "kind": kind, "subject": row["subject"], "model": row["model"],
+            "prompt": row["prompt"], **json.loads(row["answer"]),
+        }
+    return [answers[key] for key in sorted(answers)]
+
+
+def subject_of(kind, prompt):
+    """Кого спрашивали — из первой строки промпта, как её строит analyze.
+
+    Файловый кэш subject не хранил: у него ключ был sha256(model+prompt).
+    Восстанавливается он тем же разбором, которым пользуются fill_profiles и
+    enrich, — второго способа опознать компанию в проекте нет.
+    """
+    lines = prompt.splitlines()
+    if kind == "ig_signals":
+        return lines[0].removeprefix("Инстаграм: ")
+    name = lines[0].removeprefix("Компания: ")
+    city = lines[1].removeprefix("Город: ") if len(lines) > 1 else ""
+    return f"{name} | {city}"
 
 
 def run(ctx):
+    """Собрать прогон и опубликовать его последним действием.
+
+    Пока current_run не переключён, читатели видят прежний прогон: ни один
+    промежуточный коммит стадий его не трогает, поэтому атомарность выдачи
+    держится одним activate_run, а не одной большой транзакцией. Прогон,
+    брошенный отменой или ошибкой, остаётся в *_all без finished_at и текущим
+    не становится — откатывать нечего, публиковать нечего.
+    """
     from services import store as engine
     ctx.log("пересборка из raw/")
     db = engine.connect()
     run_id = engine.new_run(db)
-    pages = load_pages()
-    # Пишем *все* таблицы нового прогона. Пока current_run не переключён,
-    # читатели видят прежний прогон: ни один промежуточный коммит ниже не
-    # трогает current_run, поэтому атомарность выдачи держится одним финальным
-    # activate_run (одна UPDATE), а не одной большой транзакцией.
     try:
-        fill_fetches(db, run_id, pages)
-        fill_orgs(db, run_id, pages, ctx)
-        fill_contacts(db, run_id, pages)
-        resolve.resolve(db, run_id)
-        enrich.enrich(db, run_id, pages, scoring_weights())
-        fill_profiles(db, run_id)
-        score.score_all(db, run_id, *ranking_config())
-        engine.activate_run(db, run_id)   # публикация — атомарно, последней
-        engine.finish_run(db, run_id)
-    except BaseException:
-        # Прогон брошен: current_run не переключён, читатели целы. Записи
-        # нового run_id остаются в *_all сиротами — это и есть «отменённый
-        # прогон», который не стал текущим.
-        raise
+        pages = load_pages()
+        ctx.log(f"  снимок: {len(pages)} страниц")
+        stage = stage_reporter(ctx, STAGE_COUNT)
+
+        stage("страницы снимка", lambda: fill_fetches(db, run_id, pages))
+        stage("организации 2GIS", lambda: fill_orgs(db, run_id, pages, ctx))
+        stage("контакты филиалов", lambda: fill_contacts(db, run_id, pages))
+        stage("склейка компаний", lambda: resolve.resolve(db, run_id))
+        stage("сигналы", lambda: enrich.enrich(db, run_id, pages, scoring_weights()))
+        stage("профили от модели", lambda: fill_profiles(db, run_id))
+        stage("скоринг", lambda: score.score_all(db, run_id, *ranking_config()))
+        stage(f"публикация прогона {run_id}", lambda: publish(engine, db, run_id))
     finally:
         db.close()
-    ctx.progress(1, 1, "пересборка завершена")
     return {"run_id": run_id}
+
+
+STAGE_COUNT = 8
+
+
+def stage_reporter(ctx, total):
+    """Один способ пройти стадию: спросить об отмене, показать её и сделать.
+
+    Отмена проверяется перед стадией, а не внутри: единица работы пересборки —
+    стадия целиком, и обрывать её на середине незачем — прогон всё равно не
+    станет текущим.
+    """
+    done = 0
+
+    def stage(label, work):
+        nonlocal done
+        ctx.check_cancelled()
+        done += 1
+        ctx.progress(done, total, label)
+        work()
+
+    return stage
+
+
+def publish(engine, db, run_id):
+    """Подмена выдачи одним UPDATE — последнее, что делает пересборка."""
+    engine.activate_run(db, run_id)
+    engine.finish_run(db, run_id)
+
+
+def config():
+    return tomllib.loads(CONFIG.read_text(encoding="utf-8"))
 
 
 def scoring_weights():
     """Веса сигналов из config.toml: в коде их держать нельзя, они калибруются."""
-    config = tomllib.loads(Path("config.toml").read_text(encoding="utf-8"))["scoring"]
-    return config["intent"]
+    return config()["scoring"]["intent"]
 
 
 def fill_profiles(db, run_id):
@@ -114,15 +166,12 @@ def fill_profiles(db, run_id):
             (run_id, run_id, run_id),
         )
     }
-    for answer in load_llm_answers(db, run_id, "company_profile"):
-        payload = answer.get("answer", answer)
-        lines = answer["prompt"].splitlines()
-        name = lines[0].removeprefix("Компания: ")
-        city = lines[1].removeprefix("Город: ") if len(lines) > 1 else ""
+    for answer in load_llm_answers(db, "company_profile"):
+        name, _, city = answer["subject"].partition(" | ")
         company_id = companies.get((name, city))
         if not company_id:
             continue
-        profile = payload["profile"]
+        profile = answer["profile"]
         db.execute(
             "INSERT OR REPLACE INTO profiles_all (run_id, company_id, model, industry,"
             " size_hint, has_sales_team, why_now, quote, confidence)"
@@ -143,11 +192,11 @@ def fill_profiles(db, run_id):
 
 def ranking_config():
     """Веса и списки для скоринга. Рубрики нужны целиком: fit считается по ним."""
-    config = tomllib.loads(Path("config.toml").read_text(encoding="utf-8"))
-    return config["scoring"], {
-        "include": set(config["rubrics"]["include"]),
-        "exclude_branch": set(config["rubrics"]["exclude"]),
-        "cities": set(config["cities"]),
+    settings = config()
+    return settings["scoring"], {
+        "include": set(settings["rubrics"]["include"]),
+        "exclude_branch": set(settings["rubrics"]["exclude"]),
+        "cities": set(settings["cities"]),
     }
 
 

@@ -108,8 +108,8 @@ def instagram_signals(db, run_id, pages, weights):
         account = {"company_id": company_id, "username": username, "posts": posts}
         posting_rhythm_signals(db, run_id, account, weights, horizon)
 
-    for answer in ig_answers(db, run_id):
-        username = answer["prompt"].splitlines()[0].removeprefix("Инстаграм: ")
+    for answer in ig_answers(db):
+        username = answer["subject"]   # логин: его же кладёт rebuild.subject_of
         company_id = companies.get(username)
         posts = feeds.get(username)
         if not company_id or not posts:
@@ -246,10 +246,10 @@ def companies_by_username(db, run_id):
     return {name: next(iter(ids)) for name, ids in owners.items() if len(ids) == 1}
 
 
-def ig_answers(db, run_id):
+def ig_answers(db):
     from services.pipeline import rebuild   # локально: rebuild импортирует enrich
 
-    return rebuild.load_llm_answers(db, run_id, "ig_signals")
+    return rebuild.load_llm_answers(db, "ig_signals")
 
 
 def days_between(observed_at, horizon):

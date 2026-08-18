@@ -6,8 +6,9 @@ state.db (порождённое) ATTACH'ится к derived.db (вычисли�
 поэтому ни одна операция не пишет туда и сюда — это сторожит тест.
 """
 
+import hashlib
 import sqlite3
-import tomllib
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -67,9 +68,9 @@ def connect():
 
 def new_run(db, note=None):
     """Начать прогон: вернуть run_id. current_run пока не трогается."""
-    import subprocess
     code_version = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True
+        ["git", "rev-parse", "--short", "HEAD"], cwd=DATA.parent,
+        capture_output=True, text=True,
     ).stdout.strip() or None
     config_hash = config_digest()
     cur = db.execute(
@@ -81,7 +82,6 @@ def new_run(db, note=None):
 
 
 def config_digest():
-    import hashlib
     path = Path(__file__).resolve().parent.parent / "config.toml"
     return hashlib.sha256(path.read_bytes()).hexdigest()
 

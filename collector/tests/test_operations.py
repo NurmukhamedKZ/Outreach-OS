@@ -4,6 +4,8 @@
 в резолвленных модулях не должно быть services/fetch и scrapling.
 """
 import ast
+import inspect
+import re
 from pathlib import Path
 
 # Корень collector/ — там лежат services/, store/, db/.
@@ -56,39 +58,101 @@ def test_rebuild_import_graph_has_no_network():
             f"rebuild тянет сеть через {rel}"
 
 
-def test_collect_ops_accept_runcontext():
-    """Операции сбора принимают RunContext и возвращают dict."""
-    from services.pipeline import collect
-    ctx = DummyContext()
-    # не запускаем сеть — только проверяем, что сигнатуры живы
-    assert callable(collect.gis) and callable(collect.sites) and callable(collect.instagram)
+def test_every_operation_takes_exactly_a_runcontext():
+    """Контракт воркера: операция зовётся как OPERATIONS[name](ctx).
 
-
-def test_all_operations_callable():
-    from services.pipeline import OPERATIONS
-    for name, fn in OPERATIONS.items():
-        assert callable(fn), name
-
-
-def test_no_write_module_opens_both_dbs():
-    """Ни один модуль записи не открывает обе базы напрямую (спека §1).
-
-    Единственное место с обоими путями — services/store.py (ATTACH). Модули
-    записи (rebuild/suppression/jobs/thread_store) пишут через store.connect()
-    в свою схему и не держат оба файла сами; транзакция через две базы не
-    атомарна, и такого по построению быть не должно.
+    Проверяется подпись, а не вызываемость: `assert callable` проходил бы и на
+    функции с тремя обязательными аргументами, а воркер упал бы на ней в бою.
+    Параметры операций живут в config.toml — лишний обязательный аргумент
+    означает, что кто-то протащил их в сигнатуру.
     """
-    from services import store as engine
-    write_modules = [
-        Path(engine.__file__).resolve().parent.parent / "services" / "pipeline" / "rebuild.py",
-        Path(engine.__file__).resolve().parent.parent / "services" / "suppression.py",
-        Path(engine.__file__).resolve().parent.parent / "services" / "jobs.py",
-        Path(engine.__file__).resolve().parent.parent.parent / "writer" / "thread_store.py",
-    ]
-    for path in write_modules:
-        text = path.read_text(encoding="utf-8")
-        assert not ("derived.db" in text and "state.db" in text), \
-            f"{path.name} открывает обе базы — нарушение атомарности"
+    from services.pipeline import OPERATIONS
+
+    for name, operation in OPERATIONS.items():
+        signature = inspect.signature(operation)
+        required = [
+            parameter for parameter in signature.parameters.values()
+            if parameter.default is inspect.Parameter.empty
+            and parameter.kind not in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD)
+        ]
+        assert len(required) == 1, f"{name}{signature}: воркер передаёт только ctx"
+
+
+def test_operations_use_the_context_they_are_given():
+    """Операция обязана говорить, что делает, и слушать отмену.
+
+    Кнопка отмены на операции, которая не спрашивает check_cancelled, — обман:
+    воркер поставит флаг, а джоба будет идти до конца. Так и было у пересборки,
+    самой длинной операции из всех, и у выгрузки, не трогавшей ctx вовсе.
+
+    Проверка по модулю, а не по телу функции: операции делегируют работу
+    соседям в том же файле (probe.gis_list -> collect_list), и требовать вызов
+    именно в теле значило бы запрещать это. ctx.progress не требуется: пробе из
+    двух запросов нечего показывать в счётчике.
+    """
+    from services.pipeline import OPERATIONS
+
+    for name, operation in OPERATIONS.items():
+        source = inspect.getsource(inspect.getmodule(operation))
+        assert "ctx.check_cancelled" in source, f"{name}: отмену не спрашивает никто"
+        assert "ctx.log" in source, f"{name}: молчит в лог"
+
+
+WRITE = re.compile(
+    r"(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|UPDATE|DELETE\s+FROM)\s+(state\.)?(\w+)",
+    re.IGNORECASE,
+)
+DERIVED_TABLES = frozenset(
+    "runs current_run fetches_all orgs_all contacts_all companies_all"
+    " company_links_all signals_all scores_all profiles_all".split()
+)
+
+
+def writes_of(path):
+    """Куда пишет модуль: {"state", "derived"} по его же SQL.
+
+    Разбор текстом, а не выполнением: запись в чужую базу должна ловиться до
+    того, как её кто-нибудь вызовет, и на всех ветках сразу.
+    """
+    targets = set()
+    for prefix, table in WRITE.findall(path.read_text(encoding="utf-8")):
+        if prefix:
+            targets.add("state")
+        elif table in DERIVED_TABLES:
+            targets.add("derived")
+    return targets
+
+
+def test_no_operation_writes_to_both_dbs():
+    """Ни один модуль не пишет и в derived, и в state (спека §1).
+
+    Транзакция через две базы в WAL не атомарна: наполовину прошедшая запись
+    оставила бы прогон без отказа или отказ без прогона. Поэтому граница
+    проведена по модулям — пересборка пишет только вычислимое, анализ и джобы
+    только порождённое, — и проверяется она по SQL, а не по именам файлов в
+    строках: прежняя проверка искала литералы "derived.db"/"state.db" и прошла
+    бы, начни rebuild писать в state.suppression.
+    """
+    root = COLLECTOR
+    modules = sorted((root / "services").rglob("*.py")) + sorted((root / "routes").rglob("*.py"))
+    modules += [root / "store" / "lead.py", root.parent / "writer" / "thread_store.py"]
+
+    for path in modules:
+        if path.name == "store.py":
+            continue   # сам движок: ATTACH и обе схемы живут здесь по построению
+        targets = writes_of(path)
+        assert targets != {"state", "derived"}, \
+            f"{path.name} пишет в обе базы — транзакция через две базы не атомарна"
+
+
+def test_the_guard_would_catch_a_cross_db_write(tmp_path):
+    """Сторож ловит именно то, ради чего стоит: запись в обе базы из одного модуля."""
+    offender = tmp_path / "offender.py"
+    offender.write_text(
+        'db.execute("INSERT INTO companies_all (run_id) VALUES (1)")\n'
+        'db.execute("INSERT INTO state.suppression (handle) VALUES (?)", (h,))\n',
+        encoding="utf-8")
+    assert writes_of(offender) == {"state", "derived"}
 
 
 class DummyContext:

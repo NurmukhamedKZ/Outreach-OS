@@ -5,9 +5,11 @@
 Аргументы к шагам не принимаются: у операций параметров нет, реестр живёт
 в services/pipeline (PIPELINES).
 
-Эндпоинты async не ради скорости, а ради шины событий: publish() кладёт в
-asyncio-очереди, а это безопасно только из event loop, не из threadpool.
+Постановка джобы ходит в sqlite, поэтому уезжает в поток: блокирующий вызов
+в async-эндпоинте останавливает весь цикл, а вместе с ним и SSE-стрим.
 """
+
+import asyncio
 
 from fastapi import APIRouter, HTTPException
 
@@ -26,8 +28,8 @@ def catalogue():
 
 
 @router.post("/{kind}")
-async def start(kind: str, limit: int = 10):
+async def start(kind: str):
     if kind not in jobs.PIPELINES:
         raise HTTPException(404, f"нет пайплайна {kind}. Есть: {', '.join(jobs.PIPELINES)}")
-    job_id = jobs.enqueue(kind, limit)
-    return {"job": jobs.job(job_id)}
+    job_id = await asyncio.to_thread(jobs.enqueue_pipeline, kind)
+    return {"job": await asyncio.to_thread(jobs.job, job_id)}

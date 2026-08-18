@@ -30,12 +30,10 @@ from types import SimpleNamespace
 from services import events, store as engine
 from services.pipeline import OPERATIONS, PIPELINES
 
-LOG_LIMIT = 20_000
-
-COLUMNS = (
-    "id", "kind", "title", "status", "step", "steps", "log", "progress",
-    "result", "exit_code", "error", "created_at", "started_at", "finished_at",
-)
+# Потолок лога в символах, а не в строках: строку дописывает сам SQLite
+# (log = log || ?), и мерить длину он умеет, а считать переводы строки — нет.
+LOG_LIMIT_CHARS = 2_000_000
+OVERFLOW_NOTE = "\n— лог длиннее потолка, дальше не пишем"
 
 _current_ctx = None   # активный контекст шага для кооперативной отмены
 
@@ -53,19 +51,28 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def pipeline_steps(kind, limit=None):
-    """Имена операций пайплайна. limit игнорируется: у операций параметров нет."""
+def pipeline_steps(kind):
+    """Имена операций пайплайна."""
     if kind not in PIPELINES:
         raise KeyError(kind)
     return list(PIPELINES[kind]["steps"])
 
 
-def enqueue(kind, limit=10):
-    if kind in PIPELINES:
-        return enqueue_steps(kind, PIPELINES[kind]["title"], pipeline_steps(kind, limit))
-    if kind in OPERATIONS:
-        return enqueue_steps(kind, kind, [kind])
-    raise KeyError(kind)
+def enqueue_pipeline(kind):
+    """Поставить пайплайн: несколько операций одной джобой."""
+    return enqueue_steps(kind, PIPELINES[kind]["title"], pipeline_steps(kind))
+
+
+def enqueue_operation(name):
+    """Поставить одну операцию.
+
+    Отдельно от пайплайна, а не общим enqueue с поиском по обоим реестрам:
+    имена пересекаются («rebuild» — и операция, и пайплайн), и общий поиск
+    молча ставил бы пайплайн там, где просили операцию.
+    """
+    if name not in OPERATIONS:
+        raise KeyError(name)
+    return enqueue_steps(name, name, [name])
 
 
 def enqueue_steps(kind, title, names):
@@ -120,7 +127,9 @@ def log_of(job_id):
 
 
 def as_job(row):
-    record = dict(zip(COLUMNS, row))
+    """Строка state.jobs -> то, что видит фронт. Порядок колонок берётся у самой
+    строки (row_factory=Row), а не из копии списка рядом со схемой."""
+    record = dict(row)
     names = json.loads(record.pop("steps") or "[]")
     log = record.pop("log") or ""
     return {
@@ -202,6 +211,9 @@ def make_context(job_id):
 async def _execute(job_id):
     names = json.loads(_raw_steps(job_id))   # json-строка имён из state.jobs
     for index, name in enumerate(names):
+        if name not in OPERATIONS:
+            _finish(job_id, "failed", error=f"нет операции {name}")
+            return
         _update(job_id, step=index)
         ctx, _state = make_context(job_id)
         try:
@@ -213,25 +225,30 @@ async def _execute(job_id):
         except Exception as error:
             _finish(job_id, "failed", error=f"{type(error).__name__}: {error}")
             return
-    _finish(job_id, "done", exit_code=0)
+    _finish(job_id, "done")
 
 
 def _append_log(job_id, lines):
+    """Дописать строки в конец лога.
+
+    Дописывает SQLite (log = log || ?), а не Python: читать весь лог, склеивать
+    и писать обратно на каждой строке — квадрат по длине лога, и на длинном
+    сборе это заметно. Потолок держит то же выражение: за ним UPDATE просто не
+    находит строки, и один раз дописывается пометка.
+    """
+    chunk = "\n".join(lines)
     with closing(connect()) as db:
-        stored = db.execute(
-            "SELECT log FROM state.jobs WHERE id = ?", (job_id,)
-        ).fetchone()[0]
-        stored_lines = stored.split("\n") if stored else []
-        room = LOG_LIMIT - len(stored_lines)
-        if room <= 0:
-            return
-        stored_lines.extend(lines[:room])
-        if len(lines) > room:
-            stored_lines.append(f"— вывод длиннее {LOG_LIMIT} строк, дальше не пишем")
-        db.execute(
-            "UPDATE state.jobs SET log = ? WHERE id = ?",
-            ("\n".join(stored_lines), job_id),
-        )
+        written = db.execute(
+            "UPDATE state.jobs SET log = CASE WHEN log = '' THEN ? ELSE log || ? END"
+            " WHERE id = ? AND length(log) < ?",
+            (chunk, "\n" + chunk, job_id, LOG_LIMIT_CHARS),
+        ).rowcount
+        if not written:
+            db.execute(
+                "UPDATE state.jobs SET log = log || ? WHERE id = ?"
+                " AND length(log) >= ? AND log NOT LIKE ?",
+                (OVERFLOW_NOTE, job_id, LOG_LIMIT_CHARS, f"%{OVERFLOW_NOTE}"),
+            )
         db.commit()
 
 
@@ -248,8 +265,10 @@ def _update(job_id, **fields):
     publish_job(job_id)
 
 
-def _finish(job_id, status, exit_code=None, error=None):
-    _update(job_id, status=status, exit_code=exit_code, error=error, finished_at=now())
+def _finish(job_id, status, error=None):
+    """Кода возврата у операции нет: она возвращает dict или бросает исключение.
+    Колонка exit_code осталась от эпохи subprocess и больше не заполняется."""
+    _update(job_id, status=status, error=error, finished_at=now())
     events.publish({"type": "refresh"})
 
 

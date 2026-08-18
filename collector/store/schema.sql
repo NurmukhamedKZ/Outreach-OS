@@ -147,6 +147,12 @@ CREATE TABLE IF NOT EXISTS profiles_all (
   PRIMARY KEY (run_id, company_id)
 );
 
+-- View текущего прогона. IF NOT EXISTS, а не DROP+CREATE: connect() зовётся на
+-- каждую запись лога и прогресса, и любой DDL внутри него забирал бы у derived
+-- блокировку записи ровно тогда, когда её держит идущая пересборка
+-- («database is locked» на первой же строке лога). Цена — правка определения
+-- ниже не доедет до уже созданной базы сама; расхождение ловит
+-- test_views_match_schema_file, а чинится оно DROP VIEW (данных в них нет).
 CREATE VIEW IF NOT EXISTS fetches AS
   SELECT f.* FROM fetches_all f JOIN current_run USING (run_id);
 CREATE VIEW IF NOT EXISTS orgs AS

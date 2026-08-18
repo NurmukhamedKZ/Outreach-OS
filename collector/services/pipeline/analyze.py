@@ -5,7 +5,6 @@
 пересборка остаётся чистой функцией от сырья и не стоит ни цента.
 """
 
-import hashlib
 import json
 import os
 import sys
@@ -14,11 +13,10 @@ from pathlib import Path
 
 from langchain_openrouter import ChatOpenRouter
 
-from services import sources
+from services import sources, storage
 from services.pipeline import rebuild
 
 CONFIG = Path("config.toml")
-RAW = Path("data/raw")
 
 ANSWER_KIND = "company_profile"
 IG_ANSWER_KIND = "ig_signals"
@@ -53,8 +51,9 @@ def profile(ctx):
     try:
         config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))["llm"]
         companies = top_companies(db, config["top_n"])
-        site_text = site_texts(db)
+        site_text = site_texts(db, [c["company_id"] for c in companies])
         llm = structured_model(config["model"], CompanyProfile)
+        ctx.log(f"профили: {len(companies)} компаний, модель {config['model']}")
         spent = 0
         for number, company in enumerate(companies, 1):
             ctx.check_cancelled()
@@ -65,7 +64,9 @@ def profile(ctx):
                 store_answer(db, ANSWER_KIND, subject, config["model"], prompt,
                              {"profile": answer.model_dump()})
                 spent += 1
+                ctx.log(f"  {subject}: спросили модель")
             ctx.progress(number, len(companies), "профили")
+        ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
         return {"companies": len(companies), "new_calls": spent}
     finally:
         db.close()
@@ -79,8 +80,10 @@ def ig_signals(ctx):
         config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))["llm"]
         accounts = feed_accounts()
         if not accounts:
-            return {"accounts": 0, "new_calls": 0}
+            ctx.log("лент в raw/ нет — сначала сбор (collect.instagram)")
+            return {"accounts": 0, "new_calls": 0, "failed": 0}
         llm = structured_model(config["model"], IgSignals)
+        ctx.log(f"подписи инстаграма: {len(accounts)} аккаунтов, модель {config['model']}")
         spent = failed = 0
         for number, (username, posts) in enumerate(accounts, 1):
             ctx.check_cancelled()
@@ -92,9 +95,13 @@ def ig_signals(ctx):
                     store_answer(db, IG_ANSWER_KIND, subject, config["model"], prompt,
                                  {"signals": answer.model_dump()["signals"]})
                     spent += 1
-                except Exception:
+                except Exception as error:
+                    # Отказ модели на одном аккаунте — не повод терять прогон:
+                    # остальные ответы уже оплачены и сохранены.
                     failed += 1
+                    ctx.log(f"  {username}: {type(error).__name__}: {error}")
             ctx.progress(number, len(accounts), "подписи инстаграма")
+        ctx.log(f"  оплачено вызовов: {spent}, отказов: {failed}")
         return {"accounts": len(accounts), "new_calls": spent, "failed": failed}
     finally:
         db.close()
@@ -112,21 +119,19 @@ def store_answer(db, kind, subject, model, prompt, answer):
 
 
 def answered(db, kind, subject, model, prompt):
-    """Есть ли уже оплаченный ответ на этот промпт.
+    """Есть ли уже оплаченный ответ на этот запрос — в базе или файлом в raw/.
 
-    Источник истины — state.llm_answers (Task 8). Пока таблица не заполнена
-    (до миграции Task 11), фолбэк на файловый кэш raw/*.llm.json. Ключ совпадает
-    с store_answer: (kind, subject, model, prompt) — иначе анализ переспросил бы
-    модель и задвоил оплаченные ответы после миграции.
+    Спрашиваются оба хранилища, потому что оба читает пересборка
+    (rebuild.load_llm_answers). Проверять только базу значило бы платить второй
+    раз за ответы, оставшиеся файлами; проверять только файлы — не видеть
+    ничего, что записал analyze после переезда.
     """
     hit = db.execute(
         "SELECT 1 FROM state.llm_answers WHERE kind = ? AND subject = ?"
         " AND model = ? AND prompt = ? LIMIT 1",
         (kind, subject, model, prompt),
     ).fetchone()
-    if hit:
-        return True
-    return cache_path(model, prompt).exists()   # фолбэк до миграции
+    return bool(hit) or storage.has_llm_answer(model, prompt)
 
 
 def structured_model(model, schema):
@@ -140,11 +145,6 @@ def structured_model(model, schema):
     return ChatOpenRouter(
         model=model, temperature=0, max_retries=MAX_RETRIES, reasoning=REASONING,
     ).with_structured_output(schema, method="json_schema")
-
-
-def cache_path(model, prompt):
-    digest = hashlib.sha256(f"{model}\n{prompt}".encode()).hexdigest()
-    return RAW / f"{digest}.llm.json"
 
 
 # --- данные ------------------------------------------------------------------
@@ -176,15 +176,24 @@ def top_companies(db, limit):
     return companies
 
 
-def site_texts(db):
-    """Текст главной страницы по company_id. Разметка снимается грубо — модели
-    хватает, а тащить парсер HTML ради одного поля незачем."""
+def site_texts(db, company_ids):
+    """Текст главной страницы по company_id — только для тех, кого спрашиваем.
+
+    Разметка снимается грубо: модели хватает, а тащить парсер HTML ради одного
+    поля незачем. Список компаний сужен снаружи, иначе распаковывалась бы тысяча
+    страниц ради сорока промптов.
+    """
     import re
 
+    if not company_ids:
+        return {}
     pages = {page["url"]: page for page in rebuild.load_pages()}
     texts = {}
+    placeholders = ", ".join("?" * len(company_ids))
     for company_id, domain in db.execute(
-        "SELECT company_id, domain FROM companies WHERE domain IS NOT NULL"
+        "SELECT company_id, domain FROM companies"
+        f" WHERE domain IS NOT NULL AND company_id IN ({placeholders})",
+        company_ids,
     ):
         for url in (f"https://{domain}/", f"http://{domain}/"):
             page = pages.get(url)

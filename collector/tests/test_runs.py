@@ -3,12 +3,15 @@
 
 Идентичность двух прогонов на неизменном сырье (спека §6) — в конце файла."""
 
+import asyncio
 import gzip
 import hashlib
 import json
 import sqlite3
 import types
 from pathlib import Path
+
+import pytest
 
 import services.storage as storage
 import services.store as engine
@@ -124,6 +127,12 @@ def _snapshot(tmp_path):
     return raw
 
 
+# Все таблицы прогона, включая те, где недетерминизм и возможен: companies и
+# company_links собирает union-find, profiles — перезапись оплаченными ответами.
+COMPARED = ("fetches", "orgs", "contacts", "companies", "company_links",
+            "signals", "scores", "profiles")
+
+
 def _dump(db, table, run_id):
     """Строки *_all ровно одного прогона без колонки run_id: сравнение двух
     прогонов сравнивает содержимое, а не версии (run_id в записях различается
@@ -143,11 +152,11 @@ def test_two_runs_identical(tmp_path, monkeypatch):
     db = engine.connect()
     rebuild.run(CONTEXT)
     run1 = db.execute("SELECT max(run_id) FROM runs").fetchone()[0]
-    first = {t: _dump(db, t, run1) for t in ("fetches", "orgs", "contacts", "signals", "scores")}
+    first = {t: _dump(db, t, run1) for t in COMPARED}
 
     rebuild.run(CONTEXT)
     run2 = db.execute("SELECT max(run_id) FROM runs").fetchone()[0]
-    second = {t: _dump(db, t, run2) for t in ("fetches", "orgs", "contacts", "signals", "scores")}
+    second = {t: _dump(db, t, run2) for t in COMPARED}
 
     for table in first:
         assert first[table] == second[table], \
@@ -156,3 +165,38 @@ def test_two_runs_identical(tmp_path, monkeypatch):
     run_ids = {r[0] for r in db.execute("SELECT run_id FROM runs")}
     assert len(run_ids) == 2, run_ids
     db.close()
+
+def test_unfinished_run_is_not_publishable(stores, monkeypatch):
+    """Незавершённый прогон не публикуется: его таблицы пусты или наполнены наполовину.
+
+    Брошенных прогонов в истории накапливается сколько угодно, и все они видны
+    в UI рядом с кнопкой отката. Публикация такого прогона стирает выдачу
+    одним нажатием, поэтому отказ даёт эндпоинт, а не осторожность оператора.
+    """
+    from fastapi import HTTPException
+
+    from routes import runs as web_runs
+
+    db = stores
+    _seed(db, 1, "живой")
+    engine.finish_run(db, 1)
+    engine.activate_run(db, 1)
+    db.execute("INSERT INTO runs (run_id, started_at) VALUES (2, '2026-08-02T00:00:00Z')")
+    db.commit()   # прогон 2 брошен: finished_at пуст, orgs_all пуст
+
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(web_runs.activate(2))
+    assert refused.value.status_code == 409, refused.value.detail
+    assert db.execute("SELECT branch_id FROM orgs").fetchone()[0] == "живой"
+
+    assert asyncio.run(web_runs.activate(1)) == {"run_id": 1}
+
+
+def test_missing_run_is_not_publishable(stores):
+    from fastapi import HTTPException
+
+    from routes import runs as web_runs
+
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(web_runs.activate(404))
+    assert refused.value.status_code == 404

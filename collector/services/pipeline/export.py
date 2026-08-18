@@ -43,8 +43,11 @@ DEFAULT_LIMIT = 30
 def run(ctx, limit=DEFAULT_LIMIT):
     db = engine.connect()
     try:
+        ctx.check_cancelled()
         leads = build_leads(db, limit)
         write_csv(leads)
+        ctx.log(f"выдача: {len(leads)} лидов -> {OUT}")
+        ctx.progress(1, 1, "выгрузка готова")
         return {"wrote": len(leads), "path": str(OUT)}
     finally:
         db.close()

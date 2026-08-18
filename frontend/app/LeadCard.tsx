@@ -297,8 +297,8 @@ function RefusalForm({ channel, onDone }: { channel: Channel | null; onDone: () 
         </button>
       </form>
       <p className="note">
-        Запись уходит в <code className="mono">suppression.csv</code> и переживает пересборку
-        базы. Отменить нельзя — список не очищается.
+        Запись уходит в <code className="mono">state.suppression</code> и переживает
+        пересборку базы. Отменить нельзя — список не очищается.
       </p>
       {failure && <p className="failure">{failure}</p>}
     </div>

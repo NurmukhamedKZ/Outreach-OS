@@ -7,7 +7,7 @@
 Путь до state.db (переписка) читается из writer/config.toml, а не импортом
 модулей writer'а: у системы 2 свои зависимости, и тащить их в collector ради
 одного пути — значит падать от чужого requirements. Расхождение путей ловит
-раздел jobs в scripts/check.py.
+test_frontend_contract в tests/test_jobs.py.
 """
 
 import sqlite3

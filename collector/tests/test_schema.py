@@ -19,3 +19,30 @@ def test_views_read_current_run(stores):
     assert db.execute("SELECT branch_id FROM orgs").fetchone()["branch_id"] == "b2"
     assert db.execute("SELECT count(*) FROM current_run").fetchone()[0] == 1, \
         "current_run обязан держать ровно одну строку"
+
+def test_views_match_schema_file(live_db):
+    """Определения view в базе совпадают с store/schema.sql.
+
+    Схема применяется через CREATE VIEW IF NOT EXISTS — иначе connect() брал бы
+    блокировку записи на каждую строку лога и валил идущую пересборку. Плата за
+    это: правка определения ниже не доедет до уже созданной базы сама, и код
+    читал бы не тот запрос, который написан в файле. Расхождение ловится здесь.
+    Починка — DROP VIEW: данных в них нет, следующий connect() создаст заново.
+    """
+    import re
+
+    schema = engine.SCHEMA.read_text(encoding="utf-8")
+    expected = {
+        name: " ".join(body.split())
+        for name, body in re.findall(
+            r"CREATE VIEW IF NOT EXISTS (\w+) AS(.*?);", schema, re.S)
+    }
+    actual = {
+        name: " ".join(sql.split("AS", 1)[1].split())
+        for name, sql in live_db.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'view'")
+    }
+    assert actual == expected, (
+        "определения view в базе разошлись с schema.sql; "
+        "починка: DROP VIEW для расходящихся — connect() создаст их заново"
+    )

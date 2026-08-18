@@ -89,7 +89,7 @@ def test_events_broker():
     asyncio.run(scenario())
 
 
-def test_frontend_contract():
+def test_frontend_contract(stores):
     """Контракт фронтенда: снапшот счётчиков знает все три системы, у стаба
     системы 3 есть адрес и честный 501."""
     snapshot = metrics.snapshot()
@@ -109,3 +109,63 @@ def test_frontend_contract():
         assert "/api/sender" in paths and "/api/sender/{rest_of_path:path}" in paths, paths
     finally:
         sys.path.pop(0)
+
+def test_publish_from_worker_thread_reaches_subscriber():
+    """Событие из рабочего потока доходит до ждущего подписчика сразу.
+
+    Операции идут через asyncio.to_thread и шлют оттуда прогресс и лог.
+    put_nowait из чужого потока цикл не будит: событие лежит в очереди, но
+    ожидающий queue.get() просыпается только когда цикл проснётся сам по себе.
+    Замер это и ловит — раньше событие приходило ровно на таймауте ожидания
+    (5.005 с из 5), теперь за пятьдесят миллисекунд.
+    """
+    import threading
+    import time
+
+    async def scenario():
+        async with events.subscribe() as queue:
+            started = time.perf_counter()
+            threading.Timer(0.05, events.publish,
+                            args=({"type": "log", "lines": ["из потока"]},)).start()
+            event = await asyncio.wait_for(queue.get(), timeout=5)
+            waited = time.perf_counter() - started
+            assert event["lines"] == ["из потока"], event
+            assert waited < 1, f"событие из потока ждало {waited:.2f} с — цикл его не заметил"
+
+    asyncio.run(scenario())
+
+
+def test_log_append_does_not_rewrite_whole_log(stores):
+    """Строки дописываются в конец, а не переписывают лог целиком."""
+    job_id = jobs.enqueue_steps("custom", "Лог", ["export"])
+    jobs._append_log(job_id, ["первая"])
+    jobs._append_log(job_id, ["вторая", "третья"])
+    assert jobs.log_of(job_id) == "первая\nвторая\nтретья"
+    assert jobs.job(job_id)["log_lines"] == 3
+
+
+def test_log_stops_at_limit_with_a_notice(stores, monkeypatch):
+    """За потолком лог не растёт, но оператор видит, что его обрезали."""
+    monkeypatch.setattr(jobs, "LOG_LIMIT_CHARS", 20)
+    job_id = jobs.enqueue_steps("custom", "Лог", ["export"])
+    for _ in range(5):
+        jobs._append_log(job_id, ["строка подлиннее потолка"])
+    log = jobs.log_of(job_id)
+    assert log.count("строка подлиннее потолка") == 1, log
+    assert log.endswith(jobs.OVERFLOW_NOTE), log
+
+
+def test_operation_and_pipeline_names_do_not_collide(stores):
+    """«rebuild» — и операция, и пайплайн: каждая точка входа ставит своё.
+
+    Общий enqueue искал имя сначала среди пайплайнов, поэтому
+    POST /api/operations/rebuild молча ставил пайплайн из двух шагов —
+    операцию rebuild было не вызвать вовсе.
+    """
+    assert "rebuild" in jobs.OPERATIONS and "rebuild" in jobs.PIPELINES
+
+    one = jobs.job(jobs.enqueue_operation("rebuild"))
+    assert [s["name"] for s in one["steps"]] == ["rebuild"], one["steps"]
+
+    whole = jobs.job(jobs.enqueue_pipeline("rebuild"))
+    assert [s["name"] for s in whole["steps"]] == ["rebuild", "export"], whole["steps"]

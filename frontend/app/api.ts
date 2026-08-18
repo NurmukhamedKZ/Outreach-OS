@@ -52,7 +52,10 @@ export type Stats = {
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   if (!response.ok) {
-    throw new Error(`${init?.method ?? "GET"} ${url} — ${response.status}`);
+    // detail из HTTPException объясняет отказ словами («прогон не завершён»),
+    // а код состояния — нет. Тела может и не быть: тогда остаётся код.
+    const detail = await response.json().then((body) => body?.detail).catch(() => null);
+    throw new Error(detail ?? `${init?.method ?? "GET"} ${url} — ${response.status}`);
   }
   return response.json();
 }
@@ -78,8 +81,6 @@ export function refuse(handle: string, reason: string) {
 // ---- Продуктовые операции: пайплайны, джобы, события ----
 
 export type Pipeline = { kind: string; title: string; steps: string[] };
-
-export type Operation = { name: string };
 
 export type Run = { run_id: number; started_at: string; finished_at: string | null;
   code_version: string | null; config_hash: string | null; note: string | null };
@@ -117,7 +118,6 @@ export type Job = {
   step_count: number;
   progress: { label?: string; current?: number; total?: number } | null;
   log_lines: number;
-  exit_code: number | null;
   error: string | null;
   created_at: string;
   started_at: string | null;
@@ -126,14 +126,8 @@ export type Job = {
 
 export type JobTail = { job: Job; lines: string[]; offset: number };
 
-export function fetchPipelines() {
-  return json<Pipeline[]>("/api/pipeline");
-}
-
-export function startPipeline(kind: string, limit = 10) {
-  return json<{ job: Job }>(`/api/pipeline/${encodeURIComponent(kind)}?limit=${limit}`, {
-    method: "POST",
-  });
+export function startPipeline(kind: string) {
+  return json<{ job: Job }>(`/api/pipeline/${encodeURIComponent(kind)}`, { method: "POST" });
 }
 
 export function fetchJobs(limit = 20) {
