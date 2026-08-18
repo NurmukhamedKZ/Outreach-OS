@@ -111,15 +111,9 @@ slugs = [
 # Затухание intent_score: вклад сигнала = weight * exp(-ln2 * days / half_life_days).
 half_life_days = 90
 
-# Вакансия считается зависшей, если висит дольше этого срока.
-stale_vacancy_days = 60
-
 [scoring.intent]
 # ARCHITECTURE.md §10: высокий = 3.0, средний = 1.5, низкий = 0.5.
 # Нет сигнала не значит отрицательный вес — просто ноль.
-vacancy_sales = 3.0                # вакансия в продажах (по тексту, не по заголовку)
-vacancy_stale = 3.0                # вакансия висит дольше stale_vacancy_days
-vacancy_growth = 3.0               # рост числа вакансий за квартал
 ads_platform = 3.0                 # Google Ads / Яндекс.Директ на сайте
 crm_widget = 3.0                   # Bitrix24 / amoCRM — есть отдел продаж и процесс
 reviews_missed_lead = 3.0          # отзывы «не дозвонились», «не ответили на заявку»

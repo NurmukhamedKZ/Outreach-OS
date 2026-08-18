@@ -179,8 +179,6 @@ WHY_TEMPLATES = {
     "crm_widget": "ведёт заявки в CRM ({quote}) — есть отдел продаж и процесс",
     "inbound_widget": "ждёт входящих: {quote} на сайте",
     "service_catalog": "услуги и цены выложены — к продажам готовы",
-    "vacancy_sales": "ищет людей в продажи: «{quote}»",
-    "vacancy_stale": "{quote} — наймом закрыть не вышло",
 }
 
 

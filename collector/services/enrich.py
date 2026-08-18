@@ -4,11 +4,9 @@
 вчерашняя и полугодовой давности — разные лиды. Поэтому здесь только строки в
 signals с observed_at, quote и url, а intent_score считается на лету в score.py.
 
-Три источника:
+Два источника:
 
   сайт компании   CRM, пиксели, реклама, формы — regex по сырому HTML
-  вакансия hh     поиск по тексту: не «компания нанимает», а «компания описала
-                  ровно ту проблему, которую мы решаем»
   лента инстаграма  даты и темп постинга — арифметикой здесь, смысл подписей —
                   моделью в scripts/classify_ig.py, готовые ответы читаются с диска
 
@@ -40,22 +38,10 @@ SITE_MARKERS = [
     ("service_catalog", r"прайс[- ]?лист|наши услуги|стоимость услуг", "прайс или каталог услуг"),
 ]
 
-# Что ищем в тексте вакансии. Продажи — главный сигнал BRD: компании не хватает
-# клиентов, и она пытается решить это наймом.
-VACANCY_MARKERS = [
-    (
-        "vacancy_sales",
-        r"менеджер по продаж|руководител[ья] отдела продаж|специалист по продаж"
-        r"|торговый представител|развити[юе] бизнеса|поиск клиентов|холодн\w+ звонк",
-    ),
-]
-
-QUOTE_WINDOW = 90  # символов вокруг совпадения — столько влезает в why_now строкой
-
 IG_FEED_MARK = "feed/user/"
 IG_PROFILE_URL = "https://www.instagram.com/{username}/"
-# Аккаунт молчит дольше этого срока — маркетинг заглох. Тот же смысл, что у
-# vacancy_stale: пробовали решить задачу сами, не вышло.
+# Аккаунт молчит дольше этого срока — маркетинг заглох. Пробовали решить задачу
+# сами, не вышло.
 IG_DORMANT_DAYS = 60
 # Столько постов за окно ниже считается живым аккаунтом: кто-то его ведёт, значит
 # есть кому отдавать лиды.
@@ -63,7 +49,7 @@ IG_ACTIVE_POSTS = 8
 IG_ACTIVE_WINDOW_DAYS = 90
 
 
-def enrich(db, pages, weights, stale_vacancy_days):
+def enrich(db, pages, weights):
     """Наполнить signals. Веса приходят из config.toml, а не зашиты здесь.
 
     pages передаётся снаружи, а не читается с диска заново: сборка обязана быть
@@ -71,7 +57,6 @@ def enrich(db, pages, weights, stale_vacancy_days):
     появившиеся за время сборки, и они не попадали бы в fetches.
     """
     site_signals(db, pages, weights)
-    vacancy_signals(db, weights, stale_vacancy_days)
     instagram_signals(db, pages, weights)
 
 
@@ -100,64 +85,6 @@ def site_signals(db, pages, weights):
                     url,
                 ),
             )
-
-
-def vacancy_signals(db, weights, stale_vacancy_days):
-    """Сигналы из текста вакансии — по тексту, а не по факту найма.
-
-    Вакансия, привязанная к компании нечётко, сигнала не даёт: ложная привязка
-    испортила бы скоринг сильнее, чем помогло бы её отсутствие.
-    """
-    rows = db.execute(
-        "SELECT company_id, id, title, text, published_at, url FROM vacancies"
-        " WHERE company_id IS NOT NULL ORDER BY id"
-    ).fetchall()
-    # Дата наблюдения обязательна: без неё сигнал не затухает и вакансия
-    # позапрошлогодней давности вечно весит как вчерашняя. Если hh не сказал дату
-    # публикации, честная замена — когда мы страницу забрали.
-    horizon = db.execute("SELECT max(fetched_at) FROM fetches").fetchone()[0]
-
-    for company_id, _, title, text, published_at, url in rows:
-        haystack = f"{title or ''}\n{text or ''}"
-        for signal_type, pattern in VACANCY_MARKERS:
-            found = re.search(pattern, haystack, re.I)
-            if not found:
-                continue
-            db.execute(
-                "INSERT INTO signals (company_id, type, observed_at, weight, quote, url)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    company_id,
-                    signal_type,
-                    published_at or horizon,
-                    weights.get(signal_type, 1.0),
-                    quote_around(haystack, found),
-                    url,
-                ),
-            )
-
-    stale_vacancies(db, weights, stale_vacancy_days)
-
-
-def stale_vacancies(db, weights, stale_vacancy_days):
-    """Вакансия висит долго — наймом проблему решить не вышло.
-
-    Возраст считается от последнего забора сырья, а не от сегодня: база обязана
-    пересобираться из raw/ с тем же результатом через год.
-    """
-    horizon = db.execute("SELECT max(fetched_at) FROM fetches").fetchone()[0]
-    if not horizon:
-        return
-    db.execute(
-        "INSERT INTO signals (company_id, type, observed_at, weight, quote, url)"
-        " SELECT company_id, 'vacancy_stale', published_at, ?,"
-        "        'вакансия висит дольше ' || ? || ' дней', url"
-        " FROM vacancies"
-        " WHERE company_id IS NOT NULL AND published_at IS NOT NULL"
-        "   AND julianday(?) - julianday(published_at) > ?"
-        " ORDER BY id",
-        (weights.get("vacancy_stale", 3.0), stale_vacancy_days, horizon, stale_vacancy_days),
-    )
 
 
 def instagram_signals(db, pages, weights):
@@ -351,10 +278,3 @@ def site_pages(db, pages):
 def fetched_at_of(db, url):
     row = db.execute("SELECT fetched_at FROM fetches WHERE url = ?", (url,)).fetchone()
     return row[0] if row else None
-
-
-def quote_around(text, match):
-    """Кусок текста вокруг совпадения — обоснование, которое увидит оператор."""
-    start = max(0, match.start() - QUOTE_WINDOW // 2)
-    snippet = text[start : match.end() + QUOTE_WINDOW // 2]
-    return " ".join(snippet.split())

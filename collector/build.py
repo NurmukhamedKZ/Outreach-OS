@@ -62,7 +62,7 @@ def main():
     # Склейка живёт внутри сборки, а не отдельной командой: база обязана
     # оставаться чистой функцией от raw/, иначе рушится воспроизводимость.
     resolve.resolve(db)
-    enrich.enrich(db, pages, *scoring_config())
+    enrich.enrich(db, pages, scoring_weights())
     fill_profiles(db)
     fill_suppression(db)
     score.score_all(db, *ranking_config())
@@ -73,10 +73,10 @@ def main():
     BUILDING.replace(DB)
 
 
-def scoring_config():
-    """Веса и пороги из config.toml: в коде их держать нельзя, они калибруются."""
+def scoring_weights():
+    """Веса сигналов из config.toml: в коде их держать нельзя, они калибруются."""
     config = tomllib.loads(Path("config.toml").read_text(encoding="utf-8"))["scoring"]
-    return config["intent"], config["stale_vacancy_days"]
+    return config["intent"]
 
 
 def fill_profiles(db):
