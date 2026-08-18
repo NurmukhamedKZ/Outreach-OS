@@ -1,9 +1,23 @@
 """Версионирование: во время открытой пересборки читатель видит прошлый прогон;
-после COMMIT — новый; отменённый прогон не становится текущим."""
+после COMMIT — новый; отменённый прогон не становится текущим.
 
+Идентичность двух прогонов на неизменном сырье (спека §6) — в конце файла."""
+
+import gzip
+import hashlib
+import json
 import sqlite3
+import types
+from pathlib import Path
 
+import services.storage as storage
 import services.store as engine
+from services.pipeline import rebuild
+
+FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"   # collector/fixtures
+CONTEXT = types.SimpleNamespace(log=lambda *a: None,
+                                progress=lambda *a: None,
+                                check_cancelled=lambda: None)
 
 
 def _seed(db, run_id, branch):
@@ -89,3 +103,56 @@ def test_generated_tables_survive(stores):
     assert db.execute("SELECT count(*) FROM state.suppression").fetchone()[0] == 1
     assert db.execute("SELECT count(*) FROM state.messages").fetchone()[0] == 1
     assert db.execute("SELECT count(*) FROM state.llm_answers").fetchone()[0] == 1
+
+
+def _snapshot(tmp_path):
+    """Снимок raw/ из двух эталонных страниц 2GIS (рубрика + карточка)."""
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    urls = [
+        ("https://2gis.kz/almaty/rubric/653", "gis_rubric"),
+        ("https://2gis.kz/almaty/firm/70000001017502602", "gis_firm"),
+    ]
+    for url, name in urls:
+        sha = hashlib.sha1(url.encode()).hexdigest()
+        with gzip.open(FIXTURES / f"{name}.html.gz", "rb") as src, \
+             gzip.open(raw / f"{sha}.html.gz", "wb") as dst:
+            dst.write(src.read())
+        (raw / f"{sha}.json").write_text(json.dumps(
+            {"url": url, "final_url": url, "status": 200,
+             "fetched_at": "2026-08-12T09:14:03Z"}, ensure_ascii=False), encoding="utf-8")
+    return raw
+
+
+def _dump(db, table, run_id):
+    """Строки *_all ровно одного прогона без колонки run_id: сравнение двух
+    прогонов сравнивает содержимое, а не версии (run_id в записях различается
+    по построению)."""
+    rows = db.execute(
+        f"SELECT * FROM {table}_all WHERE run_id = ? ORDER BY rowid", (run_id,)
+    ).fetchall()
+    return [tuple(r)[1:] for r in rows]
+
+
+def test_two_runs_identical(tmp_path, monkeypatch):
+    raw = _snapshot(tmp_path)
+    monkeypatch.setattr(storage, "RAW", raw)
+    monkeypatch.setattr(engine, "DERIVED", tmp_path / "derived.db")
+    monkeypatch.setattr(engine, "STATE", tmp_path / "state.db")
+
+    db = engine.connect()
+    rebuild.run(CONTEXT)
+    run1 = db.execute("SELECT max(run_id) FROM runs").fetchone()[0]
+    first = {t: _dump(db, t, run1) for t in ("fetches", "orgs", "contacts", "signals", "scores")}
+
+    rebuild.run(CONTEXT)
+    run2 = db.execute("SELECT max(run_id) FROM runs").fetchone()[0]
+    second = {t: _dump(db, t, run2) for t in ("fetches", "orgs", "contacts", "signals", "scores")}
+
+    for table in first:
+        assert first[table] == second[table], \
+            f"прогоны дали разные данные в {table}: {first[table]} vs {second[table]}"
+    # второй прогон — отдельный run_id, а не перезапись первого
+    run_ids = {r[0] for r in db.execute("SELECT run_id FROM runs")}
+    assert len(run_ids) == 2, run_ids
+    db.close()
