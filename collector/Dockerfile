@@ -6,8 +6,8 @@ FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 WORKDIR /app
 
 # Каждый проект — свой uv sync, как на хосте: collector/.venv и writer/.venv.
-# writer/.venv нужен отдельно, потому что кнопка write на /runs запускает его
-# отдельным `uv run` (routes/runs.py, cwd=writer/), а не через collector/.venv.
+# writer/.venv нужен отдельно, потому что шаг write в очереди джобов
+# (services/jobs.py) запускает его отдельным `uv run` с cwd=writer/.
 COPY collector/pyproject.toml collector/uv.lock collector/
 RUN cd collector && uv sync --frozen --no-dev
 
