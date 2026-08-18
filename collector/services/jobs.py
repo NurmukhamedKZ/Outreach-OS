@@ -61,9 +61,11 @@ def pipeline_steps(kind, limit=None):
 
 
 def enqueue(kind, limit=10):
-    if kind not in PIPELINES:
-        raise KeyError(kind)
-    return enqueue_steps(kind, PIPELINES[kind]["title"], pipeline_steps(kind, limit))
+    if kind in PIPELINES:
+        return enqueue_steps(kind, PIPELINES[kind]["title"], pipeline_steps(kind, limit))
+    if kind in OPERATIONS:
+        return enqueue_steps(kind, kind, [kind])
+    raise KeyError(kind)
 
 
 def enqueue_steps(kind, title, names):

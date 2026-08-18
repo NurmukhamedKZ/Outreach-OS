@@ -1,11 +1,12 @@
-"""HTTP над leads.db для веб-интерфейса. Читает то же, что печатает report.py.
+"""HTTP над derived.db для веб-интерфейса. Читает то же, что выгружает export.
 
 Здесь только сборка приложения. Эндпоинты — в routes/, отбор лидов и отказы —
-в services/, запросы к базе — в db/lead.py рядом со схемой.
+в services/, запросы к базе — в store/lead.py рядом со схемой.
 
-Писать в leads.db нельзя ничем, кроме build.py: схема пересобирается через DROP.
-Единственное, что возвращается в систему от человека, — отказ, и он уходит в
-suppression.csv, а в таблицу дублируется, чтобы выдача обновилась без пересборки.
+В derived.db пишет только rebuild (прогонами), в state.db — джобы, отказы и
+переписка. Единственное, что возвращается в систему от человека, — отказ, и он
+уходит в state.suppression (невосстановимый слой), так что пересборка его не
+затрагивает.
 
 Живость экрана — тоже часть API: при старте поднимается воркер джобов
 (services/jobs.py), а /api/events раздаёт прогресс и счётчики по SSE.
@@ -14,18 +15,15 @@ suppression.csv, а в таблицу дублируется, чтобы выд�
 """
 
 import asyncio
-import sqlite3
 import sys
-from contextlib import asynccontextmanager, closing
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from services.pipeline import export as report
-from store import lead as store
-from routes import events, jobs, leads, pipeline, stats, suppression
-from services import jobs as queue, suppression as refusals
+from routes import events, jobs, leads, operations, pipeline, runs, stats, suppression
+from services import jobs as queue
 
 # Система 2 живёт своим проектом и своей базой; здесь только склейка, чтобы у
 # оператора остались одна консоль и один порт. Каталог добавляется в путь
@@ -61,52 +59,11 @@ app.add_middleware(
 )
 app.include_router(leads.router)
 app.include_router(pipeline.router)
+app.include_router(operations.router)
+app.include_router(runs.router)
 app.include_router(jobs.router)
 app.include_router(events.router)
 app.include_router(stats.router)
 app.include_router(suppression.router)
 app.include_router(writer.router)
 app.include_router(sender.router)
-
-
-def demo():
-    """Отказ переживает пересборку базы — единственное, что здесь может стоить денег."""
-    import build
-
-    db = sqlite3.connect(":memory:")
-    db.executescript(Path("store/schema.sql").read_text(encoding="utf-8"))
-    build.fill_suppression(db)
-    from_file = refusals.existing_handles() - {""}
-    in_db = store.suppression_handles(db)
-    assert from_file == in_db, f"в файле {from_file}, в базе {in_db} — список разъехался"
-
-    assert report.best_channel([("phone", "+77010000000")], {"+77010000000"}) is None, "F21 нарушен"
-    assert report.best_channel([("phone", "+77010000000")], set()) == ("phone", "+77010000000")
-
-    check_refusal_reaches_both_stores()
-    print(f"api demo ok — отказов {len(from_file)}, все доехали до базы")
-
-
-def check_refusal_reaches_both_stores():
-    """Отказ обязан лечь и в файл, и в таблицу, а повтор — не задваиваться.
-
-    Рабочий suppression.csv не трогается: список никогда не очищается, и тестовая
-    запись в нём осталась бы навсегда.
-    """
-    import tempfile
-
-    db = sqlite3.connect(":memory:")
-    db.executescript(Path("store/schema.sql").read_text(encoding="utf-8"))
-    with tempfile.TemporaryDirectory() as tmp:
-        original, refusals.SUPPRESSION = refusals.SUPPRESSION, Path(tmp) / "suppression.csv"
-        try:
-            assert refusals.refuse(db, " +77010000000 ", " тест "), "первый отказ не записался"
-            assert not refusals.refuse(db, "+77010000000", "тест"), "повтор задвоился"
-            assert refusals.existing_handles() == {"+77010000000"}, "в файле не тот handle"
-            assert store.suppression_handles(db) == {"+77010000000"}, "в базе не тот handle"
-        finally:
-            refusals.SUPPRESSION = original
-
-
-if __name__ == "__main__":
-    demo()

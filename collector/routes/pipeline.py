@@ -2,8 +2,8 @@
 
 Каждый эндпоинт ставит джобу в очередь и сразу отвечает её описанием —
 дальше клиент смотрит /api/jobs/{id} или подписывается на /api/events.
-Аргументы к шагам не принимаются: у продуктовых операций параметров нет,
-кроме лимита черновиков; белый список argv живёт в services/jobs.py.
+Аргументы к шагам не принимаются: у операций параметров нет, реестр живёт
+в services/pipeline (PIPELINES).
 
 Эндпоинты async не ради скорости, а ради шины событий: publish() кладёт в
 asyncio-очереди, а это безопасно только из event loop, не из threadpool.
@@ -18,11 +18,11 @@ router = APIRouter(prefix="/api/pipeline")
 
 @router.get("")
 def catalogue():
-    return [
-        {"kind": kind, "title": pipeline["title"],
-         "steps": [s["name"] for s in jobs.pipeline_steps(kind, limit=10)]}
-        for kind, pipeline in jobs.PIPELINES.items()
-    ]
+    return {
+        "pipelines": [{"kind": k, "title": p["title"], "steps": list(p["steps"])}
+                      for k, p in jobs.PIPELINES.items()],
+        "operations": sorted(jobs.OPERATIONS),
+    }
 
 
 @router.post("/{kind}")
