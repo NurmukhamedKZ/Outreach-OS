@@ -97,6 +97,7 @@ def run(ctx):
         stage("контакты филиалов", lambda: fill_contacts(db, run_id, pages))
         stage("склейка компаний", lambda: resolve.resolve(db, run_id))
         stage("сигналы", lambda: enrich.enrich(db, run_id, pages, scoring_weights()))
+        stage("отзывы от модели", lambda: enrich.reviews_signals(db, run_id, pages, scoring_weights()))
         stage("профили от модели", lambda: fill_profiles(db, run_id))
         stage("скоринг", lambda: score.score_all(db, run_id, *ranking_config()))
         stage(f"публикация прогона {run_id}", lambda: publish(engine, db, run_id))
@@ -105,7 +106,7 @@ def run(ctx):
     return {"run_id": run_id}
 
 
-STAGE_COUNT = 8
+STAGE_COUNT = 9
 
 
 def stage_reporter(ctx, total):

@@ -88,6 +88,112 @@ def site_signals(db, run_id, pages, weights):
             )
 
 
+def reviews_signals(db, run_id, pages, weights):
+    """Сигналы отзывов от модели. Сети нет — ответы оплачены и лежат в llm_answers.
+
+    Жалобы «не дозвонились»/«не ответили на заявку» -> reviews_missed_lead,
+    жалоба без ответа компании -> reviews_unanswered_complaint. Цитата обязана
+    стоять дословно в отзыве (главная проверка test_quote_is_verbatim); не
+    нашлась — находке в signals не место. Один сигнал на тип на компанию:
+    newest_review_match берёт самую свежую подтверждённую жалобу, а не пишет
+    по строке на каждую — иначе две жалобы одного типа с одной датой у одного
+    филиала столкнулись бы по PRIMARY KEY signals_all (url собирается по
+    branch_id, не по отзыву).
+    """
+    from services.pipeline import rebuild
+    reviews_by_branch = {}
+    for page in pages:
+        if "reviews.2gis.com" not in page["url"]:
+            continue
+        branch = page["url"].split("/branches/", 1)[1].split("/", 1)[0]
+        reviews_by_branch[branch] = sources.parse_reviews(rebuild.html_of(page), branch)
+    companies = company_branches(db, run_id)
+    reviews_by_company = {}
+    for company_id, branch_id in companies:
+        for review in reviews_by_branch.get(branch_id) or []:
+            reviews_by_company.setdefault(company_id, []).append(review)
+
+    for answer in rebuild.load_llm_answers(db, "reviews"):
+        company_id = company_by_subject(db, run_id, answer["subject"])
+        if not company_id:
+            continue
+        analysis = answer.get("analysis") or {}
+        reviews = reviews_by_company.get(company_id, [])
+
+        missed = newest_review_match(reviews, [
+            c for c in (analysis.get("complaints") or [])
+            if c["type"] in ("не дозвонились", "не ответили на заявку")
+        ])
+        if missed:
+            review, quote = missed
+            emit(db, run_id, company_id, "reviews_missed_lead",
+                 review["date_created"], weights, quote, review_url(company_id, review))
+
+        if analysis.get("unanswered_complaints"):
+            unanswered = newest_review_match(reviews, analysis.get("complaints") or [])
+            if unanswered:
+                review, quote = unanswered
+                emit(db, run_id, company_id, "reviews_unanswered_complaint",
+                     review["date_created"], weights, quote, review_url(company_id, review))
+
+
+def company_branches(db, run_id):
+    return db.execute(
+        "SELECT l.company_id, l.branch_id FROM company_links_all l"
+        " WHERE l.run_id = ? AND l.rule = 'self'", (run_id,)).fetchall()
+
+
+def company_by_subject(db, run_id, subject):
+    name, _, city = subject.partition(" | ")
+    row = db.execute(
+        "SELECT c.company_id FROM companies_all c"
+        " LEFT JOIN company_links_all l ON l.company_id = c.company_id AND l.run_id = ?"
+        "   AND l.rule = 'self' LEFT JOIN orgs_all o ON o.branch_id = l.branch_id AND o.run_id = ?"
+        " WHERE c.run_id = ? AND coalesce(o.org_name, o.name, c.name_norm) = ? AND c.city = ?"
+        " LIMIT 1", (run_id, run_id, run_id, name, city)).fetchone()
+    return row[0] if row else None
+
+
+def review_with_quote(reviews, quote):
+    found = [r for r in reviews if quote and quote in r["text"]]
+    return max(found, key=lambda r: r["date_created"] or "") if found else None
+
+
+def newest_review_match(reviews, complaints):
+    """Самая свежая жалоба из списка, чья цитата подтверждена отзывом дословно.
+
+    Один сигнал на тип на компанию — не по жалобе: несколько жалоб одного типа
+    столкнулись бы по PRIMARY KEY signals_all (Task 7, «Почему не по жалобе на
+    строку»). Дедуп — тот же принцип, что у newest_per_type в instagram_signals.
+    """
+    matches = []
+    for complaint in complaints:
+        review = review_with_quote(reviews, complaint["quote"])
+        if review:
+            matches.append((review, complaint["quote"]))
+    return max(matches, key=lambda pair: pair[0]["date_created"] or "") if matches else None
+
+
+def review_url(company_id, review):
+    return f"https://2gis.kz/search/{review['branch_id']}" if review.get("branch_id") else ""
+
+
+def emit(db, run_id, company_id, signal_type, observed_at, weights, quote, url):
+    """Одна строка в signals_all — тот же паттерн, что у site_signals/instagram_signals.
+
+    Тип без веса — ошибка сборки, а не тихий 0.5 (спека §6): сигналу без цены
+    в конфиге неоткуда взять цену, и молчаливый 0.5 замаскировал бы опечатку
+    в названии типа. Поэтому отсутствие веса роняет прогон, а не пишет мусор.
+    """
+    if signal_type not in weights:
+        raise KeyError(f"нет веса для типа сигнала {signal_type!r} в config.toml")
+    db.execute(
+        "INSERT INTO signals_all (run_id, company_id, type, observed_at, weight, quote, url)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (run_id, company_id, signal_type, observed_at, weights[signal_type], quote, url),
+    )
+
+
 def instagram_signals(db, run_id, pages, weights):
     """Сигналы ленты: смысл подписей от модели, даты и темп — арифметикой здесь.
 

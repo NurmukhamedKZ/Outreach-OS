@@ -72,7 +72,8 @@ half_life_days = 90
 # Нет сигнала не значит отрицательный вес — просто ноль.
 ads_platform = 3.0                 # Google Ads / Яндекс.Директ на сайте
 crm_widget = 3.0                   # Bitrix24 / amoCRM — есть отдел продаж и процесс
-reviews_missed_lead = 3.0          # отзывы «не дозвонились», «не ответили на заявку»
+reviews_missed_lead = 5.0          # «не дозвонились», «не ответили на заявку»
+reviews_unanswered_complaint = 5.0 # жалоба без ответа компании
 inbound_widget = 1.5               # форма заявки, WhatsApp-виджет
 service_catalog = 0.5              # каталог услуг или прайс на сайте
 
