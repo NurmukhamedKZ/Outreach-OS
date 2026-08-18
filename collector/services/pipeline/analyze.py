@@ -282,6 +282,107 @@ def site_prompt(name, city, text):
     ])
 
 
+IG_LAYER_KIND = "instagram"
+IG_LAYER_SYSTEM = (
+    "Ты аналитик B2B-лидогенерации в Казахстане. По постам, подписям и "
+    "комментариям инстаграм-аккаунта компании определи темы, стиль продаж и "
+    "найди вопросы клиентов, на которые компания НЕ ответила. quote обязана "
+    "быть дословной. Не нашёл — пустые списки."
+)
+
+
+def instagram(ctx):
+    """Слой Instagram: темы, стиль продаж, вопросы без ответа.
+
+    Один вызов на аккаунт, ответы кэшируются kind="instagram". Берутся последние
+    posts_limit постов из ленты (в сборе их 12, на анализе режем до 10 — count в
+    URL трогать нельзя, это ключ кэша страницы), плюс комментарии и био из raw/.
+    """
+    from schemas.instagram import InstagramAnalysis
+    from services import store as engine
+    db = engine.connect()
+    try:
+        config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+        model = config["llm"]["model"]
+        limit = config["instagram"]["posts_limit"]
+        accounts = instagram_targets(db, limit)
+        if not accounts:
+            ctx.log("лент в raw/ нет — сначала сбор (collect.instagram)")
+            return {"accounts": 0, "new_calls": 0}
+        llm_model = llm.structured_model(model, InstagramAnalysis)
+        ctx.log(f"инстаграм: {len(accounts)} аккаунтов, модель {model}")
+        spent = 0
+        for number, (username, prompt_text) in enumerate(accounts, 1):
+            ctx.check_cancelled()
+            if not llm.answered(db, IG_LAYER_KIND, username, model, prompt_text):
+                answer = llm_model.invoke([("system", IG_LAYER_SYSTEM), ("human", prompt_text)])
+                llm.store_answer(db, IG_LAYER_KIND, username, model, prompt_text,
+                                 {"analysis": answer.model_dump()})
+                spent += 1
+            ctx.progress(number, len(accounts), "инстаграм")
+        ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
+        return {"accounts": len(accounts), "new_calls": spent}
+    finally:
+        db.close()
+
+
+def instagram_targets(db, limit):
+    """(username, промпт-текст) по аккаунтам с постами.
+
+    Берутся последние `limit` постов из ленты. Комментарии и профиль догружаются
+    из raw/, если собраны.
+    """
+    from services.pipeline import rebuild
+    by_username = {}
+    for page in rebuild.load_pages():
+        if "feed/user/" not in page["url"]:
+            continue
+        feed = sources.parse_ig_feed(rebuild.html_of(page))
+        username = feed["username"] or page["url"].split("feed/user/", 1)[1].split("/", 1)[0]
+        by_username[username] = feed["posts"]
+    comments = comments_by_media(db)
+    profiles = profiles_by_username(db)
+    out = []
+    for username, posts in sorted(by_username.items()):
+        posts = posts[:limit]
+        lines = [f"Инстаграм: {username}"]
+        prof = profiles.get(username)
+        if prof and prof.get("biography"):
+            lines.append(f"Био: {prof['biography']}")
+        for post in posts:
+            lines.append(f"[{post.get('taken_at')}] {post.get('caption') or ''}")
+            for comment in comments.get(post.get("pk"), [])[:8]:
+                lines.append(f"    <{comment['user']}> {comment['text']}")
+        out.append((username, "\n".join(lines)))
+    return out
+
+
+def comments_by_media(db):
+    """{media_pk: [comments]} из raw/."""
+    from services.pipeline import rebuild
+    out = {}
+    for page in rebuild.load_pages():
+        if "/media/" not in page["url"] or "/comments/" not in page["url"]:
+            continue
+        pk = page["url"].split("/media/", 1)[1].split("/", 1)[0]
+        out[pk] = sources.parse_ig_comments(rebuild.html_of(page), pk)
+    return out
+
+
+def profiles_by_username(db):
+    """{username: profile} из raw/ (users/{pk}/info/). Логин берётся из ответа
+    профиля, а не из адреса: в адресе числовой pk, а не логин."""
+    from services.pipeline import rebuild
+    out = {}
+    for page in rebuild.load_pages():
+        if "/users/" not in page["url"] or "/info/" not in page["url"]:
+            continue
+        profile = sources.parse_ig_profile(rebuild.html_of(page))
+        if profile.get("username"):
+            out[profile["username"]] = profile
+    return out
+
+
 # --- данные ------------------------------------------------------------------
 
 

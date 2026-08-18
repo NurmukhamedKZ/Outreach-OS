@@ -154,3 +154,45 @@ def test_site_ai_types_have_weights(live_db):
     weights = tomllib.loads(Path("config.toml").read_text(encoding="utf-8"))["scoring"]["intent"]
     for t in SITE_AI_TYPES:
         assert t in weights, f"нет веса для {t}"
+
+
+IG_LAYER_TYPES = {"ig_unanswered_question", "ig_reach_declining"}
+
+
+def test_ig_layer_types_have_weights(live_db):
+    import tomllib
+    from pathlib import Path
+    weights = tomllib.loads(Path("config.toml").read_text(encoding="utf-8"))["scoring"]["intent"]
+    for t in IG_LAYER_TYPES:
+        assert t in weights, f"нет веса для {t}"
+
+
+def test_reach_trend_uses_median():
+    """Один залетевший пост не создаёт ложный тренд — медиана, не среднее."""
+    from services import enrich
+    posts = [{"taken_at": f"2026-08-0{i}T00:00:00Z", "likes": l}
+             for i, l in enumerate([10, 12, 11, 13, 100, 8, 9, 10])]
+    db = _memory_db()
+    enrich.reach_declining(db, 1, "c", posts, {"ig_reach_declining": 3.0}, "2026-08-09T00:00:00Z")
+    rows = db.execute("SELECT type FROM signals_all WHERE company_id='c'").fetchall()
+    assert [r[0] for r in rows] == ["ig_reach_declining"], "тренд не сработал на медиане"
+
+
+def test_reach_trend_skips_short_feeds():
+    """Лента короче 6 постов — отсутствие сигнала, а не нулевой."""
+    from services import enrich
+    posts = [{"taken_at": f"2026-08-0{i}T00:00:00Z", "likes": l}
+             for i, l in enumerate([20, 1, 20])]
+    db = _memory_db()
+    enrich.reach_declining(db, 1, "c", posts, {"ig_reach_declining": 3.0}, "2026-08-09T00:00:00Z")
+    rows = db.execute("SELECT count(*) FROM signals_all WHERE company_id='c'").fetchone()[0]
+    assert rows == 0, "короткая лента дала тренд"
+
+
+def _memory_db():
+    import sqlite3
+    db = sqlite3.connect(":memory:")
+    db.execute(
+        "CREATE TABLE signals_all (run_id INTEGER, company_id TEXT, type TEXT,"
+        " observed_at TEXT, weight REAL, quote TEXT, url TEXT)")
+    return db

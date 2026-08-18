@@ -67,7 +67,7 @@ def subject_of(kind, prompt):
     enrich, — второго способа опознать компанию в проекте нет.
     """
     lines = prompt.splitlines()
-    if kind == "ig_signals":
+    if kind in ("ig_signals", "instagram"):
         return lines[0].removeprefix("Инстаграм: ")
     name = lines[0].removeprefix("Компания: ")
     city = lines[1].removeprefix("Город: ") if len(lines) > 1 else ""
@@ -99,6 +99,7 @@ def run(ctx):
         stage("сигналы", lambda: enrich.enrich(db, run_id, pages, scoring_weights()))
         stage("отзывы от модели", lambda: enrich.reviews_signals(db, run_id, pages, scoring_weights()))
         stage("сайты от модели", lambda: enrich.site_ai_signals(db, run_id, pages, scoring_weights()))
+        stage("инстаграм от модели", lambda: enrich.instagram_ai_signals(db, run_id, pages, scoring_weights()))
         stage("профили от модели", lambda: fill_profiles(db, run_id))
         stage("скоринг", lambda: score.score_all(db, run_id, *ranking_config()))
         stage(f"публикация прогона {run_id}", lambda: publish(engine, db, run_id))
@@ -107,7 +108,7 @@ def run(ctx):
     return {"run_id": run_id}
 
 
-STAGE_COUNT = 10
+STAGE_COUNT = 11
 
 
 def stage_reporter(ctx, total):

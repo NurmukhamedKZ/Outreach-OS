@@ -231,6 +231,78 @@ def site_ai_signals(db, run_id, pages, weights):
                  "цены не выложены — продают через звонок", "")
 
 
+def instagram_ai_signals(db, run_id, pages, weights):
+    """Сигналы слоя Instagram: публичный вопрос без ответа + тренд охватов.
+
+    ig_unanswered_question: вопрос клиента, на который компания молчит. Цитата
+    обязана стоять дословно в комментарии (media_url модели — shortcode, а
+    комментарии ключуются по media pk: связь восстанавливается через ленты).
+    ig_reach_declining: медиана лайков свежей половины ниже старшей (для лент
+    короче 6 постов тренд не считается вовсе).
+    """
+    from services.pipeline import rebuild
+    companies = companies_by_username(db, run_id)
+    feeds = {}
+    pk_by_shortcode = {}
+    for page in pages:
+        if "feed/user/" not in page["url"]:
+            continue
+        feed = sources.parse_ig_feed(rebuild.html_of(page))
+        username = feed["username"] or page["url"].split("feed/user/", 1)[1].split("/", 1)[0]
+        feeds[username] = feed["posts"]
+        for post in feed["posts"]:
+            if post.get("pk") and post.get("shortcode"):
+                pk_by_shortcode[post["shortcode"]] = post["pk"]
+    comments = {}
+    for page in pages:
+        if "/media/" not in page["url"] or "/comments/" not in page["url"]:
+            continue
+        pk = page["url"].split("/media/", 1)[1].split("/", 1)[0]
+        comments[pk] = sources.parse_ig_comments(rebuild.html_of(page), pk)
+
+    horizon = db.execute(
+        "SELECT max(fetched_at) FROM fetches_all WHERE run_id = ?", (run_id,)
+    ).fetchone()[0]
+    for username, posts in feeds.items():
+        company_id = companies.get(username)
+        if not company_id:
+            continue
+        reach_declining(db, run_id, company_id, posts, weights, horizon)
+
+    for answer in rebuild.load_llm_answers(db, "instagram"):
+        username = answer["subject"]
+        company_id = companies.get(username)
+        if not company_id:
+            continue
+        analysis = answer.get("analysis") or {}
+        for q in analysis.get("unanswered_questions") or []:
+            quote = q.get("quote") or ""
+            url = q.get("media_url") or ""
+            shortcode = url.rstrip("/").rsplit("/p/", 1)[-1] if "/p/" in url else ""
+            pk = pk_by_shortcode.get(shortcode)
+            if pk and any(quote and quote in c["text"] for c in comments.get(pk, [])):
+                emit(db, run_id, company_id, "ig_unanswered_question", None,
+                     weights, quote, url)
+
+
+def reach_declining(db, run_id, company_id, posts, weights, horizon):
+    """Медиана лайков свежей пятёрки против старшей. Медиана, не среднее:
+    один залетевший пост не должен создавать ложный тренд. Для лент короче
+    6 постов тренд не считается вовсе — отсутствие сигнала, а не нулевой."""
+    from statistics import median
+    if len(posts) < 6:
+        return
+    ordered = sorted(posts, key=lambda p: p.get("taken_at") or "")
+    half = len(ordered) // 2
+    fresh, older = ordered[len(ordered) - half:], ordered[:half]
+    likes_fresh = median([p.get("likes") or 0 for p in fresh])
+    likes_older = median([p.get("likes") or 0 for p in older])
+    if likes_older > 0 and likes_fresh < likes_older:
+        url = ordered[-1].get("url", "")
+        emit(db, run_id, company_id, "ig_reach_declining", ordered[-1].get("taken_at"),
+             weights, f"охват падает: медиана лайков {likes_fresh:.0f} против {likes_older:.0f}", url)
+
+
 def instagram_signals(db, run_id, pages, weights):
     """Сигналы ленты: смысл подписей от модели, даты и темп — арифметикой здесь.
 
