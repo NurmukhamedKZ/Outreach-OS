@@ -28,6 +28,9 @@ collector/db/leads.db
 # Недособранная база: остаётся на диске, если build.py упал на полпути
 collector/db/leads.building
 
+# История запусков: рабочие данные воркера джобов, как threads.db, но пересоздаётся
+collector/db/ops.db
+
 # Переписка системы 2: невосстановима (как data/raw/), бэкапится отдельно
 writer/threads.db
 

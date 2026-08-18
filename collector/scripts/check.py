@@ -1,8 +1,9 @@
 """Проверки. Ассерты, а не фреймворк; сеть не нужна ни одной из них.
 
 Запуск: uv run -m scripts.check [раздел]      без аргумента — все разделы
-Разделы: parsers (разбор на эталонных страницах), raw (целостность сырья),
-build (приёмка Ф3), collect (приёмка Ф4).
+Разделы: parsers, raw, build, collect, resolve, signals, scores, leads, web,
+jobs. Последний не требует ни базы, ни сырья: очередь джобов живёт на временной
+базе, а справляется о ней сам services/jobs.py.
 
 Каждая следующая фаза дописывает сюда свой раздел. Отдельной фазы «написать
 тесты» в плане нет: проверка — часть фазы, а не работа после неё.
@@ -21,6 +22,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from services import enrich
 from services import sources
@@ -723,6 +725,155 @@ def check_web():
     print(f"  веб: {len(web)} лидов, тот же порядок что в CSV, отказов {len(suppressed)}")
 
 
+def check_jobs():
+    """Слой джобов: очередь исполняет, провал и отмена не вешают воркера.
+
+    Как runs раньше, только состояние в базе: история и прогресс переживают
+    перезапуск, а «бегущая» джоба видна любому клиенту. Команды — только
+    python -c с эталонным поведением; настоящий пайплайн здесь не запускается.
+    """
+    import tempfile
+
+    from services import events, jobs, metrics
+
+    jobs.check_pipelines()
+    check_jobs_lifecycle(events, jobs)
+    check_jobs_cancel(events, jobs)
+    check_jobs_orphans(jobs)
+    check_events_broker(events)
+    check_jobs_contract(events, jobs, metrics)
+    print("  очередь: успех, провал и отмена дают честные статусы, прогресс разобран")
+
+
+def check_jobs_lifecycle(events, jobs):
+    """Успех, провал и #progress — три исхода шага, каждый виден в базе."""
+    import asyncio
+
+    def step(script):
+        return {"name": script[:30], "argv": ["python", "-c", script], "cwd": Path.cwd()}
+
+    with temp_ops_db(jobs):
+        ok = jobs.enqueue_steps("custom", "Успешная", [step("print('привет')")])
+        assert asyncio.run(jobs.run_pending()) == ok, "воркер взял не свою джобу"
+        assert jobs.job(ok)["status"] == "done", jobs.job(ok)
+        assert "привет" in jobs.tail(ok)["lines"], "вывод шага не дошёл до лога"
+
+        failed = jobs.enqueue_steps("custom", "Провальная", [step("raise SystemExit(3)")])
+        asyncio.run(jobs.run_pending())
+        record = jobs.job(failed)
+        assert record["status"] == "failed" and record["exit_code"] == 3, record
+        assert "не прошёл" in record["error"], record["error"]
+
+        progress = "print('#progress " + '{"current": 3, "total": 12}' + "')"
+        with_progress = jobs.enqueue_steps("custom", "С прогрессом", [step(progress)])
+        asyncio.run(jobs.run_pending())
+        assert jobs.job(with_progress)["progress"] == {"current": 3, "total": 12}, \
+            jobs.job(with_progress)["progress"]
+
+        missing = jobs.enqueue_steps("custom", "Без команды", [
+            {"name": "нет такой", "argv": ["нет-такой-команды"], "cwd": Path.cwd()}
+        ])
+        asyncio.run(jobs.run_pending())
+        assert jobs.job(missing)["status"] == "failed", "провал запуска повесил бы очередь"
+
+
+def check_jobs_cancel(events, jobs):
+    """Отмена running убивает процесс, queued снимается без запуска."""
+    import asyncio
+
+    def step(script):
+        return {"name": script[:30], "argv": ["python", "-c", script], "cwd": Path.cwd()}
+
+    with temp_ops_db(jobs):
+        long = jobs.enqueue_steps("custom", "Долгая", [step("import time; time.sleep(30)")])
+        queued = jobs.enqueue_steps("custom", "Вслед", [step("print('не должен был')")])
+
+        async def cancel_when_running():
+            while jobs._current is None:
+                await asyncio.sleep(0.05)
+            jobs.cancel(long)
+
+        async def scenario():
+            running = asyncio.ensure_future(jobs.run_pending())
+            await asyncio.gather(running, cancel_when_running())
+
+        asyncio.run(scenario())
+        assert jobs.job(long)["status"] == "cancelled", jobs.job(long)
+        assert jobs.job(queued)["status"] == "queued", "отмена задела чужую джобу"
+
+        assert jobs.cancel(queued)["status"] == "cancelled"
+        assert asyncio.run(jobs.run_pending()) is None, "отменённая джоба исполнилась"
+
+
+def check_jobs_orphans(jobs):
+    with temp_ops_db(jobs):
+        orphan = jobs.enqueue_steps("custom", "Сирота", [
+            {"name": "x", "argv": ["true"], "cwd": Path.cwd()}
+        ])
+        jobs._update(orphan, status="running")
+        jobs.fail_orphans()
+        assert jobs.job(orphan)["status"] == "failed", "перезапуск оставил бы джобу «бегущей»"
+
+
+def check_events_broker(events):
+    """Событие доходит подписчику; шина не теряет издателя при пустой подписке."""
+    import asyncio
+
+    async def scenario():
+        async with events.subscribe() as queue:
+            events.publish({"type": "ping"})
+            assert await asyncio.wait_for(queue.get(), timeout=1) == {"type": "ping"}, \
+                "событие не дошло до подписчика"
+        events.publish({"type": "ping"})  # подписчиков нет — и это не ошибка
+
+    asyncio.run(scenario())
+
+    from routes import events as sse
+
+    sse.demo()
+
+
+def check_jobs_contract(events, jobs, metrics):
+    """Контракт фронтенда: снапшот счётчиков знает все три системы, у стаба
+    системы 3 есть адрес и честный 501."""
+    snapshot = metrics.snapshot()
+    assert set(snapshot) == {"sourcing", "writer", "sender", "jobs"}, sorted(snapshot)
+    assert set(snapshot["writer"]) == {"threads", "drafts", "sent", "replies"}
+    assert snapshot["sender"]["status"] == "coming_soon"
+
+    assert metrics.threads_db_path().name == "threads.db", \
+        "путь threads.db разошёлся с config.toml системы 2"
+
+    sys.path.insert(0, str(Path("sender").resolve().parent.parent / "sender"))
+    try:
+        import stub as sender
+
+        assert sender.status()["status"] == "coming_soon"
+        paths = {route.path for route in sender.router.routes}
+        assert "/api/sender" in paths and "/api/sender/{rest_of_path:path}" in paths, paths
+    finally:
+        sys.path.pop(0)
+
+
+class temp_ops_db:
+    """Подменяет базу джобов на временную: проверки не пачкают историю запусков."""
+
+    def __init__(self, jobs):
+        self.jobs = jobs
+
+    def __enter__(self):
+        self.original = self.jobs.OPS_DB
+        tmp = TemporaryDirectory()
+        self.tmp = tmp
+        self.jobs.OPS_DB = Path(tmp.name) / "ops.db"
+        return self
+
+    def __exit__(self, *args):
+        self.jobs.OPS_DB = self.original
+        self.tmp.cleanup()
+        return False
+
+
 SECTIONS = {
     "parsers": check_parsers,
     "raw": check_raw,
@@ -733,6 +884,7 @@ SECTIONS = {
     "scores": check_scores,
     "leads": check_leads,
     "web": check_web,
+    "jobs": check_jobs,
 }
 
 

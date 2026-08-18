@@ -75,34 +75,82 @@ export function refuse(handle: string, reason: string) {
   });
 }
 
-export type Command = { name: string; title: string; command: string };
+// ---- Продуктовые операции: пайплайны, джобы, события ----
 
-/** Хвост лога запуска: `lines` — то, чего у клиента ещё нет, `code` — null, пока идёт. */
-export type RunTail = {
-  name: string | null;
+export type Pipeline = { kind: string; title: string; steps: string[] };
+
+export type JobStep = { name: string; command: string };
+
+export type Job = {
+  id: number;
+  kind: string;
   title: string;
-  lines: string[];
-  offset: number;
-  code: number | null;
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  step: number;
+  steps: JobStep[];
+  step_count: number;
+  progress: { label?: string; current?: number; total?: number } | null;
+  log_lines: number;
+  exit_code: number | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
 };
 
-export function fetchCommands() {
-  return json<Command[]>("/api/runs");
+export type JobTail = { job: Job; lines: string[]; offset: number };
+
+export function fetchPipelines() {
+  return json<Pipeline[]>("/api/pipeline");
 }
 
-export function startRun(name: string, args: string) {
-  const query = args ? `?args=${encodeURIComponent(args)}` : "";
-  return json<{ name: string }>(`/api/runs/${encodeURIComponent(name)}${query}`, { method: "POST" });
+export function startPipeline(kind: string, limit = 10) {
+  return json<{ job: Job }>(`/api/pipeline/${encodeURIComponent(kind)}?limit=${limit}`, {
+    method: "POST",
+  });
 }
 
-export function fetchRunTail(offset: number) {
-  return json<RunTail>(`/api/runs/current?offset=${offset}`);
+export function fetchJobs(limit = 20) {
+  return json<{ jobs: Job[]; active: Job | null }>(`/api/jobs?limit=${limit}`);
 }
 
-export function stopRun() {
-  return json<{ name: string }>("/api/runs/current/stop", { method: "POST" });
+export function fetchJob(id: number, offset = 0) {
+  return json<JobTail>(`/api/jobs/${id}?offset=${offset}`);
 }
 
+export function cancelJob(id: number) {
+  return json<{ job: Job }>(`/api/jobs/${id}/cancel`, { method: "POST" });
+}
+
+/** Счётчики всех трёх систем одним ответом — живая шапка дашборда. */
+export type DashboardStats = {
+  sourcing: Stats & { available: number };
+  writer: { threads: number; drafts: number; sent: number; replies: number };
+  sender: { status: string };
+  jobs: { active: Job | null; recent: Job[] };
+};
+
+export function fetchStats() {
+  return json<DashboardStats>("/api/stats");
+}
+
+/** Подписка на SSE. Сервер шлёт события snapshot | job | log | refresh;
+ * на refresh консьюмер обычно перезабирает fetchStats().
+ *
+ * Стрим ходит на API-оригин напрямую, минуя rewrite next: dev-прокси
+ * отдаёт браузеру заголовки, но буферизует тело бесконечного ответа —
+ * события до страницы не доезжают. JSON-эндпоинтам это не мешает. */
+const SSE_ORIGIN = process.env.NEXT_PUBLIC_API_ORIGIN ?? "";
+
+export function subscribeEvents(
+  onEvent: (event: MessageEvent) => void,
+): () => void {
+  const source = new EventSource(`${SSE_ORIGIN}/api/events`);
+  for (const type of ["snapshot", "job", "log", "refresh"] as const) {
+    source.addEventListener(type, onEvent as EventListener);
+  }
+  return () => source.close();
+}
 /** Ссылка, которой оператор реально открывает диалог. Текст не подставляем:
  *  первое сообщение пишется руками, в этом весь смысл ручной отправки в v1. */
 export function channelLink(channel: Channel): string {
@@ -152,6 +200,32 @@ export function markSent(companyId: string, text: string) {
 
 export function addIncoming(companyId: string, text: string) {
   return post<Conversation>(`/api/threads/${encodeURIComponent(companyId)}/incoming`, { text });
+}
+
+// ---- Система 2: инбокс тредов ----
+
+export type ThreadSummary = {
+  thread_id: string;
+  company_id: string;
+  company_name: string;
+  created_at: string;
+  sent: number;
+  replies: number;
+  drafts: number;
+  last_at: string | null;
+  last_message: string | null;
+};
+
+export function fetchThreads() {
+  return json<{ threads: ThreadSummary[] }>("/api/threads");
+}
+
+// ---- Система 3: статус отправки ----
+
+export type SenderStatus = { status: string; title: string; planned: string[] };
+
+export function fetchSender() {
+  return json<SenderStatus>("/api/sender");
 }
 
 function post<T>(url: string, body: unknown) {

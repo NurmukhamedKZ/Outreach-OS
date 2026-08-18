@@ -36,6 +36,21 @@ class TextRequest(BaseModel):
     text: str
 
 
+@router.get("")
+def inbox():
+    """Инбокс системы 2: треды с именами компаний из базы collector'а."""
+    leads, threads = open_stores()
+    try:
+        names = leads_source.company_names(leads)
+        return {"threads": [
+            {**row, "company_name": names.get(row["company_id"], row["company_id"])}
+            for row in thread_store.inbox(threads)
+        ]}
+    finally:
+        leads.close()
+        threads.close()
+
+
 @router.get("/{company_id}")
 def conversation(company_id: str):
     leads, threads = open_stores()
@@ -166,6 +181,7 @@ def demo():
     assert leads_source.candidates(leads, 1) is not None
     assert thread_store.thread(threads, "нет такого треда") is None
     assert {route.path for route in router.routes} == {
+        "/api/threads",
         "/api/threads/{company_id}",
         "/api/threads/{company_id}/draft",
         "/api/threads/{company_id}/sent",

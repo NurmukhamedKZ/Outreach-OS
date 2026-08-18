@@ -71,6 +71,16 @@ def thread_id_of(db, company_id):
     return best_channel(channels.get(company_id, []), suppressed)
 
 
+def company_names(db):
+    """Имена компаний для инбокса: тред знает company_id, человек — нет."""
+    rows = db.execute(
+        "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm)"
+        " FROM companies c LEFT JOIN company_links l ON l.company_id = c.company_id"
+        " AND l.rule = 'self' LEFT JOIN orgs o ON o.branch_id = l.branch_id"
+    )
+    return dict(rows)
+
+
 def seed_of(db, company_id):
     """Контекст лида для затравки треда. None, если компания исчезла из базы."""
     row = db.execute(CANDIDATES + ONE_COMPANY, (company_id,)).fetchone()

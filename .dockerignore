@@ -1,0 +1,23 @@
+# Контекст сборки бэкенда — корень репозитория (api.py монтирует writer/ рядом с
+# собой). Тяжёлое и невосстановимое сюда не идёт — оно приезжает volume'ами.
+.git
+.claude
+.playwright-mcp
+plans
+docs
+
+**/.venv
+**/node_modules
+**/__pycache__
+**/*.py[oc]
+**/.env
+
+# Сырьё и производные базы — volume'ы, не слои образа (см. docker-compose.yml)
+collector/data/raw
+collector/data/raw_jsonl_legacy
+collector/db/leads.db
+collector/db/leads.building
+writer/threads.db
+
+frontend/.next
+frontend/node_modules

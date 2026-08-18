@@ -71,6 +71,32 @@ def thread(db, thread_id):
             "seed": json.loads(row[2]), "created_at": row[3]}
 
 
+def inbox(db):
+    """Все треды одной сводкой: последняя реплика и счётчики — инбокс системы 2.
+
+    Черновик в last_message не попадает: до отправки лид ничего не получил, и
+    очередь «кому ответить» из несостоявшихся сообщений не собирается.
+    """
+    rows = db.execute(
+        "SELECT t.thread_id, t.company_id, t.created_at,"
+        " (SELECT count(*) FROM messages m WHERE m.thread_id = t.thread_id"
+        "  AND m.sent_text IS NOT NULL AND m.role = 'outgoing'),"
+        " (SELECT count(*) FROM messages m WHERE m.thread_id = t.thread_id"
+        "  AND m.role = 'incoming'),"
+        " (SELECT count(*) FROM messages m WHERE m.thread_id = t.thread_id"
+        "  AND m.sent_text IS NULL),"
+        " (SELECT sent_at FROM messages m WHERE m.thread_id = t.thread_id"
+        "  AND m.sent_text IS NOT NULL ORDER BY m.message_id DESC LIMIT 1),"
+        " (SELECT sent_text FROM messages m WHERE m.thread_id = t.thread_id"
+        "  AND m.sent_text IS NOT NULL ORDER BY m.message_id DESC LIMIT 1)"
+        " FROM threads t ORDER BY 7 DESC NULLS LAST, t.created_at DESC"
+    ).fetchall()
+    return [dict(zip(
+        ("thread_id", "company_id", "created_at", "sent", "replies",
+         "drafts", "last_at", "last_message"), row,
+    )) for row in rows]
+
+
 def thread_of_company(db, company_id):
     row = db.execute(
         "SELECT thread_id FROM threads WHERE company_id = ?", (company_id,)
