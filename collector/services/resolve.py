@@ -43,24 +43,26 @@ NON_COMPANY_DOMAINS = frozenset(
 )
 
 
-def resolve(db):
-    """Наполнить companies и company_links."""
-    branches = load_branches(db)
+def resolve(db, run_id):
+    """Наполнить companies_all и company_links_all."""
+    branches = load_branches(db, run_id)
     groups = group_branches(branches)
-    write_companies(db, branches, groups)
+    write_companies(db, run_id, branches, groups)
 
 
 # --- склейка филиалов --------------------------------------------------------
 
 
-def load_branches(db):
+def load_branches(db, run_id):
     """branch_id -> всё, что нужно для склейки. Отсортировано ради дампа."""
     rows = db.execute(
-        "SELECT branch_id, org_id, org_name, name, city, rubric_id FROM orgs ORDER BY branch_id"
+        "SELECT branch_id, org_id, org_name, name, city, rubric_id"
+        " FROM orgs_all WHERE run_id = ? ORDER BY branch_id", (run_id,)
     ).fetchall()
     contacts = {}
     for branch_id, kind, handle in db.execute(
-        "SELECT branch_id, kind, handle FROM contacts ORDER BY branch_id, kind, handle"
+        "SELECT branch_id, kind, handle FROM contacts_all"
+        " WHERE run_id = ? ORDER BY branch_id, kind, handle", (run_id,)
     ):
         contacts.setdefault(branch_id, []).append((kind, handle))
 
@@ -157,22 +159,23 @@ def similarity(left, right):
 # --- запись ------------------------------------------------------------------
 
 
-def write_companies(db, branches, groups):
+def write_companies(db, run_id, branches, groups):
     for representative, members in sorted(groups.items()):
         company_id = pick_company_id(branches, members)
         head = branches[representative]
         domain = first(branches[b]["domain"] for b in members)
         db.execute(
-            "INSERT INTO companies (company_id, name_norm, domain, city, rubric_id, first_seen)"
-            " VALUES (?, ?, ?, ?, ?, NULL)",
-            (company_id, head["name_norm"], domain, head["city"], head["rubric_id"]),
+            "INSERT INTO companies_all (run_id, company_id, name_norm, domain, city, rubric_id)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, company_id, head["name_norm"], domain, head["city"], head["rubric_id"]),
         )
         for branch_id in members:
             rule, confidence = link_reason(branches, representative, branch_id, members)
             db.execute(
-                "INSERT OR IGNORE INTO company_links (company_id, branch_id, rule, confidence)"
-                " VALUES (?, ?, ?, ?)",
-                (company_id, branch_id, rule, confidence),
+                "INSERT OR IGNORE INTO company_links_all"
+                " (run_id, company_id, branch_id, rule, confidence)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (run_id, company_id, branch_id, rule, confidence),
             )
 
 

@@ -15,26 +15,30 @@ import json
 from math import exp, log
 
 
-def score_all(db, config, rubrics):
-    """Наполнить scores. Опорная дата — последний забор сырья, а не сегодня.
+def score_all(db, run_id, config, rubrics):
+    """Наполнить scores_all. Опорная дата — последний забор сырья, а не сегодня.
 
     Иначе пересборка той же raw/ через месяц дала бы другие числа, и проверка
     воспроизводимости из Ф3 стала бы ложной.
     """
-    horizon = db.execute("SELECT max(fetched_at) FROM fetches").fetchone()[0]
-    signals = signals_by_company(db)
+    horizon = db.execute(
+        "SELECT max(fetched_at) FROM fetches_all WHERE run_id = ?", (run_id,)
+    ).fetchone()[0]
+    signals = signals_by_company(db, run_id)
 
     for company_id, city, rubric_id, domain in db.execute(
-        "SELECT company_id, city, rubric_id, domain FROM companies ORDER BY company_id"
+        "SELECT company_id, city, rubric_id, domain FROM companies_all"
+        " WHERE run_id = ? ORDER BY company_id", (run_id,)
     ).fetchall():
         fit, fit_parts = fit_score(config["fit"], rubrics, city, rubric_id, domain)
         intent, intent_parts = intent_score(
             config["half_life_days"], signals.get(company_id, []), horizon
         )
         db.execute(
-            "INSERT INTO scores (company_id, fit_score, intent_score, breakdown)"
-            " VALUES (?, ?, ?, ?)",
+            "INSERT INTO scores_all (run_id, company_id, fit_score, intent_score, breakdown)"
+            " VALUES (?, ?, ?, ?, ?)",
             (
+                run_id,
                 company_id,
                 round(fit, 2),
                 round(intent, 2),
@@ -80,11 +84,12 @@ def intent_score(half_life_days, signals, horizon):
     return sum(p["contribution"] for p in parts), parts
 
 
-def signals_by_company(db):
+def signals_by_company(db, run_id):
     grouped = {}
     for company_id, signal_type, observed_at, weight, quote, url in db.execute(
-        "SELECT company_id, type, observed_at, weight, quote, url FROM signals"
-        " ORDER BY company_id, type, observed_at, url"
+        "SELECT company_id, type, observed_at, weight, quote, url FROM signals_all"
+        " WHERE run_id = ? ORDER BY company_id, type, observed_at, url",
+        (run_id,),
     ):
         grouped.setdefault(company_id, []).append(
             (signal_type, observed_at, weight, quote, url)
