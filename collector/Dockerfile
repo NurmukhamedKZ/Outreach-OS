@@ -6,8 +6,8 @@ FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 WORKDIR /app
 
 # Каждый проект — свой uv sync, как на хосте: collector/.venv и writer/.venv.
-# writer/.venv нужен отдельно, потому что шаг write в очереди джобов
-# (services/jobs.py) запускает его отдельным `uv run` с cwd=writer/.
+# writer/.venv нужен отдельно, потому что операции пишутся в том же процессе,
+# что и воркер джобов (services/jobs.py), а writer монтируется через sys.path.
 COPY collector/pyproject.toml collector/uv.lock collector/
 RUN cd collector && uv sync --frozen --no-dev
 
@@ -20,9 +20,9 @@ COPY writer/ writer/
 WORKDIR /app/collector
 
 # scrapling[fetchers] качает свой Chromium отдельно от pip-пакета — без этого
-# шага scripts.collect и services.probes.* падают при первом обращении к сети.
+# шага collect.* и probe.* падают при первом обращении к сети.
 RUN uv run scrapling install
 
 EXPOSE 8787
 
-CMD ["uv", "run", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8787"]
+CMD ["uv", "run", "python", "-m", "uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8787"]

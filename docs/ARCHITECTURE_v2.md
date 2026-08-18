@@ -115,59 +115,82 @@ Postgres в v1 был выбран ради `to_tsvector('russian')` и `pg_trgm
 ## 4. Модель данных
 
 Три схемы `raw` / `core` / `mart` схлопываются в три физически разные вещи:
-`raw` — это папка на диске, `core` — таблицы, `mart` — `VIEW`.
+`raw` — папка на диске, `core` — `derived.db` (пересобираемое), `state` —
+`state.db` (невосстановимое), `mart` — `VIEW` поверх текущего прогона.
+
+**`derived.db`** (DERIVED-часть `store/schema.sql`) — пересобирается прогонами,
+`run_id` в первичном ключе каждой таблицы:
 
 ```sql
--- индекс к папке raw/ : что скачано, куда приземлилось, когда
-fetches(url TEXT PRIMARY KEY, sha TEXT, final_url TEXT, status INT, fetched_at TEXT)
+runs(run_id INTEGER PRIMARY KEY, started_at TEXT, finished_at TEXT,
+     code_version TEXT, config_hash TEXT, note TEXT)
 
--- 2GIS
-orgs(branch_id TEXT PRIMARY KEY, org_id TEXT, name TEXT, org_name TEXT,
-     branch_count INT, city TEXT, rubric_id TEXT, address TEXT,
-     rating REAL, review_count INT)
+current_run(id INTEGER PRIMARY KEY CHECK (id = 1), run_id INTEGER)   -- ровно одна строка
 
-contacts(branch_id TEXT, kind TEXT, handle TEXT, source_url TEXT,
-         PRIMARY KEY (branch_id, kind, handle))   -- phone|email|site|instagram|whatsapp
+fetches_all(run_id, url, sha, final_url, status, fetched_at)
+orgs_all(run_id, branch_id, org_id, name, org_name, branch_count,
+         city, rubric_id, address, rating, review_count)
+contacts_all(run_id, branch_id, kind, handle, source_url)
+companies_all(run_id, company_id, name_norm, domain, city, rubric_id)
+company_links_all(run_id, company_id, branch_id, rule, confidence)
+signals_all(run_id, company_id, type, observed_at, weight, quote, url)
+scores_all(run_id, company_id, fit_score, intent_score, breakdown)
+profiles_all(run_id, company_id, model, industry, size_hint,
+             has_sales_team, why_now, quote, confidence)
 
--- hh.kz
-vacancies(id TEXT PRIMARY KEY, employer TEXT, title TEXT, text TEXT,
-          published_at TEXT, city TEXT, slug TEXT, url TEXT)
-
--- склейка
-companies(company_id TEXT PRIMARY KEY, name_norm TEXT, domain TEXT,
-          city TEXT, rubric_id TEXT, first_seen TEXT)
-
-company_links(company_id TEXT, branch_id TEXT, rule TEXT, confidence REAL)
-
--- сигналы: события с датой, не флаги
-signals(company_id TEXT, type TEXT, observed_at TEXT, weight REAL,
-        quote TEXT, url TEXT)
-
--- юридический контур: не очищается никогда
-suppression(handle TEXT PRIMARY KEY, added_at TEXT, reason TEXT)
+-- mart: view текущего прогона; читающий код видит orgs/companies/... как раньше
+CREATE VIEW orgs AS SELECT o.* FROM orgs_all o JOIN current_run USING (run_id);
+CREATE VIEW companies AS SELECT c.* FROM companies_all c JOIN current_run USING (run_id);
+-- и так далее: contacts, company_links, signals, scores, profiles, fetches
 ```
 
-Восемь таблиц. Ключевые решения модели данных из ARCHITECTURE.md §9.2
-сохраняются полностью:
+`first_seen` нет: прогон, в котором компания появилась, и есть дата появления.
+
+**`state.db`** (STATE-часть `store/schema.sql`) — невосстановимое, `CREATE TABLE IF
+NOT EXISTS`, `DROP` запрещён:
+
+```sql
+suppression(handle TEXT PRIMARY KEY, added_at TEXT, reason TEXT)
+threads(thread_id TEXT PRIMARY KEY, company_id TEXT, seed TEXT, created_at TEXT)
+messages(message_id INTEGER PRIMARY KEY, thread_id TEXT, role TEXT,
+         draft_text TEXT, sent_text TEXT, angle TEXT, created_at TEXT, sent_at TEXT)
+llm_answers(id INTEGER PRIMARY KEY, kind TEXT, subject TEXT, model TEXT,
+            prompt TEXT, answer TEXT)
+jobs(id INTEGER PRIMARY KEY, kind TEXT, title TEXT, status TEXT, step INTEGER,
+     steps TEXT, log TEXT, progress TEXT, result TEXT, exit_code INTEGER,
+     error TEXT, created_at TEXT, started_at TEXT, finished_at TEXT)
+```
+
+`store.connect()` открывает `derived.db`, применяет STATE-схему к собственной
+`state.db`, DERIVED+view — к derived, затем `ATTACH state AS state`. Отказы,
+переписка, очередь джобов и оплаченные ответы модели переживают пересборку;
+удаление любой из этих строк — осознанное действие человека, не побочный эффект
+прогона.
+
+Ключевые решения модели данных из ARCHITECTURE.md §9.2 сохраняются полностью:
 
 | Решение | Статус |
 |---|---|
-| Сырьё неизменяемо, `core` пересобирается из него | ✅ усилено: пересборка — это `DROP` и заново, две минуты |
+| Сырьё неизменяемо, `core` пересобирается из него | ✅ усилено: пересборка — прогон с новым `run_id`, публикуется одним `activate_run` |
 | `signals` — события с датой, не флаги | ✅ без изменений |
 | `segment_id` = id рубрики 2GIS | ✅ колонка `rubric_id` |
 | Все каналы равноправны, `telegram` не порождается из телефона | ✅ таблица `contacts` плоская, по строке на канал |
 | `channels.confidence` — число | ❌ убрано, см. §6.4 |
 | `core.companies` глобальная (мультиарендность) | ⏸ отложено: арендатор один |
 
-### 4.1 Пересборка целиком, а не миграциями
+### 4.1 Пересборка прогоном, а не миграциями
 
-`build.py` делает `DROP TABLE` и наполняет заново. На 1 500 строках это две минуты,
-и это отменяет весь класс проблем: миграции схемы, частично применённые изменения,
-рассинхрон парсера и данных. Схема правится редактированием `schema.sql`.
+`rebuild.run(ctx)` создаёт run_id, пишет все `*_all` таблицы нового прогона и
+публикует его одним `activate_run()` в конце. Пока прогон строится, `current_run`
+указывает на прошлый, и `api.py` читает старую выдачу; падение на середине не
+портит рабочую, откат — `activate_run(старый run_id)`. На 1 500 строках это
+минуты, и это отменяет весь класс проблем: миграции схемы, частично применённые
+изменения, рассинхрон парсера и данных. Схема правится редактированием
+`schema.sql`; смена конфига или кода даёт новый прогон, а не перезапись.
 
 ```
-# ponytail: полная пересборка. Инкрементальная — когда пересборка перевалит за 10 минут,
-#           то есть примерно на 100k компаний.
+# ponytail: полная пересборка прогоном. Инкрементальная — когда пересборка
+#           перевалит за 10 минут, то есть примерно на 100k компаний.
 ```
 
 ---
@@ -176,61 +199,63 @@ suppression(handle TEXT PRIMARY KEY, added_at TEXT, reason TEXT)
 
 ```
 collector/
-  build.py        чистая функция raw/ -> leads.db, ни одного сетевого запроса
-  report.py       leads.db -> leads.csv
-  api.py          сборка FastAPI: CORS и подключение роутеров, больше ничего
+  services/pipeline/  операции воркера, каждый шаг — функция от RunContext
+    rebuild.py        чистая функция raw/ -> derived.db, ни одного сетевого запроса
+    export.py         derived.db -> leads.csv
+    collect.py        ходит в сеть, наполняет raw/ (gis, sites, instagram)
+    analyze.py        единственные вызовы модели (профиль, смысл подписей)
+    probe.py          разведка источника вручную
+    __init__.py       реестр OPERATIONS / PIPELINES — имя становится функцией
 
-                  build и report наверху не по привычке: их импортируют api.py,
-                  classify.py и services/leads.py — правило выдачи одно на CSV и веб
+  api.py          сборка FastAPI: CORS, роутеры, lifespan воркера джобов
 
-  scripts/        команды, которые никто не импортирует
-    collect.py    ходит в сеть, наполняет raw/ и fetches
-    classify.py   единственный вызов модели (OpenAI), только по топу
-    check.py      ассерты на живых фикстурах из raw/
-
-  routes/         эндпоинты: leads.py, suppression.py
+  routes/         эндпоинты: leads.py, suppression.py, pipeline.py, operations.py,
+                  runs.py, jobs.py, events.py (SSE), stats.py
   schemas/        pydantic на входе: refusal.py
+  store/          schema.sql (STATE + DERIVED + view), lead.py — соединение и запросы
 
   services/       логика и доступ к внешнему миру
+    store.py      connect() (derived + ATTACH state), new_run, activate_run, run_history
+    storage.py    адаптер сырья: put/get/exists/iter_pages по raw/
     fetch.py      get(url) -> html, content-addressed: единственный выход в сеть
-    sources.py    четыре источника: 2GIS, hh, SERP, сайты — разбор ответа
+    sources.py    источники: 2GIS, SERP, сайты, instagram — разбор ответа
     resolve.py    склейка дублей
     enrich.py     regex-детекторы: CRM, пиксели, реклама, соцсети
     score.py      fit_score, intent_score — возвращают (число, разбивку)
-    leads.py      отбор лидов для веба — тот же, что у report.py
-    suppression.py  отказ: сначала файл, потом таблица
-    probes/       разведка источника вручную, по одной команде на источник
-      gis_rubrics.py gis_list.py gis_firm.py hh_vacancies.py serp.py
-
-  db/             всё про базу: schema.sql — восемь таблиц и витрина как VIEW,
-                  lead.py — соединение и запросы, leads.db — производное
+    leads.py      отбор лидов для веба — тот же, что у export.py
+    suppression.py  отказ: одна запись в state.suppression
+    jobs.py       очередь джобов в state.jobs, воркер зовёт функции через to_thread
+    events.py     шина pub/sub на asyncio-очередях для SSE
+    metrics.py    счётчики трёх систем одним ответом
 
   data/           raw/ — слой сырья, невосстановим
-                  suppression.csv — кому не писать: файл, а не таблица, схема
-                    пересобирается DROP'ом
+                  derived.db — пересобираемое (runs, *_all, view)
+                  state.db — невосстановимое (suppression, jobs, threads, llm_answers)
                   leads.csv — выгрузка оператору
-  config.toml     рубрики, города, slug'и hh, веса скоринга, чёрный список
+  config.toml     рубрики, города, веса скоринга, LLM-модель
 
-frontend/         Next.js — консоль оператора, /api/* проксируется на api.py
+frontend/         Next.js — продуктовый дашборд: сайдбар, страница на систему,
+                  живые процессы по SSE; JSON через /api/* проксируется на api.py,
+                  SSE ходит на API-оригин напрямую (dev-прокси буферизует стримы)
+sender/           система 3, пока стаб: stub.py отдаёт статус «скоро» и 501
 ```
 
-Наверху collector/ — только то, что запускают: шесть команд и `fetch.py`.
-Наверху — только то, что запускают. `services/probes/` трогают руками при разведке
-нового источника: `uv run -m services.probes.gis_list demo`.
+Веб-интерфейс ставит джобы, а не запускает скрипты: `POST /api/pipeline/{kind}` и
+`POST /api/operations/{name}` кладут имя в очередь `state.jobs`, воркер вызывает
+`OPERATIONS[name](ctx)` через `asyncio.to_thread` в том же процессе. Прогресс и лог
+идут из `RunContext` (`ctx.progress`/`ctx.log`) в события SSE; отмена кооперативная
+— флаг, который операция проверяет в `ctx.check_cancelled`. Пайплайны — составные
+шаги (`discover` = collect.* + rebuild + export), одиночные операции — по одной.
 
 ```bash
-uv run -m scripts.collect    # 1,5 часа, один раз
-uv run build.py              # 2 минуты, сколько угодно раз
-uv run report.py             # выгрузка топа
-uv run -m scripts.check      # проверки, сеть не нужна
-
-uvicorn api:app --port 8787  # бэкенд веб-консоли
-cd frontend && npm run dev   # фронтенд на 3000, /api/* проксируется на 8787
+uv run pytest tests/               # проверки, сеть не нужна
+uv run python -m uvicorn api:app --port 8787   # бэкенд дашборда
+cd frontend && npm run dev         # фронтенд на 3000, /api/* проксируется на 8787
 ```
 
-Разделение `collect` / `build` — главная структурная граница системы. Слева от неё
-единственное, что нельзя восстановить: страница удаляется, вакансия закрывается.
-Справа — то, что пересобирается бесплатно.
+Разделение `collect` / `rebuild` — главная структурная граница системы. Слева от неё
+единственное, что нельзя восстановить: страница удаляется, вакансия закрывается,
+ответ модели оплачен. Справа — то, что пересобирается бесплатно прогонами.
 
 ---
 
@@ -323,7 +348,7 @@ cold calling в КЗ жив, один номер даёт и звонок, и Wh
 
 ### 6.6 Выдача и граница с человеком
 
-`report.py` отдаёт CSV на 30–50 строк с колонками: компания, канал, `why_now` с
+`export.py` отдаёт CSV на 30–50 строк с колонками: компания, канал, `why_now` с
 цитатой и ссылкой, разбивка скоринга.
 
 **Статус переписки живёт в таблице оператора, а не в базе.** Кто ответил, кому
@@ -334,22 +359,36 @@ cold calling в КЗ жив, один номер даёт и звонок, и Wh
 Отсюда из модели данных исчезают `stage` и `priority`: они описывали состояние
 процесса, которого в системе больше нет.
 
-### 6.7 Веб-консоль
+### 6.7 Веб-дашборд
 
-`api.py` (FastAPI) плюс `frontend/` (Next.js) — та же выдача в браузере: список, карточка
-с `why_now`, цитатой, сигналами и датами, кнопка «копировать канал» и кнопка отказа.
+`api.py` (FastAPI) плюс `frontend/` (Next.js) — продуктовый дашборд: сайдбар с тремя
+системами, страница на каждую, карточка лида с `why_now`, цитатой, сигналами и
+датами, кнопка «копировать канал» и кнопка отказа. Система 3 закрыта страницей
+«скоро», содержимое которой берётся с бэкенда (`GET /api/sender`), а не хардкодом.
 
-**Отбор лидов не дублируется, а импортируется из `report.py`.** Правило «нет канала —
+**Запуск процессов — джобами, не скриптами.** Продуктовые операции `POST
+/api/pipeline/{kind}` и одиночные `POST /api/operations/{name}` ставят джобу в
+очередь (`services/jobs.py`, `state.jobs`), воркер вызывает `OPERATIONS[name](ctx)`
+через `asyncio.to_thread` в том же процессе. Состояние в базе, не в памяти: история
+и прогресс переживают перезапуск («running» без воркера помечается проваленной,
+«queued» продолжается). Прогресс, шаги и живой лог приходят по SSE `GET
+/api/events` (события `snapshot`, `job`, `log`, `refresh`); прогресс приходит из
+`RunContext` (`ctx.progress`), а не из парсинга вывода. Отмена кооперативная:
+флаг в контексте, операция проверяет его в `ctx.check_cancelled`. История прогонов
+и откат выдачи — `GET /api/runs` + `POST /api/runs/{id}/activate`.
+
+**Отбор лидов не дублируется, а импортируется из `export.py`.** Правило «нет канала —
 нет лида» (F19) и проверка отказов до выдачи (F21) — это закон, а не формат вывода;
 две копии закона расходятся на первой же правке, и расхождение увидит не тест, а
-клиент. `check.py web` сравнивает порядок веб-выдачи с `leads.csv` построчно.
+клиент. `test_web` сравнивает веб-отбор с правилами `export.candidates`/`best_channel`.
 
-**Писать в `leads.db` веб не может.** Схема пересобирается через `DROP`, и запись,
-сделанная в обход `build.py`, живёт до ближайшей сборки. Единственное, что приходит
-от человека, — отказ, и он уходит в `suppression.csv`; в таблицу он дублируется
-только чтобы выдача обновилась без пересборки.
+**Писать в `derived.db` веб не может.** Пересборка идёт прогонами, и запись,
+сделанная в обход `rebuild`, живёт до ближайшей пересборки. Единственное, что
+приходит от человека, — отказ, и он уходит в `state.suppression` (невосстановимый
+слой) — пересборка его не трогает, выдача обновляется без пересборки.
 
-Статуса переписки в вебе нет по той же причине, что и в базе: это работа человека.
+Статус переписки ведёт система 2 в своей базе и показывает в том же дашборде
+(инбокс `GET /api/threads`); в систему 1 он не возвращается.
 
 ---
 

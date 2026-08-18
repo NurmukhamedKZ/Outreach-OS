@@ -1,10 +1,11 @@
 # Тот же контур, что и `README.md`: два процесса, browser'у нужен только 3000.
 # writer — не отдельный сервис: его роутер монтируется в api.py (collector/api.py),
-# а .venv собирается тем же образом backend'а, потому что кнопка write на /runs
-# запускает его отдельным `uv run` (routes/runs.py).
+# а .venv собирается тем же образом backend'а, потому что операции системы 2
+# вызываются в том же процессе воркера джобов (services/jobs.py), а writer
+# монтируется через sys.path.
 #
 # Перед первым запуском: cp collector/.env.example collector/.env и вписать ключи —
-# без них поднимутся collect/build/report/check, но не classify и не write.
+# без них поднимутся сбор/пересборка/веб, но не analyze.* и probe.serp.
 #
 #   docker compose up --build
 
@@ -22,10 +23,8 @@ services:
       # Сырьё и базы — невосстановимые или производные слои (см. CLAUDE.md),
       # им место на хосте, а не в слоях образа.
       - ./collector/data:/app/collector/data
-      - ./collector/db:/app/collector/db
       - ./collector/config.toml:/app/collector/config.toml
       - ./collector/.env:/app/collector/.env
-      - ./writer/threads.db:/app/writer/threads.db
       - ./writer/config.toml:/app/writer/config.toml
       - ./writer/.env:/app/writer/.env
 
