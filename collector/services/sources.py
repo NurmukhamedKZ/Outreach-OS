@@ -14,8 +14,6 @@ import re
 from datetime import datetime, timezone
 
 INITIAL_STATE = re.compile(r"var initialState = JSON\.parse\('(.*?)'\);", re.S)
-JSON_LD = re.compile(r'<script type="application/ld\+json">(.*?)</script>', re.S)
-VACANCY_ID = re.compile(r"/vacancy/(\d{6,})")
 
 CONTACT_KINDS = ("phone", "website", "email", "instagram", "whatsapp")
 FIRM_URL = "https://2gis.kz/{city}/firm/{branch_id}"
@@ -104,23 +102,6 @@ def unwrap_2gis_link(url):
     if url and "link.2gis." in url and "?" in url:
         return url.split("?", 1)[1]
     return url
-
-
-def parse_vacancy_ids(html):
-    """id вакансий со страницы списка hh."""
-    return sorted(set(VACANCY_ID.findall(html)))
-
-
-def parse_job_posting(html):
-    """JSON-LD JobPosting — hh отдаёт вакансию структурно, парсить HTML не нужно."""
-    for block in JSON_LD.findall(html):
-        try:
-            posting = json.loads(block)
-        except json.JSONDecodeError:
-            continue
-        if posting.get("@type") == "JobPosting":
-            return posting
-    return None
 
 
 def parse_ig_feed(body):

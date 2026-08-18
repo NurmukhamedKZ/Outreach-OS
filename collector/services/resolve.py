@@ -1,4 +1,4 @@
-"""Склейка дублей: филиалы 2GIS в компании, работодатели hh к ним же.
+"""Склейка дублей: филиалы 2GIS в компании.
 
 Одна компания приходит из нескольких рубрик, городов и источников под разными
 идентификаторами. Без склейки получим дубли и напишем одному человеку трижды.
@@ -44,11 +44,10 @@ NON_COMPANY_DOMAINS = frozenset(
 
 
 def resolve(db):
-    """Наполнить companies и company_links, проставить vacancies.company_id."""
+    """Наполнить companies и company_links."""
     branches = load_branches(db)
     groups = group_branches(branches)
     write_companies(db, branches, groups)
-    link_employers(db)
 
 
 # --- склейка филиалов --------------------------------------------------------
@@ -214,37 +213,6 @@ def link_reason(branches, representative, branch_id, members):
         if other != branch_id
     )
     return "name_city_fuzzy", round(closest, 3)
-
-
-def link_employers(db):
-    """Работодатель hh к компании — только нечётко по имени в пределах города.
-
-    Точный путь (/employer/{id} -> сайт -> домен) стоит лишнего запроса на вакансию,
-    а hh и без того блокирует сбор. Остаётся открытым вопросом №1 TRD.
-    """
-    companies = db.execute(
-        "SELECT company_id, name_norm, city FROM companies WHERE name_norm <> '' ORDER BY company_id"
-    ).fetchall()
-    by_city = {}
-    for company_id, name_norm, city in companies:
-        by_city.setdefault(city, []).append((company_id, name_norm))
-
-    for vacancy_id, employer, city in db.execute(
-        "SELECT id, employer, city FROM vacancies WHERE employer IS NOT NULL ORDER BY id"
-    ).fetchall():
-        name = normalize_name(employer)
-        best_id, best_score = None, 0.0
-        for company_id, company_name in by_city.get(city, []):
-            if not company_name or company_name[0] != name[:1]:
-                continue
-            score = similarity(name, company_name)
-            if score > best_score:
-                best_id, best_score = company_id, score
-        if best_id and best_score >= NAME_SIMILARITY:
-            db.execute(
-                "UPDATE vacancies SET company_id = ?, match_confidence = ? WHERE id = ?",
-                (best_id, round(best_score, 3), vacancy_id),
-            )
 
 
 # --- нормализация ------------------------------------------------------------

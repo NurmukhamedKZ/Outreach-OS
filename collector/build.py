@@ -40,12 +40,6 @@ SUPPRESSION = Path("data/suppression.csv")
 
 GIS_LIST_URL = re.compile(r"2gis\.kz/([a-z]+)/rubric/(\d+)(?:/page/(\d+))?$")
 GIS_FIRM_URL = re.compile(r"2gis\.kz/([a-z]+)/firm/(\d+)$")
-HH_LIST_URL = re.compile(r"https://([a-z]+)\.hh\.kz/vacancies/([a-z0-9_]+)$")
-HH_VACANCY_URL = re.compile(r"hh\.kz/vacancy/(\d+)$")
-# Канонический адрес вакансии. Из сайдкара его брать нельзя: hh уводит запрос на
-# поддомен города, и у страниц, мигрировавших из старого кэша, в url лежит уже
-# конечный адрес. Ссылка идёт в why_now и обязана быть одинаковой у всех записей.
-VACANCY_URL = "https://hh.kz/vacancy/{id}"
 
 
 def main():
@@ -58,7 +52,6 @@ def main():
     fill_fetches(db, pages)
     fill_orgs(db, pages)
     fill_contacts(db, pages)
-    fill_vacancies(db, pages)
     # Склейка живёт внутри сборки, а не отдельной командой: база обязана
     # оставаться чистой функцией от raw/, иначе рушится воспроизводимость.
     resolve.resolve(db)
@@ -239,55 +232,6 @@ def fill_contacts(db, pages):
         )
 
 
-def fill_vacancies(db, pages):
-    origins = vacancy_origins(pages)
-    for page in pages_matching(pages, HH_VACANCY_URL):
-        vacancy_id = page["match"].group(1)
-        posting = sources.parse_job_posting(html_of(page))
-        if not posting:
-            print(f"  {page['url']}: JobPosting не найден — вакансия снята")
-            continue
-        city, slug = origins.get(vacancy_id, (None, None))
-        db.execute(
-            "INSERT OR IGNORE INTO vacancies (id, employer, title, text,"
-            " published_at, city, slug, url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                vacancy_id,
-                (posting.get("hiringOrganization") or {}).get("name"),
-                posting.get("title"),
-                posting.get("description"),
-                posting.get("datePosted"),
-                city,
-                slug,
-                VACANCY_URL.format(id=vacancy_id),
-            ),
-        )
-
-
-def vacancy_origins(pages):
-    """{vacancy_id: (город, slug)} по страницам slug'ов hh.
-
-    Страница, которую hh молча подменил общим списком города, отбрасывается: её
-    50 посторонних вакансий — ровно тот мусор, против которого написана проверка
-    конечного адреса.
-
-    Вакансия, попавшая в несколько slug'ов, закрепляется за первым по алфавиту:
-    выбор произвольный, но воспроизводимый, а slug здесь только происхождение —
-    сигналы Ф6 читаются из текста вакансии, а не из него.
-    """
-    origins = {}
-    for page in pages_matching(pages, HH_LIST_URL):
-        city, slug = page["match"].groups()
-        landed = page.get("final_url") or ""
-        if slug.lower() not in landed.lower():
-            print(f"  подмена: у hh нет страницы '{slug}', запрос увело на {landed}")
-            continue
-        for vacancy_id in sources.parse_vacancy_ids(html_of(page)):
-            if vacancy_id not in origins or slug < origins[vacancy_id][1]:
-                origins[vacancy_id] = (city, slug)
-    return origins
-
-
 def pages_matching(pages, pattern):
     """Страницы, чей адрес запроса подходит под шаблон, с готовым разбором адреса."""
     for page in pages:
@@ -299,7 +243,7 @@ def pages_matching(pages, pattern):
 def report(db, page_count, elapsed):
     counts = ", ".join(
         f"{table} {db.execute(f'SELECT count(*) FROM {table}').fetchone()[0]}"
-        for table in ("fetches", "orgs", "contacts", "vacancies")
+        for table in ("fetches", "orgs", "contacts")
     )
     print(f"собрано из {page_count} страниц raw/: {counts}")
     print(f"{DB} готова за {elapsed:.1f} с")

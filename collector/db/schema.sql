@@ -1,10 +1,10 @@
--- Схема leads.db — восемь таблиц из ARCHITECTURE_v2 §4.
+-- Схема leads.db — семь таблиц из ARCHITECTURE_v2 §4.
 --
 -- Миграций нет и не будет: схема правится здесь, база целиком пересобирается
 -- build.py из raw/. На 1 500 строках это секунды и отменяет весь класс проблем
 -- с частично применёнными изменениями и рассинхроном парсера с данными.
 --
--- На Ф3 наполняются четыре таблицы: fetches, orgs, contacts, vacancies.
+-- На Ф3 наполняются три таблицы: fetches, orgs, contacts.
 -- companies и company_links наполнит Ф5, signals — Ф6, suppression — Ф8.
 
 -- Индекс к папке raw/: что скачано, куда приземлилось после редиректов, когда.
@@ -42,25 +42,6 @@ CREATE TABLE contacts (
   handle     TEXT NOT NULL,
   source_url TEXT,
   PRIMARY KEY (branch_id, kind, handle)
-);
-
--- hh.kz: полный текст вакансии — главный intent-сигнал проекта.
-DROP TABLE IF EXISTS vacancies;
--- company_id проставляет Ф5 нечётким сравнением имени работодателя: у hh нет ни
--- домена, ни рубрики, и точный путь стоил бы лишнего запроса на каждую вакансию.
--- match_confidence хранится рядом, потому что связь именно нечёткая: непривязанная
--- вакансия intent-сигнала не даёт, а привязанная неверно даёт ложный.
-CREATE TABLE vacancies (
-  id               TEXT PRIMARY KEY,
-  employer         TEXT,
-  title            TEXT,
-  text             TEXT,
-  published_at     TEXT,
-  city             TEXT,
-  slug             TEXT,
-  url              TEXT,
-  company_id       TEXT,
-  match_confidence REAL
 );
 
 -- Склейка филиалов в компании. Ф5.

@@ -39,9 +39,9 @@ SIDECAR_FIELDS = ("url", "final_url", "status", "fetched_at")
 # Эталонные страницы для раздела parsers: по одной на каждый разбор в
 # services/sources.py. Сняты из raw/ 16.08.2026 и, в отличие от самого raw/,
 # лежат в git — это единственная проверка разбора, которая работает на чистом
-# клоне и не зависит от того, что 2GIS и hh отдают сегодня.
+# клоне и не зависит от того, что источники отдают сегодня.
 #
-# Числа ниже — свойства именно этих четырёх файлов, а не «примерно столько».
+# Числа ниже — свойства именно этих трёх файлов, а не «примерно столько».
 # Страница в git не меняется, поэтому расхождение означает, что поехал разбор, а
 # не что источник поменял вёрстку. Правятся только вместе с фикстурой.
 GIS_RUBRIC_CITY, GIS_RUBRIC_ID = "almaty", "653"
@@ -56,7 +56,6 @@ def check_parsers():
     """
     check_gis_rubric_parsing()
     check_gis_firm_parsing()
-    check_hh_parsing()
     check_link_unwrapping()
     check_ig_parsing()
 
@@ -122,28 +121,6 @@ def check_gis_firm_parsing():
     assert len(contacts) == len({(c["kind"], c["handle"]) for c in contacts}), \
         "канал задвоился: contact_groups перечисляет один и тот же номер дважды"
     print(f"  2gis карточка: {len(contacts)} каналов, типы {sorted(by_kind)}")
-
-
-def check_hh_parsing():
-    """hh: id со страницы списка и JobPosting со страницы вакансии."""
-    ids = sources.parse_vacancy_ids(fixture_html("hh_list"))
-    assert len(ids) == 50, f"id вакансий {len(ids)}, у эталона 50 — страница списка hh"
-    assert all(i.isdigit() and len(i) >= 6 for i in ids), "в id вакансий попал мусор"
-
-    posting = sources.parse_job_posting(fixture_html("hh_vacancy"))
-    assert posting, "JobPosting не найден — разбор JSON-LD сломан"
-    assert posting["title"] == "Менеджер по продажам, менеджер по работе с клиентами", \
-        posting["title"]
-    assert posting["hiringOrganization"]["name"] == "Atrium", posting["hiringOrganization"]
-    assert posting["datePosted"].startswith("2026-07-31"), posting["datePosted"]
-
-    # Текст вакансии — главный intent-сигнал проекта: по нему ищутся vacancy_sales
-    # и цитата для why_now. Обрезанное описание не уронит ни один запрос, просто
-    # тихо перестанет давать сигналы.
-    description = posting["description"]
-    assert len(description) > 2000, f"описание {len(description)} символов — обрезано"
-    assert CYRILLIC.search(description), "кириллица побита в тексте вакансии"
-    print(f"  hh: {len(ids)} id со списка, вакансия «{posting['title'][:30]}…»")
 
 
 def check_link_unwrapping():
@@ -260,7 +237,6 @@ def check_build():
     db = sqlite3.connect(DB)
 
     check_orgs(db)
-    check_vacancies(db)
     check_contacts(db)
     check_fetches(db)
     check_profiles(db)
@@ -285,29 +261,6 @@ def check_orgs(db):
         "потолок 2GIS 60, значит в базу попала подменённая страница"
     )
     print(f"  orgs {orgs}, до {per_rubric_city} на рубрику города")
-
-
-def check_vacancies(db):
-    vacancies = count(db, "vacancies")
-    assert vacancies >= 100, f"вакансий {vacancies}, в сырье их не меньше 100"
-
-    rows = db.execute("SELECT id, text, employer, city, slug FROM vacancies").fetchall()
-    short = [r[0] for r in rows if len(r[1] or "") <= 200]
-    assert not short, f"вакансии с обрезанным текстом: {short[:5]}"
-    assert all(r[2] for r in rows), "вакансия без работодателя — по нему клеится компания"
-    assert all(r[3] and r[4] for r in rows), \
-        "вакансия без города и slug'а — страница списка не сопоставилась"
-    assert sum(bool(CYRILLIC.search(r[1])) for r in rows) > len(rows) / 2, \
-        "кириллица побита в текстах вакансий"
-
-    # Подменённая страница даёт вакансии всего города вперемешку. Признак: slug,
-    # которого нет в адресе, куда hh на самом деле привёл.
-    for slug, in db.execute("SELECT DISTINCT slug FROM vacancies"):
-        landed = db.execute(
-            "SELECT final_url FROM fetches WHERE url LIKE ?", (f"%/vacancies/{slug}",)
-        ).fetchone()
-        assert landed and slug in landed[0], f"вакансии приписаны подменённому slug'у {slug}"
-    print(f"  vacancies {vacancies}, тексты целы")
 
 
 def check_contacts(db):
@@ -368,13 +321,32 @@ def check_profiles(db):
 
     # Ответ модели стоил денег: если он лежит в raw/, а до базы не доехал, значит
     # ключ разошёлся с промптом, и молча теряется оплаченная работа.
-    answers = len(build.load_llm_answers("company_profile"))
+    #
+    # Считаются компании, а не файлы. Имя модели входит в ключ кэша намеренно
+    # (config.toml, [llm]), поэтому у одной компании лежит по ответу на каждую
+    # опробованную модель, а company_id в profiles — первичный ключ. Сравнение
+    # файлов со строками падало бы ровно после смены модели, то есть в штатной
+    # ситуации, а не когда ответ действительно потерялся.
+    answered = {
+        company_of_prompt(answer["prompt"])
+        for answer in build.load_llm_answers("company_profile")
+    }
     stored = count(db, "profiles")
-    assert stored == answers, (
-        f"ответов модели в raw/ {answers}, профилей в базе {stored} — "
+    assert stored == len(answered), (
+        f"компаний с ответом модели в raw/ {len(answered)}, профилей в базе {stored} — "
         "оплаченные ответы не находят свою компанию"
     )
     print(f"  профилей {stored}, все у существующих компаний")
+
+
+def company_of_prompt(prompt):
+    """(название, город) из промпта — тот же ключ, которым build.fill_profiles
+    раздаёт ответы компаниям. Вторая копия разбора здесь была бы ложью: ассерт
+    обязан ломаться ровно тогда, когда ломается раздача."""
+    lines = prompt.splitlines()
+    name = lines[0].removeprefix("Компания: ")
+    city = lines[1].removeprefix("Город: ") if len(lines) > 1 else ""
+    return name, city
 
 
 def check_rebuild_is_identical():
@@ -509,21 +481,7 @@ def check_resolve():
     ).fetchone()
     assert multi, "ни одной компании из нескольких филиалов — правила не сработали"
 
-    # Привязка работодателя hh к компании 2GIS — самое слабое место конвейера:
-    # из 384 вакансий привязаны 4. Число зафиксировано, чтобы падение до нуля
-    # не проходило зелёным. Ветку чинит отдельный план; когда починят — поднять
-    # порог здесь тем же коммитом, иначе ассерт перестанет что-либо значить.
-    LINKED_VACANCIES_FLOOR = 4
-    fuzzy = db.execute(
-        "SELECT count(*) FROM vacancies WHERE company_id IS NOT NULL"
-    ).fetchone()[0]
-    total = db.execute("SELECT count(DISTINCT employer) FROM vacancies").fetchone()[0]
-    assert fuzzy >= LINKED_VACANCIES_FLOOR, (
-        f"вакансий привязано к компаниям {fuzzy}, было {LINKED_VACANCIES_FLOOR} — "
-        "склейка работодателей стала хуже, сигналы вакансий исчезнут из скоринга"
-    )
     print(f"  компаний {companies} из {branches} филиалов, крупнейшая из {multi[1]}")
-    print(f"  вакансий привязано к компаниям {fuzzy}, работодателей всего {total}")
     db.close()
 
 
@@ -558,10 +516,8 @@ def check_signals():
     ).fetchone()[0]
     assert doubled == 0, f"{doubled} сигналов задвоены по (компания, тип, источник)"
 
-    # Ветвь vacancy_* сегодня пуста: вакансии почти не привязываются к компаниям
-    # (см. LINKED_VACANCIES_FLOOR в check_resolve). Ассерт на конкретные типы
-    # поставить нельзя, пока их ноль, — вместо него на виду держится состав
-    # семейств, чтобы исчезновение site_* или ig_* не спряталось за общим total.
+    # На виду держится состав семейств, чтобы исчезновение site_* или ig_* не
+    # спряталось за общим total.
     families = {row[0] for row in db.execute("SELECT DISTINCT type FROM signals")}
     site_types = {"ads_platform", "crm_widget", "inbound_widget", "service_catalog"}
     assert site_types <= families, (
@@ -570,8 +526,6 @@ def check_signals():
     )
     assert any(t.startswith("ig_") for t in families), \
         "ни одного сигнала инстаграма — лента не разобрана или склейка аккаунтов сломана"
-    if not any(t.startswith("vacancy_") for t in families):
-        print("    ! сигналов вакансий нет — ветка hh не работает, см. plans/002")
 
     check_instagram_signals(db)
 
