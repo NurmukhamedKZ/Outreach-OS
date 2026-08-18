@@ -363,13 +363,12 @@ def check_rebuild_is_identical():
 
 
 def check_collect():
-    """Приёмка Ф4: обе проверки подмены доказаны на собранном сырье, план соблюдён."""
+    """Приёмка Ф4: проверки подмены доказаны на собранном сырье, план соблюдён."""
     assert DB.exists(), "leads.db нет — сначала uv run -m scripts.collect && uv run build.py"
     config = tomllib.loads(Path("config.toml").read_text(encoding="utf-8"))
     db = sqlite3.connect(DB)
 
     check_pagination_guard(db)
-    check_slug_guard(db, config)
     check_plan_coverage(db, config)
     db.close()
 
@@ -400,20 +399,6 @@ def check_pagination_guard(db):
             "не сохранён — на такой странице проверка подмены слепа"
         )
     print(f"  подмена пагинации поймана на {len(caught)} страницах, все с запрошенным адресом")
-
-
-def check_slug_guard(db, config):
-    """Каждая собранная страница slug'а — та, что запрошена, а не общий список города."""
-    slugs = set(config["hh"]["slugs"])
-    checked = 0
-    for url, landed in db.execute("SELECT url, final_url FROM fetches WHERE url LIKE '%/vacancies/%'"):
-        slug = url.rsplit("/", 1)[1]
-        if slug not in slugs:  # отбракованные кандидаты Ф2 лежат в сырье намеренно
-            continue
-        assert slug.lower() in landed.lower(), f"страница '{slug}' подменена: {landed}"
-        checked += 1
-    assert checked, "ни одной страницы slug'а из config.toml в сырье"
-    print(f"  slug'и: {checked} страниц приземлились там, где запрошены")
 
 
 def check_plan_coverage(db, config):

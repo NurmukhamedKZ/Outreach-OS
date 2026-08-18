@@ -9,7 +9,7 @@
 
 Запуск:
   uv run -m scripts.collect                                      полный объём из config.toml
-  uv run -m scripts.collect --cities almaty --rubrics 5 --slugs 3 --budget 600 --workers 4
+  uv run -m scripts.collect --cities almaty --rubrics 5 --budget 600 --workers 4
 """
 
 import argparse
@@ -32,14 +32,11 @@ DB = Path("db/leads.db")
 
 RUBRIC_PAGE = "https://2gis.kz/{city}/rubric/{rubric}/page/{page}"
 FIRM_CARD = "https://2gis.kz/{city}/firm/{branch_id}"
-VACANCY_LIST = "https://{city}.hh.kz/vacancies/{slug}"
-VACANCY = "https://hh.kz/vacancy/{vacancy_id}"
 SITE_HOME = "https://{domain}/"
 SITE_HOME_INSECURE = "http://{domain}/"
 IG_FEED = "https://www.instagram.com/api/v1/feed/user/{username}/username/?count={count}"
 
 GIS_COOKIE = {"dg5_museum_accept": "true"}  # снимает редирект на /museum
-HH_HEADERS = {"accept-language": "ru-RU,ru;q=0.9"}
 
 # Публичный web app id инстаграма, статичный. Без него лента отвечает отказом.
 IG_APP_ID = "936619743392459"
@@ -60,9 +57,8 @@ IG_FAILURES_IN_ROW = 3
 # Шестая страница запрашивается намеренно: на ней срабатывает проверка подмены,
 # и потолок оказывается пойманным, а не предположенным.
 PAGE_LIMIT = 6
-# Пауза на поток: 8 потоков без паузы — это 40 запросов в секунду, и hh на такой
-# скорости отдаёт капчу с кодом 200 вместо вакансии (19 страниц из 98 в пилоте).
-# Секунда на поток держит темп в пределах 4–8 запросов в секунду.
+# Пауза на поток: 8 потоков без паузы — это 40 запросов в секунду, и 2GIS на такой
+# скорости отвечает капчей. Секунда на поток держит темп в пределах 4–8 запросов.
 PAUSE_SECONDS = 1.0
 MAX_WORKERS = 8
 
@@ -84,23 +80,13 @@ def main():
 
     if args.instagram:
         collect_instagram(budget)
-        substituted = []
     elif args.sites:
         collect_sites(budget, args.workers)
-        substituted = []
     else:
         branches = collect_org_lists(budget, plan, args.workers)
         collect_firm_cards(budget, branches, args.workers)
-        substituted = collect_vacancies(budget, plan, args.workers)
 
     report(budget, raw_before, time.time() - started)
-    if substituted:
-        sys.exit(
-            f"\nОТКАЗ: {len(substituted)} slug'ов подменены общим списком города: "
-            f"{', '.join(substituted)}\n"
-            "Их вакансии в сбор не взяты. Убери slug из config.toml [hh].slugs "
-            "или замени на существующую SEO-страницу hh."
-        )
 
 
 # --- план -------------------------------------------------------------------
@@ -110,7 +96,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cities", nargs="+", help="города; по умолчанию все из config.toml")
     parser.add_argument("--rubrics", type=int, help="сколько первых рубрик взять")
-    parser.add_argument("--slugs", type=int, help="сколько первых slug'ов hh взять")
     parser.add_argument("--budget", type=int, help="потолок сетевых запросов")
     parser.add_argument("--workers", type=int, default=MAX_WORKERS, help="потоков (максимум 8)")
     parser.add_argument("--sites", action="store_true",
@@ -123,12 +108,11 @@ def parse_args():
 
 
 def load_plan(args):
-    """Города, рубрики и slug'и: всё из config.toml, аргументы только урезают объём."""
+    """Города и рубрики: всё из config.toml, аргументы только урезают объём."""
     config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
     return {
         "cities": args.cities or config["cities"],
         "rubrics": config["rubrics"]["include"][: args.rubrics],
-        "slugs": config["hh"]["slugs"][: args.slugs],
     }
 
 
@@ -216,51 +200,6 @@ def collect_firm_cards(budget, branches, workers):
 def firm_card(budget, job):
     branch_id, city = job
     budget.get(FIRM_CARD.format(city=city, branch_id=branch_id), cookies=GIS_COOKIE)
-
-
-# --- hh.kz ------------------------------------------------------------------
-
-
-def collect_vacancies(budget, plan, workers):
-    """Списки slug'ов, затем сами вакансии. Возвращает slug'и, подменённые источником."""
-    jobs = [(city, slug) for city in plan["cities"] for slug in plan["slugs"]]
-    print(f"hh списки: {len(jobs)} slug'ов×городов")
-
-    vacancy_ids, substituted = set(), []
-    for (city, slug), found, error in in_parallel(vacancy_list, budget, jobs, workers):
-        if isinstance(error, Substituted):
-            substituted.append(f"{slug}/{city}")
-            print(f"  ПОДМЕНА {slug}/{city}: {error}")
-            continue
-        if error:
-            print(f"  {slug}/{city}: {type(error).__name__}: {error}")
-            continue
-        vacancy_ids |= set(found)
-        print(f"  {slug}/{city}: {len(found)} вакансий")
-
-    print(f"hh вакансии: {len(vacancy_ids)} после дедупа")
-    download_all(vacancy_page, budget, sorted(vacancy_ids), workers)
-    return substituted
-
-
-def vacancy_list(budget, job):
-    """id вакансий со страницы slug'а. Отказ, если hh подменил её общим списком.
-
-    Slug — не произвольный запрос, а фиксированная SEO-страница hh. Несуществующий
-    редиректит на /vacancies (все вакансии города) и отвечает HTTP 200, поэтому
-    сбор без этой проверки молча наберёт 50 посторонних вакансий.
-    """
-    city, slug = job
-    url = VACANCY_LIST.format(city=city, slug=slug)
-    html = budget.get(url, headers=HH_HEADERS)
-    landed = fetch.final_url(url) or ""
-    if slug.lower() not in landed.lower():
-        raise Substituted(f"у hh нет страницы '{slug}', запрос увело на {landed}")
-    return sources.parse_vacancy_ids(html)
-
-
-def vacancy_page(budget, vacancy_id):
-    budget.get(VACANCY.format(vacancy_id=vacancy_id), headers=HH_HEADERS)
 
 
 # --- сайты компаний ---------------------------------------------------------

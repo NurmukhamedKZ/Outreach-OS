@@ -57,52 +57,8 @@ include = [
 
 # Ветки, которые не таргетим никогда. 110611 «Реклама» — прямые конкуренты:
 # рекламные агентства, PR, маркетинговые исследования, реклама в интернете.
-# Здесь id ветки, а не листьев: список ведётся для человека и для склейки
-# работодателей hh, где рубрики 2GIS нет и белый список не спасает.
+# Здесь id ветки, а не листьев: список ведётся для человека.
 exclude = [110611]
-
-[hh]
-# Транслитерация фразы, подтверждённая живым запросом к almaty.hh.kz/vacancies/{slug}:
-# набор SEO-страниц у hh фиксирован, догадка без проверки молча уводит на /vacancies.
-# Непроверенный slug сюда не попадает.
-slugs = [
-  # продажи — главный intent-сигнал по BRD: нанимают продавцов = не хватает клиентов
-  "menedzher_po_prodazham",
-  "rukovoditel_otdela_prodazh",
-  "torgovyy_predstavitel",
-  "menedzher_po_razvitiyu_biznesa",
-  "menedzher_po_zakupkam",
-
-  # бухгалтерия и аудит
-  "bukhgalter",
-  "auditor",
-
-  # право
-  "yurist",
-  "yuriskonsult",
-
-  # HR и рекрутинг
-  "rekruter",
-  "hr_menedzher",
-  "menedzher_po_personalu",
-  "specialist_po_podboru_personala",
-
-  # IT-аутсорс
-  "sistemnyy_administrator",
-  "programmist",
-  "razrabotchik",
-
-  # консалтинг и маркетинг
-  "biznes_analitik",
-  "biznes_trener",
-  "konsultant",
-  "marketolog",
-]
-
-# У hh нет SEO-страницы под эти фразы — проверено, повторно не пробовать:
-# specialist_po_prodazham, menedzher_prodazh, menedzher_po_rabote_s_klientami,
-# glavnyy_bukhgalter, buhgalter (у hh х -> kh), uborschitsa, uborshchitsa,
-# kliner, operator_call_centra, programmist_1s.
 
 [scoring]
 # Всё ниже — гипотеза до первых 30 ответов. Реакция живых людей переопределит
