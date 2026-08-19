@@ -1,5 +1,8 @@
 """Промпт хода: контекст лида, состоявшаяся переписка и задача — и ничего сверх."""
 
+import httpx
+import pytest
+
 from writer.services import agent, config
 from writer.schemas.outreach import Draft
 
@@ -65,3 +68,43 @@ class FakeModel:
     def invoke(self, messages, config=None):
         self.seen, self.seen_config = messages, config
         return self.answer
+
+
+class FlakyModel:
+    """Падает N раз обрывом соединения, потом отвечает — как протухший keep-alive."""
+
+    def __init__(self, fail_times, answer):
+        self.fail_times, self.answer, self.calls = fail_times, answer, 0
+
+    def invoke(self, messages, config=None):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise httpx.RemoteProtocolError("peer closed connection")
+        return self.answer
+
+
+def test_draft_retries_transport_error_then_succeeds(monkeypatch):
+    monkeypatch.setattr(agent.time, "sleep", lambda seconds: None)
+    seed = {"name": "Ромашка", "city": "almaty",
+            "dossier": {"summary": "", "hooks": [], "pains": [], "approach": "", "sources": []},
+            "signals": []}
+    flaky = FlakyModel(fail_times=agent.TRANSPORT_RETRIES - 1,
+                        answer=Draft(text="Здравствуйте!", angle="ads_platform"))
+
+    result = agent.draft(flaky, seed, [], agent.FIRST, session_id="thread-1", name="writer.first")
+
+    assert result.angle == "ads_platform"
+    assert flaky.calls == agent.TRANSPORT_RETRIES
+
+
+def test_draft_gives_up_after_max_transport_retries(monkeypatch):
+    monkeypatch.setattr(agent.time, "sleep", lambda seconds: None)
+    seed = {"name": "Ромашка", "city": "almaty",
+            "dossier": {"summary": "", "hooks": [], "pains": [], "approach": "", "sources": []},
+            "signals": []}
+    flaky = FlakyModel(fail_times=agent.TRANSPORT_RETRIES, answer=None)
+
+    with pytest.raises(httpx.RemoteProtocolError):
+        agent.draft(flaky, seed, [], agent.FIRST, session_id="thread-1", name="writer.first")
+
+    assert flaky.calls == agent.TRANSPORT_RETRIES

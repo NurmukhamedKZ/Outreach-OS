@@ -460,6 +460,13 @@ def instagram_session_alive(jar, username):
     Мимо слоя сырья намеренно: страница этого аккаунта уже лежит в raw/, и
     fetch.get вернул бы её с диска, ничего не проверив. Ответ здесь не сохраняется
     — это проба живости, а не данные.
+
+    Живость — валидный JSON с "status": "ok", а не наличие постов у самого
+    аккаунта: протухшая сессия отвечает HTML-страницей логина (json.loads падает,
+    ловится ниже), а живая сессия отвечает JSON и на аккаунт без своих постов —
+    приватный, деактивированный или просто пустой. Раньше проверялось наличие
+    user.username, и контрольный аккаунт без доступных постов ложно считался
+    признаком мёртвой сессии на каждом прогоне.
     """
     from scrapling.fetchers import Fetcher
 
@@ -471,7 +478,8 @@ def instagram_session_alive(jar, username):
             headers={"x-ig-app-id": IG_APP_ID, "referer": f"https://www.instagram.com/{username}/"},
         )
         body = page.body if isinstance(page.body, str) else page.body.decode("utf-8", "replace")
-        return page.status == 200 and bool(sources.parse_ig_feed(body)["username"])
+        data = json.loads(sources.json_body(body))
+        return page.status == 200 and data.get("status") == "ok"
     except Exception:
         return False
 

@@ -20,11 +20,14 @@ suppression нет (view не может ссылаться на attached баз
 import csv
 import json
 import re
-from pathlib import Path
 
 from collector.services import store as engine
 
-OUT = Path("data/leads.csv")
+# Путь анкорится к пакету collector, а не к cwd процесса: main.py запускается
+# из backend/ (см. Dockerfile WORKDIR /app), и относительный "data/leads.csv"
+# резолвился в несуществующий backend/data/ — вылетал FileNotFoundError на
+# каждой пересборке из веба.
+OUT = engine.DATA / "leads.csv"
 
 # Каналы, которыми в Казахстане реально пользуются, в порядке приоритета
 # (ARCHITECTURE.md §13). Телефон выше почты: 2GIS отдаёт его почти всегда, и один

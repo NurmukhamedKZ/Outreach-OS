@@ -9,6 +9,9 @@ draft -> правка оператора -> отправка требует, ч�
 не попадало в историю, а чекпойнтер дописывает ответ модели в состояние сам.
 """
 
+import time
+
+import httpx
 from langchain_openrouter import ChatOpenRouter
 
 import observability
@@ -16,6 +19,10 @@ from config import settings
 from writer.schemas.outreach import Draft
 
 MAX_RETRIES = 2
+# Провайдер ретраит отказ соединения, но не обрыв тела ответа посреди чтения
+# (RemoteProtocolError на протухшем keep-alive) — без этого одна такая ошибка
+# валит весь прогон top_n на середине, а не только текущий черновик.
+TRANSPORT_RETRIES = 3
 
 # Рассуждение выключено по той же причине, что в classify: задача — написать
 # короткое сообщение по готовым фактам, а не рассуждать. Ответ приходит за
@@ -55,17 +62,22 @@ def model(config):
 
 def draft(llm, seed, history, task, *, session_id, name, offer=""):
     handler = observability.langfuse_handler()
-    return llm.invoke(
-        [
-            ("system", SYSTEM.format(offer=offer)),
-            ("human", prompt(seed, history, task)),
-        ],
-        config={
-            "run_name": name,
-            "metadata": {"langfuse_session_id": session_id, "langfuse_tags": [name]},
-            "callbacks": [handler] if handler else [],
-        },
-    )
+    messages = [
+        ("system", SYSTEM.format(offer=offer)),
+        ("human", prompt(seed, history, task)),
+    ]
+    config = {
+        "run_name": name,
+        "metadata": {"langfuse_session_id": session_id, "langfuse_tags": [name]},
+        "callbacks": [handler] if handler else [],
+    }
+    for attempt in range(1, TRANSPORT_RETRIES + 1):
+        try:
+            return llm.invoke(messages, config=config)
+        except httpx.TransportError:
+            if attempt == TRANSPORT_RETRIES:
+                raise
+            time.sleep(attempt)
 
 
 FIRST = (

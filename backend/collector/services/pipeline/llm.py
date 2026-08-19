@@ -6,7 +6,9 @@
 """
 
 import json
+import time
 
+import httpx
 from langchain_openrouter import ChatOpenRouter
 
 from collector.services import storage
@@ -15,6 +17,12 @@ from observability import langfuse_handler
 
 MAX_RETRIES = 2
 REASONING = {"enabled": False}
+# retry_config провайдера ловит отказ соединения, но не обрыв тела ответа
+# посреди чтения (RemoteProtocolError на протухшем keep-alive) — эта ошибка
+# долетает до вызывающего целым исключением и валит весь прогон analyze на
+# сотнях уже оплаченных вызовов. Три попытки здесь — тот же уровень, что и у
+# retry_config провайдера, но на исключение, которое он не ловит.
+TRANSPORT_RETRIES = 3
 
 
 def structured_model(model, schema):
@@ -36,7 +44,13 @@ def invoke(llm_model, messages, *, session_id, name, subject):
         "metadata": {"langfuse_session_id": session_id, "langfuse_tags": [name]},
         "callbacks": [handler] if handler else [],
     }
-    return llm_model.invoke(messages, config=config)
+    for attempt in range(1, TRANSPORT_RETRIES + 1):
+        try:
+            return llm_model.invoke(messages, config=config)
+        except httpx.TransportError:
+            if attempt == TRANSPORT_RETRIES:
+                raise
+            time.sleep(attempt)
 
 
 def store_answer(db, kind, subject, model, prompt, answer):
