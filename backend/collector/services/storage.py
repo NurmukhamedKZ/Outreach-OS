@@ -14,7 +14,7 @@ import hashlib
 import json
 from pathlib import Path
 
-RAW = Path("data/raw")
+RAW = Path(__file__).resolve().parent.parent / "data" / "raw"
 
 
 def sha_of(url):

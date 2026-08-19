@@ -129,7 +129,10 @@ def reviews_signals(db, run_id, pages, weights):
                  review["date_created"], weights, quote, review_url(company_id, review))
 
         if analysis.get("unanswered_complaints"):
-            unanswered = newest_review_match(reviews, analysis.get("complaints") or [])
+            unanswered = newest_review_match(
+                [r for r in reviews if not r.get("official_answer")],
+                analysis.get("complaints") or [],
+            )
             if unanswered:
                 review, quote = unanswered
                 emit(db, run_id, company_id, "reviews_unanswered_complaint",

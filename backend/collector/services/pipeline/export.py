@@ -83,11 +83,11 @@ CANDIDATES = (
     # Название берётся из карточки 2GIS, а не из companies.name_norm:
     # нормализованное имя нужно склейке, а оператору читать исходное.
     "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm), c.city, c.domain,"
-    "       s.fit_score, s.intent_score, s.breakdown, p.why_now, p.quote, p.industry"
+    "       s.fit_score, s.intent_score, s.breakdown, d.summary, d.hooks"
     " FROM companies c JOIN scores s USING (company_id)"
     " LEFT JOIN company_links l ON l.company_id = c.company_id AND l.rule = 'self'"
     " LEFT JOIN orgs o ON o.branch_id = l.branch_id"
-    " LEFT JOIN profiles p USING (company_id)"
+    " LEFT JOIN dossiers d USING (company_id)"
     " WHERE s.intent_score > 0"
 )
 CANDIDATES_ORDER = " ORDER BY s.intent_score DESC, s.fit_score DESC, c.company_id"
@@ -105,7 +105,8 @@ def candidates(db, company_id=None):
     channels = channels_by_company(db, company_id)
 
     for (company_id, name, city, domain, fit, intent, breakdown,
-         model_why, model_quote, industry) in rows:
+         summary, hooks) in rows:
+        model_why, model_quote = dossier_why(hooks)
         yield {
             "company_id": company_id,
             "name": name,
@@ -117,8 +118,27 @@ def candidates(db, company_id=None):
             "channels": channels.get(company_id, []),
             "model_why": model_why,
             "model_quote": model_quote,
-            "industry": industry,
+            "industry": summary,
         }
+
+
+def dossier_why(hooks):
+    """Модельная why_now и цитата из досье: самая свежая зацепка с цитатой и ссылкой.
+
+    Досье заменило профиль (profiles -> dossiers): summary описывает, чем
+    занимается компания, а hooks — поводы писать сейчас, каждый с дословной
+    цитатой и ссылкой. Самая свежая зацепка сильнее старой (F20 — why_now с
+    цитатой и ссылкой, а не голый скор).
+    """
+    parsed = json.loads(hooks or "[]")
+    if not parsed:
+        return None, None
+    strongest = max(parsed, key=lambda h: h.get("observed_at") or "")
+    angle = strongest.get("angle") or ""
+    quote = strongest.get("quote") or ""
+    url = strongest.get("url") or ""
+    why = f"{angle}: «{quote}» ({url})".strip()
+    return why, quote
 
 
 def channels_by_company(db, company_id=None):

@@ -8,7 +8,7 @@ import collector.services.store as engine
 
 
 def _published_run(db, run_id=1):
-    """Одна компания с каналом, скорингом и профилем — опубликованный прогон."""
+    """Одна компания с каналом, скорингом и досье — опубликованный прогон."""
     db.execute("INSERT INTO runs (run_id, started_at) VALUES (?, '2026-08-01T00:00:00Z')", (run_id,))
     db.execute("INSERT INTO companies_all (run_id, company_id, name_norm, city, domain)"
                " VALUES (?, 'c1', 'Ромашка', 'almaty', 'romashka.kz')", (run_id,))
@@ -22,8 +22,11 @@ def _published_run(db, run_id=1):
                " VALUES (?, 'b1', 'phone', '+77010000002')", (run_id,))
     db.execute("INSERT INTO scores_all (run_id, company_id, fit_score, intent_score, breakdown)"
                " VALUES (?, 'c1', 5.0, 6.0, '[]')", (run_id,))
-    db.execute("INSERT INTO profiles_all (run_id, company_id, model, industry, why_now, quote)"
-               " VALUES (?, 'c1', 'm', 'бухгалтерия', 'ищет клиентов', 'оставьте заявку')", (run_id,))
+    db.execute("INSERT INTO dossiers_all (run_id, company_id, model, summary, hooks)"
+               " VALUES (?, 'c1', 'm', 'бухгалтерия',"
+               " '[{\"angle\": \"ищет клиентов\", \"quote\": \"оставьте заявку\","
+               "   \"url\": \"https://r.kz/\", \"source\": \"site\","
+               "   \"observed_at\": \"2026-08-01\"}]')", (run_id,))
     engine.activate_run(db, run_id)
 
 

@@ -17,7 +17,7 @@
 - **В рабочем дереве лежат незакоммиченные изменения** (система 2, docker, hh-разбор, хвост операционного слоя). Коммитить **только перечисленные в задаче файлы** через явный `git add <путь>`. Никаких `git add -A` / `git add .` / `git commit -a`.
 - **`data/raw/` — невосстановимое сырьё.** Ни один файл не удалять и не править. Новые источники (отзывы, внутренние страницы, комментарии) ложатся туда же через `fetch.get`/`storage.put` как обычные страницы `<sha1(url)>.html.gz` + сайдкар.
 - **`rebuild.py` не ходит в сеть:** не тянет `services.fetch` и `scrapling` ни прямо, ни транзитивно — проверяется статически (`tests/test_operations.py::test_rebuild_import_graph_has_no_network`). Любой слой анализа с сетью — операция `analyze.*`, а не стадия пересборки.
-- **Ни одна операция не пишет в обе базы сразу.** Анализ пишет только в `state.llm_answers`; пересборка читает `state.*` через ATTACH, а пишет только в `derived.db` (`*_all` + view). Проверяется `test_no_write_module_opens_both_dbs`.
+- **Ни одна операция не пишет в обе базы сразу.** Анализ пишет только в `state.llm_answers`; пересборка читает `state.*` через ATTACH, а пишет только в `derived.db` (`*_all` + view). Проверяется `test_no_operation_writes_to_both_dbs` — его `DERIVED_TABLES` обновляется под `dossiers_all` в Task 22.
 - **LLM-кэш — невосстановимый.** Ключ `(kind, subject, model, prompt)`. Смена промпта обесценивает только свой слой. `store_answer`/`answered` уже это делают — новые слои пользуются ими, а не заводят второй механизм.
 - **Главная проверка — `test_quote_is_verbatim`:** цитата сигнала обязана стоять дословно в сырье (отзыве/подписи/странице). Не нашлась дословно — находке в `signals` не место. Это единственная защита от выдуманного факта в письме живому человеку.
 - **`top_n = 40` удаляется** из `config.toml`: обрабатывается вся база. `analyze.profile` и `analyze.ig_signals` снимаются из реестра вместе с наполнением `profiles` (строки прошлых прогонов и ответы модели остаются лежать).
@@ -40,7 +40,7 @@
 | `collector/services/pipeline/analyze.py` | из него уходят `profile`/`ig_signals` и общие хелперы; остаются `reviews`/`site`/`instagram`/`dossier` операции | 4–26 |
 | `collector/services/pipeline/collect.py` | новые операции `reviews`, `site_pages`, `ig_comments`, `ig_profile` | 3, 9, 16 |
 | `collector/services/sources.py` | новые разборы: `parse_reviews`, `parse_site_links`, `parse_ig_comments`, `parse_ig_profile`; `parse_ig_post` учится хранить `pk` | 4, 9, 15 |
-| `collector/services/enrich.py` | производные сигналы от слоёв: `reviews_signals`, `site_ai_signals`, `instagram_ai_signals`, тренд охватов; удаление `service_catalog`-маркера | 7, 12, 18, 25 |
+| `collector/services/enrich.py` | производные сигналы от слоёв: `reviews_signals` (один сигнал на тип — `newest_review_match`), `site_ai_signals`, `instagram_ai_signals`, тренд охватов; удаление `service_catalog`-маркера; отключение старого LLM-слоя `ig_signals` (`ig_answers`/`newest_per_type`/`post_with_quote` удаляются) | 7, 12, 18, 19, 25 |
 | `collector/services/pipeline/dossier.py` | **новый**: `fill_dossiers(db, run_id)` — синтез досье из слоёв | 23–24 |
 | `collector/services/pipeline/rebuild.py` | новые стадии пересборки: слои-сигналы, досье; удаление `fill_profiles` | 7, 12, 18, 24, 26 |
 | `collector/services/pipeline/__init__.py` | реестр: убрать `analyze.profile`/`analyze.ig_signals`, добавить новые операции | 26 |
@@ -473,6 +473,14 @@ cd collector && uv run pytest tests/test_operations.py::test_reviews_analyze_op_
 
 - [ ] **Step 4: реализовать `analyze.reviews` в `analyze.py`**
 
+`ctx.log(...)` в теле операции — не только читаемость лога. Task 24 удаляет из
+`analyze.py` функции `profile`/`ig_signals` — единственные, где сейчас есть
+вызовы `ctx.log`. `test_operations_use_the_context_they_are_given`
+(`tests/test_operations.py`) проверяет наличие `"ctx.log"` во всём модуле, а не
+в конкретной функции: без своего `ctx.log` у каждой новой операции этот тест
+после Task 24 упадёт разом на `analyze.reviews`/`analyze.site`/
+`analyze.instagram`/`analyze.dossier`. То же самое сделано в Task 11/18/21.
+
 ```python
 REVIEWS_KIND = "reviews"
 REVIEWS_SYSTEM = (
@@ -494,6 +502,7 @@ def reviews(ctx):
         model = config["llm"]["model"]
         max_reviews = config["reviews"]["max_reviews_per_company"]
         targets = review_targets(db, max_reviews)
+        ctx.log(f"отзывы: {len(targets)} компаний с отзывами, модель {model}")
         if not targets:
             return {"companies": 0, "new_calls": 0}
         llm_model = llm.structured_model(model, ReviewsAnalysis)
@@ -508,6 +517,7 @@ def reviews(ctx):
                                  {"analysis": answer.model_dump()})
                 spent += 1
             ctx.progress(number, len(targets), "отзывы")
+        ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
         return {"companies": len(targets), "new_calls": spent}
     finally:
         db.close()
@@ -642,6 +652,16 @@ cd collector && uv run pytest tests/test_signals.py::test_review_signal_types_ha
 
 - [ ] **Step 4: реализовать `reviews_signals` в `enrich.py`**
 
+**Почему не по жалобе на строку.** `signals_all` уникален по `(run_id, company_id,
+type, observed_at, url)`. `review_url` строит адрес по `branch_id`, а не по
+конкретному отзыву, и `date_created` у 2GIS обычно дата без времени — значит две
+жалобы одного типа с одной датой у одного филиала дают одинаковый `(company_id,
+type, observed_at, url)` и падают на `INSERT` в `signals_all` с
+`sqlite3.IntegrityError`. `site_signals` защищается от этого множеством `seen`,
+`instagram_signals`/`newest_per_type` — «по одному сигналу на тип от самого
+свежего поста». Здесь та же дисциплина: `newest_review_match` берёт одну, самую
+свежую подтверждённую жалобу на тип, а не пишет по строке на каждую.
+
 ```python
 def reviews_signals(db, run_id, pages, weights):
     """Сигналы отзывов от модели. Сети нет — ответы оплачены и лежат в llm_answers.
@@ -649,7 +669,11 @@ def reviews_signals(db, run_id, pages, weights):
     Жалобы «не дозвонились»/«не ответили на заявку» -> reviews_missed_lead,
     жалоба без ответа компании -> reviews_unanswered_complaint. Цитата обязана
     стоять дословно в отзыве (главная проверка test_quote_is_verbatim); не
-    нашлась — находке в signals не место. По одному сигналу на тип (newest).
+    нашлась — находке в signals не место. Один сигнал на тип на компанию:
+    newest_review_match берёт самую свежую подтверждённую жалобу, а не пишет
+    по строке на каждую — иначе две жалобы одного типа с одной датой у одного
+    филиала столкнулись бы по PRIMARY KEY signals_all (url собирается по
+    branch_id, не по отзыву).
     """
     from services.pipeline import rebuild
     reviews_by_branch = {}
@@ -669,23 +693,23 @@ def reviews_signals(db, run_id, pages, weights):
         if not company_id:
             continue
         analysis = answer.get("analysis") or {}
-        for complaint in analysis.get("complaints") or []:
-            if complaint["type"] not in ("не дозвонились", "не ответили на заявку"):
-                continue
-            review = review_with_quote(reviews_by_company.get(company_id, []), complaint["quote"])
-            if not review:
-                continue
+        reviews = reviews_by_company.get(company_id, [])
+
+        missed = newest_review_match(reviews, [
+            c for c in (analysis.get("complaints") or [])
+            if c["type"] in ("не дозвонились", "не ответили на заявку")
+        ])
+        if missed:
+            review, quote = missed
             emit(db, run_id, company_id, "reviews_missed_lead",
-                 review["date_created"], weights, complaint["quote"], review_url(company_id, review))
+                 review["date_created"], weights, quote, review_url(company_id, review))
+
         if analysis.get("unanswered_complaints"):
-            unanswered = next(
-                (c for c in (analysis.get("complaints") or [])
-                 if review_with_quote(reviews_by_company.get(company_id, []), c["quote"])),
-                None)
+            unanswered = newest_review_match(reviews, analysis.get("complaints") or [])
             if unanswered:
-                review = review_with_quote(reviews_by_company.get(company_id, []), unanswered["quote"])
+                review, quote = unanswered
                 emit(db, run_id, company_id, "reviews_unanswered_complaint",
-                     review["date_created"], weights, unanswered["quote"], review_url(company_id, review))
+                     review["date_created"], weights, quote, review_url(company_id, review))
 ```
 
 - [ ] **Step 5: вспомогательные функции в `enrich.py`**
@@ -711,6 +735,21 @@ def company_by_subject(db, run_id, subject):
 def review_with_quote(reviews, quote):
     found = [r for r in reviews if quote and quote in r["text"]]
     return max(found, key=lambda r: r["date_created"] or "") if found else None
+
+
+def newest_review_match(reviews, complaints):
+    """Самая свежая жалоба из списка, чья цитата подтверждена отзывом дословно.
+
+    Один сигнал на тип на компанию — не по жалобе: несколько жалоб одного типа
+    столкнулись бы по PRIMARY KEY signals_all (Task 7, «Почему не по жалобе на
+    строку»). Дедуп — тот же принцип, что у newest_per_type в instagram_signals.
+    """
+    matches = []
+    for complaint in complaints:
+        review = review_with_quote(reviews, complaint["quote"])
+        if review:
+            matches.append((review, complaint["quote"]))
+    return max(matches, key=lambda pair: pair[0]["date_created"] or "") if matches else None
 
 
 def review_url(company_id, review):
@@ -749,6 +788,44 @@ def emit(db, run_id, company_id, signal_type, observed_at, weights, quote, url):
 ```
 
 и увеличить `STAGE_COUNT = 8` до `9`.
+
+- [ ] **Step 6b: тест дедупликации `reviews_missed_lead`**
+
+Проверяет ровно то, из-за чего изначальный вариант падал бы по PRIMARY KEY:
+две жалобы одного типа на разные отзывы дают ровно одну пару (отзыв, цитата) —
+самую свежую. Тест чистый, без БД: бьёт прямо в `newest_review_match`.
+
+```python
+def test_reviews_missed_lead_picks_newest_one():
+    """Дедуп жалоб одного типа: newest_review_match отдаёт не больше одной пары
+    на вызов — иначе одинаковые (company_id, type, observed_at, url) от одного
+    филиала столкнулись бы по PRIMARY KEY signals_all."""
+    from services.enrich import newest_review_match
+
+    reviews = [
+        {"branch_id": "b1", "text": "не дозвонились вчера", "date_created": "2026-08-01"},
+        {"branch_id": "b1", "text": "не дозвонились сегодня", "date_created": "2026-08-02"},
+    ]
+    complaints = [
+        {"type": "не дозвонились", "quote": "не дозвонились вчера"},
+        {"type": "не дозвонились", "quote": "не дозвонились сегодня"},
+    ]
+    match = newest_review_match(reviews, complaints)
+    assert match is not None
+    review, quote = match
+    assert quote == "не дозвонились сегодня", "должна выбираться самая свежая жалоба"
+
+
+def test_reviews_missed_lead_no_match_is_none():
+    from services.enrich import newest_review_match
+    assert newest_review_match([], [{"type": "не дозвонились", "quote": "нет такого отзыва"}]) is None
+```
+
+```bash
+cd collector && uv run pytest tests/test_signals.py -k newest_review_match -v
+```
+
+Ожидается: PASS.
 
 - [ ] **Step 7: `test_quote_is_verbatim` для отзывов**
 
@@ -1085,6 +1162,7 @@ def site(ctx):
         config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
         model = config["llm"]["model"]
         targets = site_targets(db)
+        ctx.log(f"сайты: {len(targets)} компаний с собранными страницами, модель {model}")
         llm_model = llm.structured_model(model, SiteAnalysis)
         spent = 0
         for number, (company_id, name, city, pages_text) in enumerate(targets, 1):
@@ -1097,6 +1175,7 @@ def site(ctx):
                                  {"analysis": answer.model_dump()})
                 spent += 1
             ctx.progress(number, len(targets), "сайты")
+        ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
         return {"companies": len(targets), "new_calls": spent}
     finally:
         db.close()
@@ -1680,6 +1759,7 @@ def instagram(ctx):
         model = config["llm"]["model"]
         limit = config["instagram"]["posts_limit"]
         accounts = instagram_targets(db, limit)
+        ctx.log(f"инстаграм: {len(accounts)} аккаунтов, модель {model}")
         llm_model = llm.structured_model(model, InstagramAnalysis)
         spent = 0
         for number, (username, prompt_text) in enumerate(accounts, 1):
@@ -1690,6 +1770,7 @@ def instagram(ctx):
                                  {"analysis": answer.model_dump()})
                 spent += 1
             ctx.progress(number, len(accounts), "инстаграм")
+        ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
         return {"accounts": len(accounts), "new_calls": spent}
     finally:
         db.close()
@@ -1875,7 +1956,7 @@ cd collector && uv run pytest tests/test_operations.py tests/test_signals.py -v
 
 Ожидается: PASS.
 
-- [ ] **Step 9: коммит**
+- [ ] **Step 10: коммит**
 
 ```bash
 cd collector && git add services/pipeline/analyze.py services/enrich.py services/pipeline/rebuild.py config.toml tests/test_operations.py tests/test_signals.py && git commit -m "feat(collector): слой анализа Instagram, сигналы и тренд охватов"
@@ -1917,6 +1998,58 @@ inbound_widget               = 0.5
 - [ ] **Step 2: удалить `service_catalog` из детекторов**
 
 В `enrich.py` `SITE_MARKERS` убрать строку `("service_catalog", ...)`.
+
+- [ ] **Step 2b: выключить старый LLM-слой инстаграма в `instagram_signals`**
+
+Убрать веса из конфига недостаточно: `enrich.instagram_signals()` по-прежнему
+читает исторические ответы `kind="ig_signals"` — из `state.llm_answers` и файлов
+`raw/*.llm.json`, которые по правилу проекта никогда не удаляются — и пишет их
+через `newest_per_type` с `weights.get(signal_type, 1.0)`. Это тихий откат на
+1.0 в обход правила «тип без веса — ошибка сборки», которое вводит эта же
+задача: `ig_promo`/`ig_hiring_sales`/`ig_direct_selling` продолжали бы
+появляться в `signals` на каждой пересборке, хотя из конфига их веса убраны.
+
+В `enrich.py` убрать хвост `instagram_signals()`, читающий старые ответы модели,
+и теперь неиспользуемые `ig_answers`, `newest_per_type`, `post_with_quote`:
+
+```python
+def instagram_signals(db, run_id, pages, weights):
+    """Сигналы ленты: даты и темп — арифметикой. Смысл подписей больше не
+    спрашивается отдельной моделью (§4 v3, kind="ig_signals" retired) — эту
+    роль теперь играет слой instagram_ai_signals (Task 18), kind="instagram".
+    """
+    feeds = feeds_by_username(pages)
+    companies = companies_by_username(db, run_id)
+    horizon = db.execute(
+        "SELECT max(fetched_at) FROM fetches_all WHERE run_id = ?", (run_id,)
+    ).fetchone()[0]
+    for username, posts in sorted(feeds.items()):
+        company_id = companies.get(username)
+        if not company_id:
+            continue
+        account = {"company_id": company_id, "username": username, "posts": posts}
+        posting_rhythm_signals(db, run_id, account, weights, horizon)
+```
+
+Функции `ig_answers`, `newest_per_type`, `post_with_quote` удалить целиком —
+после этой правки они не используются больше нигде в файле.
+
+- [ ] **Step 2c: тест — старые типы больше не пишутся**
+
+```python
+def test_old_ig_llm_signals_retired(live_db):
+    """ig_promo/ig_hiring_sales/ig_direct_selling — слой их больше не читает,
+    даже если в state.llm_answers остались исторические ответы kind='ig_signals'."""
+    families = {row[0] for row in db.execute("SELECT DISTINCT type FROM signals")}
+    retired = {"ig_promo", "ig_hiring_sales", "ig_direct_selling"}
+    assert not (families & retired), f"старый LLM-слой инстаграма всё ещё пишет: {families & retired}"
+```
+
+```bash
+cd collector && uv run pytest tests/test_signals.py::test_old_ig_llm_signals_retired -v
+```
+
+Ожидается: PASS на собранной базе (пропускается на чистом клоне через `live_db`).
 
 - [ ] **Step 3: обновить тест типов**
 
@@ -2055,6 +2188,7 @@ def dossier(ctx):
         config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
         model = config["llm"]["model"]
         targets = dossier_targets(db)
+        ctx.log(f"досье: {len(targets)} компаний, модель {model}")
         llm_model = llm.structured_model(model, Dossier)
         spent = 0
         for number, (company_id, name, city, facts) in enumerate(targets, 1):
@@ -2067,6 +2201,7 @@ def dossier(ctx):
                                  {"dossier": answer.model_dump()})
                 spent += 1
             ctx.progress(number, len(targets), "досье")
+        ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
         return {"companies": len(targets), "new_calls": spent}
     finally:
         db.close()
@@ -2134,6 +2269,7 @@ cd collector && git add services/pipeline/analyze.py tests/test_operations.py &&
 **Files:**
 - Modify: `collector/store/schema.sql`
 - Modify: `collector/tests/test_schema.py`
+- Modify: `collector/tests/test_operations.py`
 
 **Interfaces:**
 - Produces: `dossiers_all` + view `dossiers` (спека §3 таблица).
@@ -2180,10 +2316,27 @@ CREATE VIEW IF NOT EXISTS dossiers AS
   SELECT d.* FROM dossiers_all d JOIN current_run USING (run_id);
 ```
 
-- [ ] **Step 4: прогнать тест**
+- [ ] **Step 3b: завести `dossiers_all` в сторож «не пишет в обе базы»**
+
+`test_no_operation_writes_to_both_dbs` отличает запись в derived от записи в
+state по хардкод-списку `DERIVED_TABLES` (`tests/test_operations.py`). Без этой
+строки запись в `dossiers_all` не засчитывается как «derived» вообще — сторож
+просто не видит новую таблицу, и правило «ни одна операция не пишет в обе базы»
+для досье фактически не проверяется, хотя Global Constraints это обещают.
+
+В `tests/test_operations.py`:
+
+```python
+DERIVED_TABLES = frozenset(
+    "runs current_run fetches_all orgs_all contacts_all companies_all"
+    " company_links_all signals_all scores_all profiles_all dossiers_all".split()
+)
+```
+
+- [ ] **Step 4: прогнать тесты**
 
 ```bash
-cd collector && uv run pytest tests/test_schema.py -v
+cd collector && uv run pytest tests/test_schema.py tests/test_operations.py::test_no_operation_writes_to_both_dbs -v
 ```
 
 Ожидается: PASS.
@@ -2191,7 +2344,7 @@ cd collector && uv run pytest tests/test_schema.py -v
 - [ ] **Step 5: коммит**
 
 ```bash
-cd collector && git add store/schema.sql tests/test_schema.py && git commit -m "feat(collector): таблица и view досье"
+cd collector && git add store/schema.sql tests/test_schema.py tests/test_operations.py && git commit -m "feat(collector): таблица и view досье"
 ```
 
 ---
@@ -2224,8 +2377,14 @@ def _seed_dossier(stores):
             "hooks": [{"angle": "хвалят за скорость", "quote": "быстро",
                        "url": "https://r.kz/", "source": "reviews",
                        "observed_at": "2026-08-01"}],
-            "pains": [{"statement": "не отвечают на заявки", "evidence": [],
-                       "severity": "видно явно"}],
+            # Нарочно НЕ по убыванию тяжести: проверяем, что порядок в базе
+            # наводит код (dossier.fill_dossiers), а не только промпт модели.
+            "pains": [
+                {"statement": "давно не обновляли сайт", "evidence": [],
+                 "severity": "предполагается"},
+                {"statement": "не отвечают на заявки", "evidence": [],
+                 "severity": "видно явно"},
+            ],
             "approach": "заходить через рост",
             "sources": ["reviews"],
             "confidence": 0.8,
@@ -2250,6 +2409,12 @@ def test_dossier_hooks_have_quote_and_url(stores):
     sev = [p["severity"] for p in pains]
     assert sev == sorted(sev, key={"видно явно": 0, "предполагается": 1, "не видно": 2}.get), \
         "pains не отсортированы по severity"
+    # Seed нарочно пришёл в обратном порядке (см. _seed_dossier) — если этот
+    # ассерт проходит только потому что pains был из одного элемента, значит
+    # регрессия тише некуда: fill_dossiers обязан пересортировать сам, а не
+    # полагаться на порядок, в котором их вернула модель.
+    assert [p["statement"] for p in pains] == ["не отвечают на заявки", "давно не обновляли сайт"], \
+        "fill_dossiers обязан пересортировать pains по severity, а не доверять порядку модели"
     assert json.loads(row["sources"]) == ["reviews"], "sources не перечисляют слои"
 
 
@@ -2292,6 +2457,11 @@ import json
 
 from services import store as engine
 
+# Порядок тяжести. Промпт синтеза просит модель отдать pains от сильной к
+# слабой (§3), но соблюдение инструкции моделью — не гарантия: сортировка
+# закреплена здесь же, кодом, а не только словом в system-промпте.
+SEVERITY_ORDER = {"видно явно": 0, "предполагается": 1, "не видно": 2}
+
 
 def fill_dossiers(db, run_id):
     from services.pipeline import rebuild
@@ -2313,6 +2483,10 @@ def fill_dossiers(db, run_id):
         if not company_id:
             continue
         d = answer.get("dossier") or {}
+        pains = sorted(
+            (d.get("pains") or [])[:4],
+            key=lambda p: SEVERITY_ORDER.get(p.get("severity"), len(SEVERITY_ORDER)),
+        )
         db.execute(
             "INSERT OR REPLACE INTO dossiers_all (run_id, company_id, model, summary,"
             " hooks, pains, approach, decision_maker, sources, confidence)"
@@ -2320,7 +2494,7 @@ def fill_dossiers(db, run_id):
             (
                 run_id, company_id, answer["model"], d.get("summary"),
                 json.dumps(d.get("hooks") or [], ensure_ascii=False),
-                json.dumps(d.get("pains") or [], ensure_ascii=False),
+                json.dumps(pains, ensure_ascii=False),
                 d.get("approach"), d.get("decision_maker_hint"),
                 json.dumps(d.get("sources") or [], ensure_ascii=False),
                 d.get("confidence"),
@@ -2718,6 +2892,60 @@ cd /Users/nurma/vscode_projects/Scrapling-Test && git add docs/ARCHITECTURE_v3.m
 - Task 7/12/18 `emit` и `company_by_subject`: `company_id` всегда резолвится по subject, не `None`.
 - `rebuild.subject_of`: поддержаны новые kinds (`instagram` — логин; `reviews`/`site`/`dossier` — `название | город`).
 - Task 7 Step 4: тип без веса в `emit` поднимает `KeyError`, а не тихий `0.5`.
+
+**Правки по code review (2026-08-19):**
+- **Task 7.** `reviews_signals` писала по строке сигнала на КАЖДУЮ подтверждённую
+  жалобу одного типа; `review_url` строит адрес по `branch_id`, а `date_created`
+  у 2GIS обычно дата без времени — две жалобы одного типа с одной датой у
+  одного филиала давали одинаковый `(company_id, type, observed_at, url)` и
+  падали на `INSERT` в `signals_all` с `sqlite3.IntegrityError`. Добавлен
+  `newest_review_match` — один сигнал на тип на компанию, от самой свежей
+  подтверждённой жалобы, тем же принципом, что `newest_per_type` в
+  `instagram_signals`. Регрессия — Task 7 Step 6b.
+- **Task 19.** Убрать веса `ig_promo`/`ig_hiring_sales`/`ig_direct_selling` из
+  конфига было недостаточно: `enrich.instagram_signals()` продолжала бы читать
+  исторические ответы `kind="ig_signals"` (ничего не удаляется) и писать их
+  через `newest_per_type` с тихим откатом на вес 1.0 — в обход собственного же
+  правила «тип без веса — ошибка сборки». Добавлен Step 2b: старый LLM-слой
+  инстаграма (`ig_answers`/`newest_per_type`/`post_with_quote`) удаляется из
+  `enrich.py` целиком, а не просто теряет вес в конфиге.
+- **Tasks 6/11/18/21.** Единственные вызовы `ctx.log` в `analyze.py` жили в
+  `profile()`/`ig_signals()` — функциях, которые Task 24 удаляет.
+  `test_operations_use_the_context_they_are_given` проверяет наличие
+  `"ctx.log"` во всём модуле; без своего лога у `reviews`/`site`/`instagram`/
+  `dossier` тест упал бы разом на всех четырёх операциях после Task 24.
+  Добавлены `ctx.log` в начале и в конце каждой операции.
+- **Task 22.** `dossiers_all` не попадала в хардкод-список `DERIVED_TABLES`
+  (`test_no_operation_writes_to_both_dbs`, `tests/test_operations.py`) — сторож
+  «ни одна операция не пишет в обе базы» не видел новую таблицу вообще, то есть
+  формально не защищал её, хотя Global Constraints это обещают. Добавлен Step
+  3b, поправлена ссылка на тест в Global Constraints (было указано
+  несуществующее имя `test_no_write_module_opens_both_dbs`).
+- **Task 23.** Тест на сортировку `pains` по severity сеял ровно один элемент —
+  проверка `sev == sorted(sev, ...)` истинна на списке из одного элемента
+  независимо от того, сортирует ли код что-либо. `_seed_dossier` теперь сеет
+  два `pains` заведомо в обратном порядке, тест сверяет итоговый порядок по
+  содержимому; `fill_dossiers` (`services/pipeline/dossier.py`) теперь сам
+  сортирует `pains` по `SEVERITY_ORDER` и обрезает до 4 перед записью — порядок
+  и лимит больше не держатся только на послушании модели промпту.
+
+**Отклонения при исполнении (2026-08-19, вскрылись на живых данных):**
+- **Task 8/9.** Фикстура главной — `intercomp.kz` (снята из raw/), а не первый
+  домен `01prospekt.kz` (оказался одностраничником без навигации). `parse_site_links`
+  матчит и **текст ссылки**, и href: у .kz-сайтов слоги латиницей (`/services/`),
+  а словарь на русском — по одному адресу обход находил бы ноль страниц.
+- **Task 13/16.** `users/{pk}/info/` требует **числовой pk пользователя**, а не
+  логин (логин в URL даёт 404). Добавлена карта username→pk из ответа лент
+  (`instagram_user_ids`); `profiles_by_username` ключует по `username` из ответа
+  профиля, а не из адреса.
+- **Task 18.** `Question.media_url` — `/p/{shortcode}/`, а комментарии ключуются
+  по media `pk`: добавлена карта shortcode→pk из лент, по которой восстанавливается
+  связь для проверки дословности `ig_unanswered_question`.
+- **Task 19.** Удаление `post_with_quote` потянуло за собой тест
+  `test_ig_quote_binding` (тестировал устаревший механизм) — вызов убран из
+  `test_ig_parsing`, сам тест удалён. `ig_answers`/`newest_per_type` удалены.
+- **Task 27.** Дополнительно обновлён `writer/tests/test_prompt.py` (сид на форму
+  досье) — без этого промпт-тесты writer'а падали бы на новом seed.
 
 ---
 

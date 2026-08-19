@@ -10,33 +10,34 @@ wheels/
 .venv
 
 # Instagram-сессия и выгрузки
-collector/data/cookies.json
-collector/data/ig_profile/
+backend/collector/data/cookies.json
+backend/collector/data/ig_profile/
+backend/collector/data/leads.csv
 *_posts.json
 
 # Слой сырья: невосстановим, в git не кладётся — бэкапится отдельно
-collector/data/raw/*
-!collector/data/raw/.gitkeep
+backend/collector/data/raw/*
+!backend/collector/data/raw/.gitkeep
 
 # Производные JSONL. НЕ удалены в Ф3: 60 организаций рубрики 1236, 14 карточек
 # филиалов и 135 рубрик собраны, когда их HTML ещё не сохранялся, — build.py их
-# не воспроизводит. Удалять можно после того, как Ф4 добёрет сырьё.
-raw_jsonl_legacy/
+# не воспроизводит. Удалять можно после того, как Ф4 доберёт сырьё.
+backend/collector/data/raw_jsonl_legacy/
 
 # Производное: пересобирается прогонами из raw/, в git не кладётся
-collector/data/derived.db
-collector/data/derived.db-wal
-collector/data/derived.db-shm
+backend/collector/data/derived.db
+backend/collector/data/derived.db-wal
+backend/collector/data/derived.db-shm
 
 # Порождённое: невосстановимо (как raw/), бэкапится отдельно
-collector/data/state.db
-collector/data/state.db-wal
-collector/data/state.db-shm
+backend/collector/data/state.db
+backend/collector/data/state.db-wal
+backend/collector/data/state.db-shm
 
 # Устаревшие пути (удаляются при миграции)
-collector/db/leads.db
-collector/db/ops.db
-writer/threads.db
+backend/collector/db/leads.db
+backend/collector/db/ops.db
+backend/writer/threads.db
 
 # Ключи. Шаблон — в .env.example
 .env

@@ -37,7 +37,7 @@ GIS_COOKIE = {"dg5_museum_accept": "true"}  # снимает редирект н
 
 # Публичный web app id инстаграма, статичный. Без него лента отвечает отказом.
 IG_APP_ID = "936619743392459"
-IG_COOKIES = Path("data/cookies.json")
+IG_COOKIES = Path(__file__).resolve().parent.parent.parent / "data" / "cookies.json"
 # Двенадцать постов — столько же, сколько показывает сетка профиля. Больше не берём:
 # сигналы считаются по свежему хвосту, а длина запроса растёт линейно.
 IG_POST_COUNT = 12
