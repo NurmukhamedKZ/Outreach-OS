@@ -6,11 +6,11 @@
 """
 
 import json
-import os
 
 from langchain_openrouter import ChatOpenRouter
 
 from collector.services import storage
+from config import settings
 
 MAX_RETRIES = 2
 REASONING = {"enabled": False}
@@ -18,13 +18,11 @@ REASONING = {"enabled": False}
 
 def structured_model(model, schema):
     """Модель с валидацией схемы: повторы при невалидной схеме — на стороне LangChain."""
-    if not os.environ.get("OPENROUTER_API_KEY"):
-        raise RuntimeError(
-            "OPENROUTER_API_KEY пуст. Поднять бэкенд: "
-            "uv run --env-file .env uvicorn api:app --port 8787"
-        )
+    if not settings.openrouter_api_key:
+        raise RuntimeError("OPENROUTER_API_KEY пуст. Задать в backend/.env — см. backend/.env.example")
     return ChatOpenRouter(
-        model=model, temperature=0, max_retries=MAX_RETRIES, reasoning=REASONING,
+        model=model, api_key=settings.openrouter_api_key,
+        temperature=0, max_retries=MAX_RETRIES, reasoning=REASONING,
     ).with_structured_output(schema, method="json_schema")
 
 

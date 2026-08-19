@@ -1,8 +1,9 @@
 """Разовый логин в Instagram руками. Сохраняет cookies в cookies.json.
 
-Запуск: uv run login.py
+Запуск из backend/ (там живёт venv): uv run ../scripts/ig/login.py
 Откроется настоящий Chrome — логинься сам (пароль/2FA). Скрипт ждёт появления
-sessionid и закрывается. Профиль остаётся в ./ig_profile, повторно обычно не нужен.
+sessionid и закрывается. Профиль остаётся в collector/data/ig_profile/,
+повторно обычно не нужен.
 """
 
 import json
@@ -10,8 +11,9 @@ from pathlib import Path
 
 from scrapling.fetchers import StealthySession
 
-COOKIES = Path("data/cookies.json")
-PROFILE = Path("data/ig_profile").absolute()
+ROOT = Path(__file__).resolve().parent.parent.parent
+COOKIES = ROOT / "backend" / "collector" / "data" / "cookies.json"
+PROFILE = ROOT / "backend" / "collector" / "data" / "ig_profile"
 
 
 def wait_for_login(page):

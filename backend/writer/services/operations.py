@@ -5,8 +5,7 @@
 существовании collector'а.
 """
 
-import os
-
+from config import settings
 from writer.services import agent, config
 from writer.db import leads_source, thread_store
 
@@ -41,8 +40,5 @@ def open_new_threads(ctx):
 
 def require_api_key():
     """Отказать до сети и до открытия баз, а не в середине прогона."""
-    if not os.environ.get("OPENROUTER_API_KEY"):
-        raise RuntimeError(
-            "OPENROUTER_API_KEY не задан в процессе бэкенда. "
-            "Поднимать так: uv run --env-file collector/.env python main.py"
-        )
+    if not settings.openrouter_api_key:
+        raise RuntimeError("OPENROUTER_API_KEY пуст. Задать в backend/.env — см. backend/.env.example")

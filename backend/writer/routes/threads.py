@@ -12,11 +12,10 @@ sys.modules.
 Проверка: uv run -m writer.routes.threads
 """
 
-import os
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from config import settings
 from writer.services import agent, config
 from writer.db import leads_source, thread_store
 
@@ -125,17 +124,9 @@ def add_incoming(company_id: str, request: TextRequest):
 
 
 def require_api_key():
-    """Отказать до сети и понятными словами.
-
-    Ключ читает ChatOpenRouter из окружения, а окружение веб-процессу задаёт
-    команда запуска: uvicorn сам .env не читает. Без этой проверки оператор
-    получил бы 500 с трассировкой pydantic вместо «поднимите бэкенд с ключом».
-    """
-    if not os.environ.get("OPENROUTER_API_KEY"):
-        raise HTTPException(503, (
-            "OPENROUTER_API_KEY не задан в процессе бэкенда. Поднимать так: "
-            "uv run --env-file .env uvicorn api:app --port 8787 --reload"
-        ))
+    """Отказать до сети и понятными словами, а не 500 с трассировкой pydantic."""
+    if not settings.openrouter_api_key:
+        raise HTTPException(503, "OPENROUTER_API_KEY пуст. Задать в backend/.env — см. backend/.env.example")
 
 
 def open_stores():

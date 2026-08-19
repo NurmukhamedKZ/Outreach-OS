@@ -46,7 +46,7 @@ check_cancelled=lambda: None))"` — пробы ходят в сеть и чит
 Веб — два процесса, браузеру нужен только порт 3000:
 
 ```bash
-uv run --env-file collector/.env python main.py               # FastAPI, все три системы
+uv run python main.py                                         # FastAPI, все три системы
 cd frontend && npm run dev                                    # Next.js -> http://localhost:3000
 ```
 
@@ -54,12 +54,14 @@ cd frontend && npm run dev                                    # Next.js -> http:
 через `uvicorn api:app` — включая роутеры writer'а и sender'а. Для
 reload-режима: `uv run uvicorn main:app --port 8787 --reload`.
 
-`--env-file` нужен из-за системы 2: её эндпоинт `/api/threads/{id}/draft`
-ходит в модель прямо из веб-процесса. Выдаче лидов ключ по-прежнему не нужен.
+**`config.py` — единственное место чтения переменных окружения**, общее для
+всех трёх систем: `pydantic.BaseSettings` сам подхватывает `backend/.env` при
+импорте, поэтому `--env-file` и `os.environ` в коде систем не нужны — ключ,
+которому он нужен, импортирует `from config import settings`.
 
-`SERPER_API_KEY` и `OPENROUTER_API_KEY` берутся из `collector/.env` (шаблон —
-`.env.example`); без них работают сбор/пересборка/веб, но не операции `analyze.*`
-и `probe.serp`.
+`SERPER_API_KEY` и `OPENROUTER_API_KEY` берутся из `backend/.env` (шаблон —
+`backend/.env.example`); без них работают сбор/пересборка/веб, но не операции
+`analyze.*`, `probe.serp` и черновики системы 2.
 
 ## Архитектура collector/ (система 1)
 
@@ -177,14 +179,15 @@ draft/sent — единственная бесплатная разметка д
 **Веб — та же консоль.** `collector/api.py` монтирует роутер `writer/routes/threads.py`
 (`/api/threads/*`: инбокс `GET /api/threads` одной сводкой + карточка, ходы
 `draft/sent/incoming`), фронтенд получает страницу «Персонализация» и секцию
-«Переписка» в карточке лида. Эндпоинт `/draft` ходит в сеть, поэтому бэкенд
-поднимается с ключом:
+«Переписка» в карточке лида. Эндпоинт `/draft` ходит в сеть, поэтому ключ
+должен быть в `backend/.env` (см. `config.py` выше):
 
 ```bash
-cd backend && uv run --env-file collector/.env python main.py
+cd backend && uv run python main.py
 ```
 
-Без ключа `/draft` отвечает 503 с этой командой, а не трассировкой. Отказ
+Без ключа `/draft` отвечает 503 с инструкцией задать его в `backend/.env`, а
+не трассировкой. Отказ
 по-прежнему оформляется эндпоинтом collector'а: вторая точка входа в
 юридический контур — второй шанс разойтись с `state.suppression`.
 

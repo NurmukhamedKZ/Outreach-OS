@@ -22,19 +22,19 @@ class DummyCtx:
 
 
 def test_require_api_key_without_env_raises(monkeypatch):
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(operations.settings, "openrouter_api_key", None)
     with pytest.raises(RuntimeError):
         operations.require_api_key()
 
 
 def test_open_new_threads_without_api_key_raises_before_touching_db(monkeypatch):
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(operations.settings, "openrouter_api_key", None)
     with pytest.raises(RuntimeError):
         operations.open_new_threads(DummyCtx())
 
 
 def test_open_new_threads_skips_existing_threads_and_drafts_only_new(monkeypatch):
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(operations.settings, "openrouter_api_key", "test-key")
 
     candidates = [
         {"thread_id": "t1", "company_id": "c1", "seed": {"name": "Alpha"}},

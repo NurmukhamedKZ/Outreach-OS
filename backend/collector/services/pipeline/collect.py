@@ -223,7 +223,7 @@ def instagram(ctx):
         ctx.log("аккаунтов в выдаче нет — сначала пересборка (rebuild)")
         return {"accounts": 0, "collected": 0, "failed": 0}
     if not IG_COOKIES.exists():
-        raise RuntimeError(f"нет {IG_COOKIES}: сначала uv run -m ig.login")
+        raise RuntimeError(f"нет {IG_COOKIES}: сначала uv run ../scripts/ig/login.py")
     jar = json.loads(IG_COOKIES.read_text(encoding="utf-8"))
 
     ctx.log(f"инстаграм: {len(accounts)} аккаунтов, по одному, пауза {IG_PAUSE_SECONDS} с")
@@ -253,7 +253,7 @@ def instagram(ctx):
                         f"ОТКАЗ: {in_row} отказа подряд, и контрольный аккаунт "
                         f"{canary} тоже молчит — сессия инстаграма умерла.\n"
                         f"Собрано {done} лент, они целы. Обнови куки: "
-                        "uv run -m ig.login, потом повтори — уже скачанное не перекачивается."
+                        "uv run ../scripts/ig/login.py, потом повтори — уже скачанное не перекачивается."
                     )
         ctx.progress(number, len(accounts), "ленты инстаграма")
     ctx.log(f"  {done + failures}/{len(accounts)} обработано, лент {done}, отказов {failures}")
@@ -450,7 +450,7 @@ def site_page(budget, domain):
 
 def instagram_cookies():
     if not IG_COOKIES.exists():
-        raise RuntimeError(f"нет {IG_COOKIES}: сначала uv run -m ig.login")
+        raise RuntimeError(f"нет {IG_COOKIES}: сначала uv run ../scripts/ig/login.py")
     return json.loads(IG_COOKIES.read_text(encoding="utf-8"))
 
 

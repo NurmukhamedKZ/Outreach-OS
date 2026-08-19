@@ -11,6 +11,7 @@ draft -> правка оператора -> отправка требует, ч�
 
 from langchain_openrouter import ChatOpenRouter
 
+from config import settings
 from writer.schemas.outreach import Draft
 
 MAX_RETRIES = 2
@@ -41,10 +42,10 @@ SYSTEM = """Ты пишешь исходящие сообщения в WhatsApp 
 
 
 def model(config):
-    """Клиент модели. Ключ ChatOpenRouter берёт из окружения сам — отсюда
-    запуск через --env-file .env, как у classify.py."""
+    """Клиент модели. Ключ приходит из settings (backend/.env), а не из окружения процесса."""
     return ChatOpenRouter(
         model=config["llm"]["model"],
+        api_key=settings.openrouter_api_key,
         temperature=config["llm"]["temperature"],
         max_retries=MAX_RETRIES,
         reasoning=REASONING,

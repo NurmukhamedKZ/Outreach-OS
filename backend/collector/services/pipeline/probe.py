@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import os
 import tomllib
 from pathlib import Path
 
@@ -12,6 +11,7 @@ from collector.services.sources import parse_firm_card
 from collector.services.sources import parse_initial_state as state
 from collector.services.sources import parse_org_list as orgs
 from collector.services.sources import parse_search_meta as meta
+from config import settings
 
 CONFIG = Path(__file__).resolve().parent.parent.parent / "config.toml"
 
@@ -59,13 +59,10 @@ def gis_rubrics(ctx):
 
 
 def serp(ctx):
-    """Пробный запрос Serper: первый ЛПР из базы. Ключ из .env, как и всегда."""
-    key = os.environ.get("SERPER_API_KEY")
+    """Пробный запрос Serper: первый ЛПР из базы. Ключ из backend/.env, как и всегда."""
+    key = settings.serper_api_key
     if not key:
-        raise RuntimeError(
-            "SERPER_API_KEY пуст. Поднять бэкенд: "
-            "uv run --env-file .env uvicorn api:app --port 8787"
-        )
+        raise RuntimeError("SERPER_API_KEY пуст. Задать в backend/.env — см. backend/.env.example")
     query = default_query()
     ctx.log(f"запрос: {query}")
     rows = parse_serp(search(query, key), query)
