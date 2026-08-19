@@ -13,7 +13,12 @@ AI lead-generation продукт: находит нужных людей, пи�
 2. **AI-персонализация** — тред переписки на каждого лида и черновик следующего
    сообщения. Живёт в `writer/` (см. секцию ниже).
 3. **Sending infrastructure** — домены, DNS, прогрев, ротация, deliverability.
-   Будет жить в `sender/`. Сейчас там стаб: роутер с 501 «скоро» (см. секцию).
+    Будет жить в `sender/`. Сейчас там стаб: роутер с 501 «скоро» (см. секцию).
+
+Все три системы физически лежат в `backend/` (`backend/collector/`,
+`backend/writer/`, `backend/sender/`) под одним venv и одним
+`backend/main.py`; ниже относительные имена `collector/`, `writer/`,
+`sender/` всегда подразумевают путь внутри `backend/`.
 
 Реализованы системы 1 и 2, у каждой своя секция ниже; система 3 заявлена стабом.
 Веб — продуктовый дашборд (сайдбар, страница на систему, живые процессы по SSE),
@@ -23,30 +28,31 @@ AI lead-generation продукт: находит нужных людей, пи�
 
 ## Команды
 
-Python-конвейер живёт в `collector/`, продуктовый дашборд — во `frontend/`.
-Команды ниже, кроме веба, запускаются из `collector/`. Сбор, анализ и прогоны —
-операции воркера (`services/pipeline/`), а не скрипты; из консоли они ставятся
+Продуктовый дашборд — во `frontend/`. Команды ниже, кроме веба, запускаются
+из `backend/`. Сбор, анализ и прогоны — операции воркера
+(`collector/services/pipeline/`), а не скрипты; из консоли они ставятся
 джобами через веб, из тестов — вызовом функции с RunContext.
 
 ```bash
-uv run pytest tests/                     # тесты вместо scripts/check.py, без сети
-uv run pytest tests/test_parsers.py      # один раздел — одним файлом
-cd writer && uv run pytest tests/        # тесты системы 2
+uv run pytest                                    # тесты обеих систем, без сети
+uv run pytest collector/tests/test_parsers.py    # один раздел — одним файлом
+cd writer && uv run pytest tests/                # тесты системы 2, тот же venv
 ```
 
-Разведка источника вручную: `uv run python -c "from services.pipeline import probe;
+Разведка источника вручную: `uv run python -c "from collector.services.pipeline import probe;
 probe.gis_list(__import__('types').SimpleNamespace(log=print, progress=lambda *a: None,
 check_cancelled=lambda: None))"` — пробы ходят в сеть и читают config.toml.
 
 Веб — два процесса, браузеру нужен только порт 3000:
 
 ```bash
-cd collector && uv run --env-file .env python -m uvicorn api:app --port 8787 --reload   # FastAPI
-cd frontend && npm run dev                                   # Next.js -> http://localhost:3000
+uv run --env-file collector/.env python main.py               # FastAPI, все три системы
+cd frontend && npm run dev                                    # Next.js -> http://localhost:3000
 ```
 
-`python -m uvicorn`, а не голый `uvicorn`: без `-m` uv берёт системный бинарарь
-с чужим python и падает на импорте зависимостей проекта.
+`main.py` поднимает то же приложение, что раньше собирал `collector/api.py`
+через `uvicorn api:app` — включая роутеры writer'а и sender'а. Для
+reload-режима: `uv run uvicorn main:app --port 8787 --reload`.
 
 `--env-file` нужен из-за системы 2: её эндпоинт `/api/threads/{id}/draft`
 ходит в модель прямо из веб-процесса. Выдаче лидов ключ по-прежнему не нужен.
@@ -131,21 +137,23 @@ total, label)` из операций, а не парсинг вывода.
 
 ## Архитектура writer/ (система 2)
 
-Отдельный uv-проект: свои зависимости, своя база, свой pytest. Читает
+Тот же venv, что у collector'а (`backend/pyproject.toml`), но свой пакет и
+своя база: `writer.*` не импортирует `collector.*` напрямую, только через шов
+в `collector/api.py`. Читает
 `collector/data/derived.db` и **никогда** в неё не пишет — отбор кандидатов (F19,
 F21) воспроизведён запросом в `leads_source.py`, а не импортом `report.py`,
 чтобы система 2 не падала от чужих зависимостей. Цена — вторая копия правил,
 её держит честным раздел `leads` в `writer/tests/`.
 
 ```bash
-cd writer
-uv run --env-file .env -m scripts.write [сколько]   # первые сообщения топ-N лидам
-uv run pytest tests/                                # schema, threads, leads, prompt
-uv run -m web                                       # роутер собирается, базы открываются
+cd backend
+uv run pytest writer/tests/    # schema, threads, leads, prompt, operations
 ```
 
-`scripts.write` — это всегда N **новых** компаний: у кого тред уже есть, того
-скрипт пропускает и идёт дальше по списку.
+«Черновики топ-N» — не скрипт, а операция очереди `writer.outreach`
+(пайплайн `write`): кнопка «Черновики топ-N» на странице «Персонализация»
+или `POST /api/pipeline/write`. Она всегда обрабатывает N **новых**
+компаний: у кого тред уже есть, того пропускает и идёт дальше по списку.
 
 **`state.threads`/`state.messages` — невосстановимый слой**, как `data/raw/` у
 системы 1: схема создаётся через `CREATE TABLE IF NOT EXISTS`, `DROP` запрещён,
@@ -166,14 +174,14 @@ draft/sent — единственная бесплатная разметка д
 `with_structured_output` повторит вызов на невалидном ответе, а инструкция в
 промпте была бы просьбой, которую модель нарушает именно там, где важно.
 
-**Веб — та же консоль.** `collector/api.py` монтирует роутер `writer/web.py`
+**Веб — та же консоль.** `collector/api.py` монтирует роутер `writer/routes/threads.py`
 (`/api/threads/*`: инбокс `GET /api/threads` одной сводкой + карточка, ходы
 `draft/sent/incoming`), фронтенд получает страницу «Персонализация» и секцию
 «Переписка» в карточке лида. Эндпоинт `/draft` ходит в сеть, поэтому бэкенд
 поднимается с ключом:
 
 ```bash
-cd collector && uv run --env-file .env python -m uvicorn api:app --port 8787 --reload
+cd backend && uv run --env-file collector/.env python main.py
 ```
 
 Без ключа `/draft` отвечает 503 с этой командой, а не трассировкой. Отказ
@@ -214,13 +222,13 @@ CTA, Inter + JetBrains Mono (`next/font`), hairline-границы, тёмные
   — свойства именно этих файлов; расхождение значит, что поехал разбор, а не
   что источник поменял вёрстку.
 - **`data/derived.db`** — пересобираемое: `runs`, `current_run`, `*_all` + view
-  (`store/schema.sql`, DERIVED-часть). Собирается прогонами `rebuild.run`, в git
+  (`db/schema.sql`, DERIVED-часть). Собирается прогонами `rebuild.run`, в git
   не лежит. View создаются через `CREATE VIEW IF NOT EXISTS`: любой DDL внутри
   `connect()` забирал бы блокировку записи у идущей пересборки. Цена — правка
   определения не доедет до созданной базы сама; расхождение ловит
   `test_views_match_schema_file`, чинится `DROP VIEW`.
 - **`data/state.db`** — невосстановимое: отказы, джобы, переписка системы 2,
-  ответы модели (`store/schema.sql`, STATE-часть). Схема через `CREATE TABLE IF
+  ответы модели (`db/schema.sql`, STATE-часть). Схема через `CREATE TABLE IF
   NOT EXISTS`, `DROP` запрещён, в git не лежит. Открывается collector'ом через
   `store.connect()` (ATTACH), writer'ом — напрямую.
 - **`data/leads.csv`** — производная от базы, печатает `export.run`.
@@ -230,7 +238,7 @@ CTA, Inter + JetBrains Mono (`next/font`), hairline-границы, тёмные
 `docs/BRD.md`, `docs/PRD.md`, `docs/TRD.md`, `docs/SPEC.md`,
 `docs/ARCHITECTURE.md`, `docs/ARCHITECTURE_v2.md` — бизнес-контекст, ICP,
 полная спецификация и обоснование схемы (`ARCHITECTURE_v2.md` §4 — источник
-для `store/schema.sql`). Комментарии в коде вида «Ф3», «Ф9», «F19» — ссылки на
+для `db/schema.sql`). Комментарии в коде вида «Ф3», «Ф9», «F19» — ссылки на
 фазы и требования из этих документов.
 
 ---

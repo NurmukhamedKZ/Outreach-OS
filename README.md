@@ -3,17 +3,22 @@
 Документы: [BRD](docs/BRD.md) · [PRD](docs/PRD.md) · [TRD](docs/TRD.md) · [SPEC](docs/SPEC.md) ·
 [ARCHITECTURE](docs/ARCHITECTURE.md) · [ARCHITECTURE_v2](docs/ARCHITECTURE_v2.md)
 
+Все три системы физически лежат в `backend/` (`backend/collector/`,
+`backend/writer/`, `backend/sender/`) под одним venv и одним `backend/main.py`;
+ниже относительные имена `collector/`, `writer/`, `sender/` всегда
+подразумевают путь внутри `backend/`.
+
 ## Команды
 
-Python-конвейер живёт в `collector/`, продуктовый дашборд — во `frontend/`.
-Сбор, анализ и пересборка — операции воркера (`services/pipeline/`), а не
-скрипты: из консоли они ставятся джобами через веб, из тестов — вызовом функции
-с RunContext. Логика и сеть в `services/`, схема с запросами в `store/`, сырьё —
-в `data/raw/`, две базы — в `data/`. Команды ниже запускаются из `collector/`.
+Продуктовый дашборд — во `frontend/`. Сбор, анализ и пересборка — операции
+воркера (`collector/services/pipeline/`), а не скрипты: из консоли они
+ставятся джобами через веб, из тестов — вызовом функции с RunContext. Логика
+и сеть в `services/`, схема с запросами в `db/`, сырьё — в `data/raw/`, две
+базы — в `data/`. Команды ниже запускаются из `backend/`.
 
 ```bash
-uv run pytest tests/                     # тесты вместо scripts/check.py, без сети
-cd writer && uv run pytest tests/        # тесты системы 2
+uv run pytest                            # тесты обеих систем, без сети
+cd writer && uv run pytest tests/        # тесты системы 2, тот же venv
 ```
 
 Разведка источника вручную — операция `probe` из консоли
@@ -39,8 +44,8 @@ cd writer && uv run pytest tests/        # тесты системы 2
 на него, так что браузеру нужен только порт 3000.
 
 ```bash
-cd collector && uv run --env-file .env python -m uvicorn api:app --port 8787 --reload   # FastAPI
-cd frontend && npm run dev                                   # Next.js -> http://localhost:3000
+uv run --env-file collector/.env python main.py               # FastAPI, все три системы (из backend/)
+cd frontend && npm run dev                                    # Next.js -> http://localhost:3000
 ```
 
 `python -m uvicorn`, а не голый `uvicorn`: без `-m` uv берёт системный бинарарь
@@ -86,7 +91,7 @@ SSE `GET /api/events`. Исполнение одно за раз (`rebuild` пе
 ## Две базы
 
 - **`data/derived.db`** — пересобираемое: `runs`, `current_run`, `*_all` + view
-  (`store/schema.sql`, DERIVED-часть). Собирается прогонами `rebuild.run`.
+  (`db/schema.sql`, DERIVED-часть). Собирается прогонами `rebuild.run`.
 - **`data/state.db`** — невосстановимое: отказы (`state.suppression`), очередь
   джобов (`state.jobs`), переписка системы 2, ответы модели (`state.llm_answers`).
   Схема через `CREATE TABLE IF NOT EXISTS`, `DROP` запрещён.
