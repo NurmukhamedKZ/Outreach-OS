@@ -15,7 +15,7 @@ import json
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from services import events, jobs, metrics
+from collector.services import events, jobs, metrics
 
 router = APIRouter(prefix="/api/events")
 

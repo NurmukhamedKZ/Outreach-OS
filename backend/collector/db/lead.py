@@ -3,7 +3,7 @@
 Соединение даёт services.store.connect() — derived.db с ATTACH state. Только
 чтение, кроме записи в state.suppression (невосстановимый слой).
 """
-from services import store as engine
+from collector.services import store as engine
 
 
 def connect():

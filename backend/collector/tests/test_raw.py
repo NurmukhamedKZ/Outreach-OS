@@ -7,7 +7,7 @@ check_raw, но без боевых гигабайтов.
 import gzip
 import json
 
-import services.storage as storage
+import collector.services.storage as storage
 
 SIDECAR_FIELDS = ("url", "final_url", "status", "fetched_at")
 

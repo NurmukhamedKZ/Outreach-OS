@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-import services.store as engine
-import services.storage as storage
+import collector.services.store as engine
+import collector.services.storage as storage
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"   # collector/fixtures
 

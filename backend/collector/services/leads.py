@@ -5,8 +5,8 @@
 закона разъезжаются на первой же правке.
 """
 
-from services.pipeline import export as report
-from store import lead as store
+from collector.services.pipeline import export as report
+from collector.db import lead as store
 
 
 def pick(db, limit, city=None):

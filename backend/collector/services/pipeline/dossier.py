@@ -15,7 +15,7 @@ SEVERITY_ORDER = {"видно явно": 0, "предполагается": 1, "
 
 
 def fill_dossiers(db, run_id):
-    from services.pipeline import rebuild
+    from collector.services.pipeline import rebuild
     companies = {
         (name, city): company_id
         for company_id, name, city in db.execute(

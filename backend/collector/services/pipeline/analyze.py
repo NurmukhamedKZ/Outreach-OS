@@ -10,10 +10,10 @@ import sys
 import tomllib
 from pathlib import Path
 
-from services import sources
-from services.pipeline import llm, rebuild
+from collector.services import sources
+from collector.services.pipeline import llm, rebuild
 
-CONFIG = Path("config.toml")
+CONFIG = Path(__file__).resolve().parent.parent.parent / "config.toml"
 
 REVIEWS_KIND = "reviews"
 REVIEWS_SYSTEM = (
@@ -32,8 +32,8 @@ def reviews(ctx):
     Компания с филиалами, у которых отзывов нет, пропускается — её досье потом
     соберётся из других слоёв или только из карточки.
     """
-    from schemas.reviews import ReviewsAnalysis
-    from services import store as engine
+    from collector.schemas.reviews import ReviewsAnalysis
+    from collector.services import store as engine
     db = engine.connect()
     try:
         config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
@@ -68,7 +68,7 @@ def review_targets(db, max_reviews):
     Отзывы филиалов компании собираются из raw/ (слой сырья), текст склеивается.
     Компания с филиалами, у которых отзывов нет, в выборку не попадает.
     """
-    from services.pipeline import rebuild
+    from collector.services.pipeline import rebuild
     pages = {p["url"]: p for p in rebuild.load_pages()}
     reviews_by_branch = {}
     for page in pages.values():
@@ -120,8 +120,8 @@ def site(ctx):
     Один вызов на компанию с сайтом, ответы кэшируются kind="site". Компания
     без собранного сайта пропускается — слой отзывов её всё равно покроет.
     """
-    from schemas.site import SiteAnalysis
-    from services import store as engine
+    from collector.schemas.site import SiteAnalysis
+    from collector.services import store as engine
     db = engine.connect()
     try:
         config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
@@ -155,7 +155,7 @@ def site_targets(db):
     До max_pages внутренних страниц из config.toml; страницы читаются из raw/.
     Компания без собранного сайта пропускается (слой отзывов её всё равно покроет).
     """
-    from services.pipeline import rebuild
+    from collector.services.pipeline import rebuild
     config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
     links_cfg = config["site"]["links"]
     by_url = {p["url"]: p for p in rebuild.load_pages()}
@@ -211,8 +211,8 @@ def instagram(ctx):
     posts_limit постов из ленты (в сборе их 12, на анализе режем до 10 — count в
     URL трогать нельзя, это ключ кэша страницы), плюс комментарии и био из raw/.
     """
-    from schemas.instagram import InstagramAnalysis
-    from services import store as engine
+    from collector.schemas.instagram import InstagramAnalysis
+    from collector.services import store as engine
     db = engine.connect()
     try:
         config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
@@ -245,7 +245,7 @@ def instagram_targets(db, limit):
     Берутся последние `limit` постов из ленты. Комментарии и профиль догружаются
     из raw/, если собраны.
     """
-    from services.pipeline import rebuild
+    from collector.services.pipeline import rebuild
     by_username = {}
     for page in rebuild.load_pages():
         if "feed/user/" not in page["url"]:
@@ -272,7 +272,7 @@ def instagram_targets(db, limit):
 
 def comments_by_media(db):
     """{media_pk: [comments]} из raw/."""
-    from services.pipeline import rebuild
+    from collector.services.pipeline import rebuild
     out = {}
     for page in rebuild.load_pages():
         if "/media/" not in page["url"] or "/comments/" not in page["url"]:
@@ -285,7 +285,7 @@ def comments_by_media(db):
 def profiles_by_username(db):
     """{username: profile} из raw/ (users/{pk}/info/). Логин берётся из ответа
     профиля, а не из адреса: в адресе числовой pk, а не логин."""
-    from services.pipeline import rebuild
+    from collector.services.pipeline import rebuild
     out = {}
     for page in rebuild.load_pages():
         if "/users/" not in page["url"] or "/info/" not in page["url"]:
@@ -314,8 +314,8 @@ def dossier(ctx):
     ни сайта, ни Instagram: у них досье строится из отзывов и карточки 2GIS.
     Полного нуля не остаётся ни у кого. Ответы кэшируются kind="dossier".
     """
-    from schemas.dossier import Dossier
-    from services import store as engine
+    from collector.schemas.dossier import Dossier
+    from collector.services import store as engine
     db = engine.connect()
     try:
         config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
@@ -350,7 +350,7 @@ def dossier_targets(db):
     город, рейтинг, контакты из карточки 2GIS. Ни одной сырой страницы — промпт
     маленький. Компания без сайта и Instagram всё равно получает досье из отзывов.
     """
-    from services.pipeline import rebuild
+    from collector.services.pipeline import rebuild
     answers = {}
     for kind in ("reviews", "site", "instagram"):
         answers[kind] = {}

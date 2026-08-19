@@ -9,7 +9,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from services import events, jobs, metrics
+from collector.services import events, jobs, metrics
 
 
 def test_pipelines_catalogue_consistent(stores):
@@ -18,7 +18,7 @@ def test_pipelines_catalogue_consistent(stores):
 
 def test_job_lifecycle(stores, tmp_path, monkeypatch):
     """Джоба доходит до done; результат операции попадает в state.jobs."""
-    from services.pipeline import export as export_op
+    from collector.services.pipeline import export as export_op
     monkeypatch.setattr(export_op, "OUT", tmp_path / "leads.csv")   # не трогать боевой CSV
     job_id = jobs.enqueue_steps("custom", "Тест", ["export"])
     asyncio.run(jobs.run_pending())
@@ -37,8 +37,8 @@ def test_job_failure_is_typed(stores):
 
 def test_job_cancel(stores):
     """Отмена running кооперативна: флаг в контексте, операция выходит сама."""
-    from services import jobs as jobs_module
-    from services.pipeline import OPERATIONS
+    from collector.services import jobs as jobs_module
+    from collector.services.pipeline import OPERATIONS
 
     def slow(ctx):
         import time
@@ -100,15 +100,11 @@ def test_frontend_contract(stores):
     assert metrics.threads_db_path().name == "state.db", \
         "путь state.db разошёлся с config.toml системы 2"
 
-    sys.path.insert(0, str(Path("sender").resolve().parent.parent / "sender"))
-    try:
-        import stub as sender
+    from sender import stub as sender
 
-        assert sender.status()["status"] == "coming_soon"
-        paths = {route.path for route in sender.router.routes}
-        assert "/api/sender" in paths and "/api/sender/{rest_of_path:path}" in paths, paths
-    finally:
-        sys.path.pop(0)
+    assert sender.status()["status"] == "coming_soon"
+    paths = {route.path for route in sender.router.routes}
+    assert "/api/sender" in paths and "/api/sender/{rest_of_path:path}" in paths, paths
 
 def test_publish_from_worker_thread_reaches_subscriber():
     """Событие из рабочего потока доходит до ждущего подписчика сразу.

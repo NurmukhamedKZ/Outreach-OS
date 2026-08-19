@@ -18,7 +18,7 @@ from pathlib import Path
 
 from scrapling.fetchers import Fetcher
 
-from services import storage
+from collector.services import storage
 
 # Scrapling пишет INFO на каждый запрос, включая штатные 404 (у листовой рубрики
 # нет страницы подрубрик). Это тонет прогресс скриптов в потоке ложных «ошибок».

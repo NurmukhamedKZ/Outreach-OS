@@ -1,8 +1,8 @@
-from services.pipeline import export as report
+from collector.services.pipeline import export as report
 from fastapi import APIRouter, HTTPException
 
-from store import lead as store
-from services import leads as service
+from collector.db import lead as store
+from collector.services import leads as service
 
 router = APIRouter(prefix="/api/leads")
 

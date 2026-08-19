@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, HTTPException
 
-from services import events, store as engine
+from collector.services import events, store as engine
 
 router = APIRouter(prefix="/api/runs")
 

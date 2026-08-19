@@ -22,7 +22,7 @@ quote и url обязательны у каждого сигнала: из ни�
 
 import re
 
-from services import sources
+from collector.services import sources
 
 # Что ищем на сайте. Ключ — тип сигнала, значение — regex и человеческое описание
 # для quote. Все признаки детерминированы, модель для них не нужна (§11).
@@ -99,7 +99,7 @@ def reviews_signals(db, run_id, pages, weights):
     филиала столкнулись бы по PRIMARY KEY signals_all (url собирается по
     branch_id, не по отзыву).
     """
-    from services.pipeline import rebuild
+    from collector.services.pipeline import rebuild
     reviews_by_branch = {}
     for page in pages:
         if "reviews.2gis.com" not in page["url"]:
@@ -199,7 +199,7 @@ def site_ai_signals(db, run_id, pages, weights):
     Hiring-цитата обязана стоять дословно на странице вакансий — иначе модель
     исказила, и сигналу не место. pricing_visible=False -> site_no_pricing.
     """
-    from services.pipeline import rebuild
+    from collector.services.pipeline import rebuild
     by_url = {p["url"]: p for p in pages}
     site_texts_by_company = {}
     for company_id, name, city, domain in db.execute(
@@ -239,7 +239,7 @@ def instagram_ai_signals(db, run_id, pages, weights):
     ig_reach_declining: медиана лайков свежей половины ниже старшей (для лент
     короче 6 постов тренд не считается вовсе).
     """
-    from services.pipeline import rebuild
+    from collector.services.pipeline import rebuild
     companies = companies_by_username(db, run_id)
     feeds = {}
     pk_by_shortcode = {}
@@ -367,7 +367,7 @@ def posting_rhythm_signals(db, run_id, account, weights, horizon):
 
 def feeds_by_username(pages):
     """{логин: посты} по лентам из снимка raw/."""
-    from services.pipeline import rebuild   # локально: rebuild импортирует enrich
+    from collector.services.pipeline import rebuild   # локально: rebuild импортирует enrich
 
     feeds = {}
     for page in pages:
@@ -415,7 +415,7 @@ def site_pages(db, run_id, pages):
     сертификата, и страница лежит под http. Искать её потом по https значит
     потерять и время забора, и ссылку для why_now.
     """
-    from services.pipeline import rebuild   # локально: rebuild импортирует enrich
+    from collector.services.pipeline import rebuild   # локально: rebuild импортирует enrich
 
     by_url = {page["url"]: page for page in pages}
     rows = db.execute(

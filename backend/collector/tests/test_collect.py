@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-import services.storage as storage
-from services import sources
-from services.pipeline import collect, rebuild
+import collector.services.storage as storage
+from collector.services import sources
+from collector.services.pipeline import collect, rebuild
 
 RUBRIC_URL = re.compile(r"2gis\.kz/([a-z]+)/rubric/(\d+)(?:/page/(\d+))?$")
 
@@ -55,7 +55,7 @@ def test_pagination_guard_catches_substitution(rubric_pages):
 
 def test_plan_coverage_matches_config(rubric_pages):
     """Собрано ровно то, что задано config.toml, и не глубже потолка источника."""
-    config = tomllib.loads(Path("config.toml").read_text(encoding="utf-8"))
+    config = tomllib.loads((Path(__file__).resolve().parent.parent / "config.toml").read_text(encoding="utf-8"))
     cities, rubrics = set(config["cities"]), set(config["rubrics"]["include"])
 
     for page in rubric_pages:

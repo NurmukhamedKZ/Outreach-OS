@@ -3,7 +3,7 @@
 import asyncio
 
 from fastapi import APIRouter, HTTPException
-from services import jobs
+from collector.services import jobs
 
 router = APIRouter(prefix="/api/operations")
 

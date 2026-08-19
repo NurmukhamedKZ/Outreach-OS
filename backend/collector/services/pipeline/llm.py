@@ -10,7 +10,7 @@ import os
 
 from langchain_openrouter import ChatOpenRouter
 
-from services import storage
+from collector.services import storage
 
 MAX_RETRIES = 2
 REASONING = {"enabled": False}

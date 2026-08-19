@@ -22,7 +22,7 @@ import json
 import re
 from pathlib import Path
 
-from services import store as engine
+from collector.services import store as engine
 
 OUT = Path("data/leads.csv")
 

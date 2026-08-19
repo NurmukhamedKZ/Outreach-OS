@@ -22,8 +22,8 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routes import events, jobs, leads, operations, pipeline, runs, stats, suppression
-from services import jobs as queue
+from collector.routes import events, jobs, leads, operations, pipeline, runs, stats, suppression
+from collector.services import jobs as queue
 
 # Система 2 живёт своим проектом и своей базой; здесь только склейка, чтобы у
 # оператора остались одна консоль и один порт. Каталог добавляется в путь

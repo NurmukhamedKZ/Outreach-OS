@@ -31,7 +31,7 @@ def _seed_dossier(stores):
                    " VALUES ('dossier', 'Ромашка | almaty', 'm', 'p', ?)",
                    (json.dumps(answer, ensure_ascii=False),))
     stores.commit()
-    from services.pipeline import dossier as mod
+    from collector.services.pipeline import dossier as mod
     mod.fill_dossiers(stores, 1)
 
 
@@ -61,7 +61,7 @@ def test_dossier_empty_pains_legal(stores):
                    " VALUES ('dossier', 'Тишина | almaty', 'm', 'p', ?)",
                    (json.dumps(answer, ensure_ascii=False),))
     stores.commit()
-    from services.pipeline import dossier as mod
+    from collector.services.pipeline import dossier as mod
     mod.fill_dossiers(stores, 1)
     row = stores.execute("SELECT count(*) FROM dossiers").fetchone()[0]
     assert row == 1, "пустой pains не должен ломать досье"
@@ -80,7 +80,7 @@ def test_dossier_pains_trimmed_to_four(stores):
                    " VALUES ('dossier', 'Много | almaty', 'm', 'p', ?)",
                    (json.dumps(answer, ensure_ascii=False),))
     stores.commit()
-    from services.pipeline import dossier as mod
+    from collector.services.pipeline import dossier as mod
     mod.fill_dossiers(stores, 1)
     row = stores.execute("SELECT pains FROM dossiers").fetchone()
     assert len(json.loads(row["pains"])) == 4, "pains не обрезаны до четырёх"

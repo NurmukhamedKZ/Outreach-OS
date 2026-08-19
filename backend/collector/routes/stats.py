@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from services import metrics
+from collector.services import metrics
 
 router = APIRouter(prefix="/api/stats")
 

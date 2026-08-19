@@ -8,7 +8,7 @@ import gzip
 import re
 from pathlib import Path
 
-from services import enrich, sources
+from collector.services import enrich, sources
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"   # collector/fixtures
 CYRILLIC = re.compile(r"[А-Яа-я]")

@@ -6,14 +6,14 @@ import os
 import tomllib
 from pathlib import Path
 
-from services import sources
-from services.fetch import HttpError, get
-from services.sources import parse_firm_card
-from services.sources import parse_initial_state as state
-from services.sources import parse_org_list as orgs
-from services.sources import parse_search_meta as meta
+from collector.services import sources
+from collector.services.fetch import HttpError, get
+from collector.services.sources import parse_firm_card
+from collector.services.sources import parse_initial_state as state
+from collector.services.sources import parse_org_list as orgs
+from collector.services.sources import parse_search_meta as meta
 
-CONFIG = Path("config.toml")
+CONFIG = Path(__file__).resolve().parent.parent.parent / "config.toml"
 
 COOKIE = {"dg5_museum_accept": "true"}  # снимает редирект на /museum
 LIST_URL = "https://2gis.kz/{city}/rubric/{rubric}/page/{page}"
@@ -74,7 +74,7 @@ def serp(ctx):
 
 def default_query():
     """Первый ЛПР базы — «директор <компания>». Никакой магии вне config."""
-    from services import store as engine
+    from collector.services import store as engine
     db = engine.connect()
     try:
         row = db.execute(
@@ -166,7 +166,7 @@ def search(query, key, country="kz", lang="ru"):
 
     from scrapling.fetchers import Fetcher
 
-    from services import storage
+    from collector.services import storage
 
     storage.RAW.mkdir(exist_ok=True)
     f = storage.RAW / (hashlib.sha1(f"serp:{query}:{country}:{lang}".encode()).hexdigest() + ".serp.json")

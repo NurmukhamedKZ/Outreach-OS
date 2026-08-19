@@ -4,7 +4,7 @@ import gzip
 import json
 from pathlib import Path
 
-import services.storage as storage
+import collector.services.storage as storage
 
 
 def test_roundtrip(tmp_path, monkeypatch):

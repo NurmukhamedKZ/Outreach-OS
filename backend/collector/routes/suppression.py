@@ -6,9 +6,9 @@ import io
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from store import lead as store
-from schemas.refusal import Refusal
-from services import suppression as service
+from collector.db import lead as store
+from collector.schemas.refusal import Refusal
+from collector.services import suppression as service
 
 router = APIRouter(prefix="/api/suppression")
 

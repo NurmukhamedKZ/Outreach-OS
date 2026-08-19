@@ -7,7 +7,7 @@ runs, — но теперь это фолбэк, а основной путь ж
 
 from fastapi import APIRouter, HTTPException
 
-from services import jobs
+from collector.services import jobs
 
 router = APIRouter(prefix="/api/jobs")
 

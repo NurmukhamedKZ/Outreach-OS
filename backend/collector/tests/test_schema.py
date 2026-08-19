@@ -1,6 +1,6 @@
 """Схема: порождённые таблицы переживают пересборку, view видят текущий прогон."""
 
-import services.store as engine
+import collector.services.store as engine
 
 
 def test_views_read_current_run(stores):
@@ -30,7 +30,7 @@ def test_dossiers_view_exists(stores):
 
 
 def test_views_match_schema_file(live_db):
-    """Определения view в базе совпадают с store/schema.sql.
+    """Определения view в базе совпадают с db/schema.sql.
 
     Схема применяется через CREATE VIEW IF NOT EXISTS — иначе connect() брал бы
     блокировку записи на каждую строку лога и валил идущую пересборку. Плата за

@@ -27,8 +27,8 @@ from contextlib import closing
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from services import events, store as engine
-from services.pipeline import OPERATIONS, PIPELINES
+from collector.services import events, store as engine
+from collector.services.pipeline import OPERATIONS, PIPELINES
 
 # Потолок лога в символах, а не в строках: строку дописывает сам SQLite
 # (log = log || ?), и мерить длину он умеет, а считать переводы строки — нет.

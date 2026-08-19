@@ -11,10 +11,10 @@ import re
 import tomllib
 from pathlib import Path
 
-from services import enrich, resolve, score, sources, storage
-from services.pipeline import dossier
+from collector.services import enrich, resolve, score, sources, storage
+from collector.services.pipeline import dossier
 
-CONFIG = Path("config.toml")
+CONFIG = Path(__file__).resolve().parent.parent.parent / "config.toml"
 
 GIS_LIST_URL = re.compile(r"2gis\.kz/([a-z]+)/rubric/(\d+)(?:/page/(\d+))?$")
 GIS_FIRM_URL = re.compile(r"2gis\.kz/([a-z]+)/firm/(\d+)$")
@@ -84,7 +84,7 @@ def run(ctx):
     брошенный отменой или ошибкой, остаётся в *_all без finished_at и текущим
     не становится — откатывать нечего, публиковать нечего.
     """
-    from services import store as engine
+    from collector.services import store as engine
     ctx.log("пересборка из raw/")
     db = engine.connect()
     run_id = engine.new_run(db)

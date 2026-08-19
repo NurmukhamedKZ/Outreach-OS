@@ -1,7 +1,7 @@
 """Реестр операций. Белый список argv был защитой от инъекции в shell;
 реестр функций — та же защита по построению: имени нет в словаре, вызывать нечего."""
 
-from services.pipeline import analyze, collect, export, probe, rebuild
+from collector.services.pipeline import analyze, collect, export, probe, rebuild
 
 OPERATIONS = {
     "collect.gis": collect.gis,

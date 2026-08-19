@@ -21,11 +21,11 @@ from functools import partial
 from pathlib import Path
 from threading import Lock
 
-from services import fetch
-from services import sources
-from services import storage
+from collector.services import fetch
+from collector.services import sources
+from collector.services import storage
 
-CONFIG = Path("config.toml")
+CONFIG = Path(__file__).resolve().parent.parent.parent / "config.toml"
 
 RUBRIC_PAGE = "https://2gis.kz/{city}/rubric/{rubric}/page/{page}"
 FIRM_CARD = "https://2gis.kz/{city}/firm/{branch_id}"
@@ -108,7 +108,7 @@ def sites(ctx):
     их сайты соберёт следующий запуск. Всё идемпотентно, порядок восстанавливается
     сам — но пустая выдача значит «сначала пересборка», а не «сайтов нет».
     """
-    from services import store as engine
+    from collector.services import store as engine
     db = engine.connect()
     try:
         domains = [r[0] for r in db.execute(
@@ -136,7 +136,7 @@ def reviews(ctx):
     (склейка Ф5 уже свела филиалы к компаниям). Страницы ложатся в raw/ как
     обычно — дедуп по ним же, повторный запуск не делает ни одного запроса.
     """
-    from services import store as engine
+    from collector.services import store as engine
     config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
     reviews_cfg = config["reviews"]
     db = engine.connect()
@@ -169,7 +169,7 @@ def site_pages(ctx):
     max_pages внутренних страниц (о компании, услуги, цены, кейсы, вакансии).
     Страница вакансий возвращает hiring-сигнал, потерянный с удалением hh.
     """
-    from services import store as engine
+    from collector.services import store as engine
     config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
     links_cfg = config["site"]["links"]
     db = engine.connect()
@@ -206,7 +206,7 @@ def instagram(ctx):
     В один поток и с паузой: сессия личная, и цена ошибки здесь — не потерянный
     прогон, а заблокированный аккаунт живого человека.
     """
-    from services import store as engine
+    from collector.services import store as engine
     db = engine.connect()
     try:
         rows = db.execute(
@@ -327,7 +327,7 @@ def ig_profile(ctx):
 
 def posts_with_comments():
     """(media_pk, username) постов с comment_count > 0 из сырья лент в raw/."""
-    from services.pipeline import rebuild
+    from collector.services.pipeline import rebuild
     out = []
     for page in rebuild.load_pages():
         if "feed/user/" not in page["url"]:
@@ -347,7 +347,7 @@ def instagram_user_ids():
     user ответа feed/user, где он есть всегда.
     """
     import json as _json
-    from services.pipeline import rebuild
+    from collector.services.pipeline import rebuild
     out = []
     for page in rebuild.load_pages():
         if "feed/user/" not in page["url"]:

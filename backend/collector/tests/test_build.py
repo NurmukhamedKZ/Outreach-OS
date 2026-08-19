@@ -1,7 +1,7 @@
 """Пересборка: прогон читает и пишет в рамках своего run_id, не трогая чужой."""
 
-import services.store as engine
-from services.pipeline import rebuild
+import collector.services.store as engine
+from collector.services.pipeline import rebuild
 
 
 def test_rebuild_reads_own_run(stores):
@@ -47,7 +47,7 @@ def test_llm_answers_merge_both_stores(stores, tmp_path, monkeypatch):
     """
     import json
 
-    import services.storage as storage
+    import collector.services.storage as storage
 
     raw = tmp_path / "raw"
     raw.mkdir()
@@ -76,7 +76,7 @@ def test_llm_answer_from_db_wins_over_file(stores, tmp_path, monkeypatch):
     """Один и тот же запрос в обоих хранилищах — одна запись, свежая из базы."""
     import json
 
-    import services.storage as storage
+    import collector.services.storage as storage
 
     raw = tmp_path / "raw"
     raw.mkdir()

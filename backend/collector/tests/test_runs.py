@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-import services.storage as storage
-import services.store as engine
-from services.pipeline import rebuild
+import collector.services.storage as storage
+import collector.services.store as engine
+from collector.services.pipeline import rebuild
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"   # collector/fixtures
 CONTEXT = types.SimpleNamespace(log=lambda *a: None,
@@ -175,7 +175,7 @@ def test_unfinished_run_is_not_publishable(stores, monkeypatch):
     """
     from fastapi import HTTPException
 
-    from routes import runs as web_runs
+    from collector.routes import runs as web_runs
 
     db = stores
     _seed(db, 1, "живой")
@@ -195,7 +195,7 @@ def test_unfinished_run_is_not_publishable(stores, monkeypatch):
 def test_missing_run_is_not_publishable(stores):
     from fastapi import HTTPException
 
-    from routes import runs as web_runs
+    from collector.routes import runs as web_runs
 
     with pytest.raises(HTTPException) as refused:
         asyncio.run(web_runs.activate(404))

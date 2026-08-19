@@ -4,7 +4,7 @@
 разъехалась с правилами выдачи. F19/F21 не про формат, а про закон.
 """
 
-import services.store as engine
+import collector.services.store as engine
 
 
 def _published_run(db):
@@ -28,7 +28,7 @@ def test_web_leads_share_rules_with_csv(stores):
     Вместо сравнения с файлом (которого в тесте нет) проверяется сама пара
     правил — канал обязателен и отказ режет лида.
     """
-    from routes import leads as web_leads
+    from collector.routes import leads as web_leads
     db = stores
     _published_run(db)
     web = web_leads.leads(limit=10)["leads"]
@@ -38,7 +38,7 @@ def test_web_leads_share_rules_with_csv(stores):
 
 def test_refusal_does_not_leak_to_web(stores):
     """F21: отказ из state.suppression не доходит до веб-выдачи."""
-    from routes import leads as web_leads
+    from collector.routes import leads as web_leads
     db = stores
     _published_run(db)
     db.execute("INSERT INTO state.suppression (handle, added_at, reason)"

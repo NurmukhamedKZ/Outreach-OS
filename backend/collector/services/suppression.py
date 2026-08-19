@@ -1,6 +1,6 @@
 """Отказы: единственный источник истины — state.suppression (невосстановимый слой)."""
 
-from store import lead as store
+from collector.db import lead as store
 
 
 def refuse(db, handle, reason):

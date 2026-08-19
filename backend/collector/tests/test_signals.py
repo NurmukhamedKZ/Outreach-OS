@@ -89,7 +89,7 @@ def test_review_signal_types_have_weights(live_db):
     """Новые типы отзывов существуют в config.toml — сигналу нужна цена."""
     import tomllib
     from pathlib import Path
-    cfg = tomllib.loads(Path("config.toml").read_text(encoding="utf-8"))
+    cfg = tomllib.loads((Path(__file__).resolve().parent.parent / "config.toml").read_text(encoding="utf-8"))
     weights = cfg["scoring"]["intent"]
     for t in REVIEW_TYPES:
         assert t in weights, f"нет веса для {t} — сигнал не наберёт цену"
@@ -100,7 +100,7 @@ def test_reviews_missed_lead_picks_newest_one():
     """Дедуп жалоб одного типа: newest_review_match отдаёт не больше одной пары
     на вызов — иначе одинаковые (company_id, type, observed_at, url) от одного
     филиала столкнулись бы по PRIMARY KEY signals_all."""
-    from services.enrich import newest_review_match
+    from collector.services.enrich import newest_review_match
 
     reviews = [
         {"branch_id": "b1", "text": "не дозвонились вчера", "date_created": "2026-08-01"},
@@ -117,7 +117,7 @@ def test_reviews_missed_lead_picks_newest_one():
 
 
 def test_reviews_missed_lead_no_match_is_none():
-    from services.enrich import newest_review_match
+    from collector.services.enrich import newest_review_match
     assert newest_review_match([], [{"type": "не дозвонились", "quote": "нет такого отзыва"}]) is None
 
 
@@ -129,7 +129,7 @@ def test_reviews_quote_is_verbatim(live_db):
     """
     import gzip
     import json
-    import services.storage as storage
+    import collector.services.storage as storage
 
     quotes = live_db.execute(
         "SELECT quote FROM signals WHERE type LIKE 'reviews_%' AND length(quote) > 2"
@@ -152,7 +152,7 @@ SITE_AI_TYPES = {"site_hiring_sales", "site_no_pricing"}
 def test_site_ai_types_have_weights(live_db):
     import tomllib
     from pathlib import Path
-    weights = tomllib.loads(Path("config.toml").read_text(encoding="utf-8"))["scoring"]["intent"]
+    weights = tomllib.loads((Path(__file__).resolve().parent.parent / "config.toml").read_text(encoding="utf-8"))["scoring"]["intent"]
     for t in SITE_AI_TYPES:
         assert t in weights, f"нет веса для {t}"
 
@@ -163,14 +163,14 @@ IG_LAYER_TYPES = {"ig_unanswered_question", "ig_reach_declining"}
 def test_ig_layer_types_have_weights(live_db):
     import tomllib
     from pathlib import Path
-    weights = tomllib.loads(Path("config.toml").read_text(encoding="utf-8"))["scoring"]["intent"]
+    weights = tomllib.loads((Path(__file__).resolve().parent.parent / "config.toml").read_text(encoding="utf-8"))["scoring"]["intent"]
     for t in IG_LAYER_TYPES:
         assert t in weights, f"нет веса для {t}"
 
 
 def test_reach_trend_uses_median():
     """Один залетевший пост не создаёт ложный тренд — медиана, не среднее."""
-    from services import enrich
+    from collector.services import enrich
     posts = [{"taken_at": f"2026-08-0{i}T00:00:00Z", "likes": l}
              for i, l in enumerate([10, 12, 11, 13, 100, 8, 9, 10])]
     db = _memory_db()
@@ -181,7 +181,7 @@ def test_reach_trend_uses_median():
 
 def test_reach_trend_skips_short_feeds():
     """Лента короче 6 постов — отсутствие сигнала, а не нулевой."""
-    from services import enrich
+    from collector.services import enrich
     posts = [{"taken_at": f"2026-08-0{i}T00:00:00Z", "likes": l}
              for i, l in enumerate([20, 1, 20])]
     db = _memory_db()
@@ -206,7 +206,7 @@ def test_quote_is_verbatim_for_ai_signals(live_db):
     живому человеку. Собирается весь текст raw/ и каждая цитата ищется в нём.
     """
     import gzip
-    import services.storage as storage
+    import collector.services.storage as storage
 
     raw_text = ""
     for sidecar in sorted(storage.RAW.glob("*.json")):

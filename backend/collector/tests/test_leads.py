@@ -4,7 +4,7 @@
 сходится на тех же правилах через state.suppression.
 """
 
-import services.store as engine
+import collector.services.store as engine
 
 
 def _published_run(db, run_id=1):
@@ -29,7 +29,7 @@ def _published_run(db, run_id=1):
 
 def test_lead_without_channel_is_not_picked(stores):
     """F19: компания без рабочего канала — не лид."""
-    from services import leads as service
+    from collector.services import leads as service
     db = stores
     _published_run(db)
     db.execute("DELETE FROM contacts_all")   # каналов нет вовсе
@@ -40,7 +40,7 @@ def test_lead_without_channel_is_not_picked(stores):
 
 def test_refusal_filters_lead(stores):
     """F21: отказ из state.suppression убирает канал, а без канала — лид."""
-    from services import leads as service
+    from collector.services import leads as service
     db = stores
     _published_run(db)
     db.execute("INSERT INTO state.suppression (handle, added_at, reason)"
@@ -54,7 +54,7 @@ def test_refusal_filters_lead(stores):
 
 def test_second_channel_survives_refusal(stores):
     """Отказ на одном канале не рубит лида, если остался другой."""
-    from services import leads as service
+    from collector.services import leads as service
     db = stores
     _published_run(db)
     db.execute("INSERT INTO state.suppression (handle, added_at, reason)"
@@ -68,7 +68,7 @@ def test_second_channel_survives_refusal(stores):
 
 def test_every_lead_has_why_now(stores):
     """F20: у лида обоснование, а не голый скор."""
-    from services import leads as service
+    from collector.services import leads as service
     db = stores
     _published_run(db)
     found = service.pick(db, limit=10)
@@ -78,7 +78,7 @@ def test_every_lead_has_why_now(stores):
 
 def test_export_filters_refusals(stores, tmp_path, monkeypatch):
     """F21: отказ из state.suppression убирает канал, а без канала — лид."""
-    from services.pipeline import export as export_op
+    from collector.services.pipeline import export as export_op
     monkeypatch.setattr(export_op, "OUT", tmp_path / "leads.csv")   # не трогать боевой CSV
     db = stores
     _published_run(db)

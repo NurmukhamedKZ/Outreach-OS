@@ -15,9 +15,9 @@ import tomllib
 from contextlib import closing
 from pathlib import Path
 
-from store import lead as store
-from services import jobs
-from services import leads as leads_service
+from collector.db import lead as store
+from collector.services import jobs
+from collector.services import leads as leads_service
 
 WRITER_HOME = Path(__file__).resolve().parent.parent.parent / "writer"
 RECENT_JOBS = 5

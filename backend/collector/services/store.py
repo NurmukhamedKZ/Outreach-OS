@@ -16,7 +16,7 @@ DATA = Path(__file__).resolve().parent.parent / "data"
 DERIVED = DATA / "derived.db"
 STATE = DATA / "state.db"
 
-SCHEMA = Path(__file__).resolve().parent.parent / "store" / "schema.sql"
+SCHEMA = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
 
 
 def now():
@@ -43,7 +43,7 @@ def connect():
     """Соединение к derived.db с ATTACH state. Включает обе схемы.
 
     derived — главная (WAL), state — attached (WAL). Схема читается из
-    store/schema.sql и делится маркерами на две половины; DDL живёт в одном
+    db/schema.sql и делится маркерами на две половины; DDL живёт в одном
     файле, а не в двух местах.
 
     STATE-блок применяется к отдельному соединению, чьей ГЛАВНОЙ базой является

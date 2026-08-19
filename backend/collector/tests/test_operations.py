@@ -8,18 +8,20 @@ import inspect
 import re
 from pathlib import Path
 
-# Корень collector/ — там лежат services/, store/, db/.
 COLLECTOR = Path(__file__).resolve().parent.parent
+BACKEND_ROOT = COLLECTOR.parent   # корень абсолютных импортов: collector.X живёт здесь
 FORBIDDEN = ("services/fetch", "scrapling")
 
 
 def _resolve(root, node):
     """Кандидаты-пути, на которые может ссылаться Import/ImportFrom.
 
-    `from services import enrich` означает модуль services/enrich.py (services —
-    namespace-пакет без __init__.py). `from services.pipeline import X` — либо
-    services/pipeline.py, либо X-подмодуль. Возвращаем несколько кандидатов;
-    reachable_modules берёт только существующие.
+    `from collector.services import enrich` означает модуль services/enrich.py
+    относительно `root` (BACKEND_ROOT — dotted-путь включает сам пакет
+    `collector`, поэтому резолвить его надо на уровень выше COLLECTOR).
+    `from collector.services.pipeline import X` — либо services/pipeline.py,
+    либо X-подмодуль. Возвращаем несколько кандидатов; reachable_modules берёт
+    только существующие.
     """
     out = []
     if isinstance(node, ast.Import):
@@ -44,12 +46,12 @@ def reachable_modules(entry):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):
-                stack.extend(_resolve(COLLECTOR, node))
+                stack.extend(_resolve(BACKEND_ROOT, node))
     return seen
 
 
 def test_rebuild_import_graph_has_no_network():
-    from services.pipeline import rebuild
+    from collector.services.pipeline import rebuild
     modules = reachable_modules(rebuild.__file__)
     assert modules, "обход графа импортов не дошёл ни до одного модуля — walker сломан"
     for m in modules:
@@ -66,7 +68,7 @@ def test_every_operation_takes_exactly_a_runcontext():
     Параметры операций живут в config.toml — лишний обязательный аргумент
     означает, что кто-то протащил их в сигнатуру.
     """
-    from services.pipeline import OPERATIONS
+    from collector.services.pipeline import OPERATIONS
 
     for name, operation in OPERATIONS.items():
         signature = inspect.signature(operation)
@@ -80,43 +82,43 @@ def test_every_operation_takes_exactly_a_runcontext():
 
 def test_reviews_op_accepts_runcontext():
     """Операция сбора отзывов принимает RunContext и возвращает dict."""
-    from services.pipeline import collect
+    from collector.services.pipeline import collect
     assert callable(collect.reviews)
 
 
 def test_reviews_analyze_op_accepts_runcontext():
     """Слой анализа отзывов принимает RunContext."""
-    from services.pipeline import analyze
+    from collector.services.pipeline import analyze
     assert callable(analyze.reviews)
 
 
 def test_site_pages_op_accepts_runcontext():
     """Сбор внутренних страниц сайта принимает RunContext."""
-    from services.pipeline import collect
+    from collector.services.pipeline import collect
     assert callable(collect.site_pages)
 
 
 def test_site_analyze_op_accepts_runcontext():
     """Слой анализа сайта принимает RunContext."""
-    from services.pipeline import analyze
+    from collector.services.pipeline import analyze
     assert callable(analyze.site)
 
 
 def test_ig_comments_op_accepts_runcontext():
     """Сбор комментариев и профилей Instagram принимает RunContext."""
-    from services.pipeline import collect
+    from collector.services.pipeline import collect
     assert callable(collect.ig_comments) and callable(collect.ig_profile)
 
 
 def test_instagram_analyze_op_accepts_runcontext():
     """Слой анализа Instagram принимает RunContext."""
-    from services.pipeline import analyze
+    from collector.services.pipeline import analyze
     assert callable(analyze.instagram)
 
 
 def test_dossier_analyze_op_accepts_runcontext():
     """Слой синтеза досье принимает RunContext."""
-    from services.pipeline import analyze
+    from collector.services.pipeline import analyze
     assert callable(analyze.dossier)
 
 
@@ -132,7 +134,7 @@ def test_operations_use_the_context_they_are_given():
     именно в теле значило бы запрещать это. ctx.progress не требуется: пробе из
     двух запросов нечего показывать в счётчике.
     """
-    from services.pipeline import OPERATIONS
+    from collector.services.pipeline import OPERATIONS
 
     for name, operation in OPERATIONS.items():
         source = inspect.getsource(inspect.getmodule(operation))
@@ -177,7 +179,7 @@ def test_no_operation_writes_to_both_dbs():
     """
     root = COLLECTOR
     modules = sorted((root / "services").rglob("*.py")) + sorted((root / "routes").rglob("*.py"))
-    modules += [root / "store" / "lead.py", root.parent / "writer" / "thread_store.py"]
+    modules += [root / "db" / "lead.py", root.parent / "writer" / "thread_store.py"]
 
     for path in modules:
         if path.name == "store.py":
