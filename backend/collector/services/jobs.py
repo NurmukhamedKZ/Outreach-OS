@@ -203,6 +203,7 @@ def make_context(job_id):
     ctx = SimpleNamespace(
         check_cancelled=check_cancelled, progress=progress, log=log,
         cancel=lambda: state.update(cancelled=True),
+        job_id=job_id,
     )
     _current_ctx = (job_id, ctx)   # cancel(job_id) находит активный контекст
     return ctx, state

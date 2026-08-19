@@ -32,26 +32,36 @@ def test_prompt_carries_context_history_and_task():
     assert "3" in agent.followup_task(3, ["ads_platform"]), "в follow-up не видно, сколько молчат"
 
 
-def test_system_role_carries_offer():
+def test_system_role_carries_offer(monkeypatch):
     # Системная роль несёт оффер из конфига: без него модель напишет письмо про
     # услугу, которой у нас нет.
+    import observability
+    monkeypatch.setattr(observability.settings, "langfuse_public_key", None)
+    monkeypatch.setattr(observability.settings, "langfuse_secret_key", None)
+    observability.langfuse_handler.cache_clear()
+
     seed = {"name": "Ромашка", "city": "almaty",
             "dossier": {"summary": "бухгалтерия", "hooks": [], "pains": [],
                         "approach": "заходить через рост", "sources": []},
             "signals": []}
     fake = FakeModel(Draft(text="Здравствуйте!", angle="ads_platform"))
-    result = agent.draft(fake, seed, [], agent.REPLY, offer=CONFIG["offer"]["text"])
+    result = agent.draft(fake, seed, [], agent.REPLY,
+                          session_id="thread-1", name="writer.reply",
+                          offer=CONFIG["offer"]["text"])
     assert result.angle == "ads_platform", result
     assert fake.seen[0][0] == "system", fake.seen[0]
     assert CONFIG["offer"]["text"].strip()[:40] in fake.seen[0][1], "оффер не дошёл до модели"
+    assert fake.seen_config["run_name"] == "writer.reply"
+    assert fake.seen_config["metadata"]["langfuse_session_id"] == "thread-1"
+    assert fake.seen_config["callbacks"] == []
 
 
 class FakeModel:
     """Заглушка вместо сети: проверяем, что уходит в модель, а не что она вернёт."""
 
     def __init__(self, answer):
-        self.answer, self.seen = answer, None
+        self.answer, self.seen, self.seen_config = answer, None, None
 
-    def invoke(self, messages):
-        self.seen = messages
+    def invoke(self, messages, config=None):
+        self.seen, self.seen_config = messages, config
         return self.answer

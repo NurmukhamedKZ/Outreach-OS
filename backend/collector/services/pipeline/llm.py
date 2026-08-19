@@ -11,6 +11,7 @@ from langchain_openrouter import ChatOpenRouter
 
 from collector.services import storage
 from config import settings
+from observability import langfuse_handler
 
 MAX_RETRIES = 2
 REASONING = {"enabled": False}
@@ -24,6 +25,18 @@ def structured_model(model, schema):
         model=model, api_key=settings.openrouter_api_key,
         temperature=0, max_retries=MAX_RETRIES, reasoning=REASONING,
     ).with_structured_output(schema, method="json_schema")
+
+
+def invoke(llm_model, messages, *, session_id, name, subject):
+    """Реальный вызов модели — обёрнут langfuse-callback'ом. Кэш-хиты сюда не
+    попадают: вызывающая сторона решает invoke() только на ветке без кэша."""
+    handler = langfuse_handler()
+    config = {
+        "run_name": name,
+        "metadata": {"langfuse_session_id": session_id, "langfuse_tags": [name]},
+        "callbacks": [handler] if handler else [],
+    }
+    return llm_model.invoke(messages, config=config)
 
 
 def store_answer(db, kind, subject, model, prompt, answer):

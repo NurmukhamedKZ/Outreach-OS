@@ -11,6 +11,7 @@ draft -> правка оператора -> отправка требует, ч�
 
 from langchain_openrouter import ChatOpenRouter
 
+import observability
 from config import settings
 from writer.schemas.outreach import Draft
 
@@ -52,11 +53,19 @@ def model(config):
     ).with_structured_output(Draft, method="json_schema")
 
 
-def draft(llm, seed, history, task, offer=""):
-    return llm.invoke([
-        ("system", SYSTEM.format(offer=offer)),
-        ("human", prompt(seed, history, task)),
-    ])
+def draft(llm, seed, history, task, *, session_id, name, offer=""):
+    handler = observability.langfuse_handler()
+    return llm.invoke(
+        [
+            ("system", SYSTEM.format(offer=offer)),
+            ("human", prompt(seed, history, task)),
+        ],
+        config={
+            "run_name": name,
+            "metadata": {"langfuse_session_id": session_id, "langfuse_tags": [name]},
+            "callbacks": [handler] if handler else [],
+        },
+    )
 
 
 FIRST = (

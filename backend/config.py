@@ -13,6 +13,9 @@ class Settings(BaseSettings):
 
     serper_api_key: str | None = None
     openrouter_api_key: str | None = None
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
+    langfuse_host: str | None = None
 
 
 settings = Settings()

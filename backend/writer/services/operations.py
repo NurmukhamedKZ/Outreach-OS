@@ -26,7 +26,9 @@ def open_new_threads(ctx):
             ctx.check_cancelled()
             ctx.progress(number, len(fresh), lead["seed"]["name"])
             thread_store.open_thread(threads, lead["thread_id"], lead["company_id"], lead["seed"])
-            proposal = agent.draft(llm, lead["seed"], [], agent.FIRST, offer=CONFIG["offer"]["text"])
+            proposal = agent.draft(llm, lead["seed"], [], agent.FIRST,
+                                    session_id=lead["thread_id"], name="writer.first",
+                                    offer=CONFIG["offer"]["text"])
             if proposal.stop:
                 ctx.log(f"{lead['seed']['name']}: агент советует не писать — повода в данных нет")
                 continue

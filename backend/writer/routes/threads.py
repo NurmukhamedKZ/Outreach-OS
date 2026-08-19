@@ -80,6 +80,7 @@ def make_draft(company_id: str, request: DraftRequest):
         history = thread_store.history(threads, channel[1])
         task = task_of(request.kind, threads, thread)
         proposal = agent.draft(agent.model(CONFIG), thread["seed"], history, task,
+                               session_id=channel[1], name=f"writer.{request.kind}",
                                offer=CONFIG["offer"]["text"])
         if not proposal.stop:
             thread_store.add_draft(threads, channel[1], proposal.text, proposal.angle)

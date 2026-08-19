@@ -16,6 +16,12 @@ def test_pipelines_catalogue_consistent(stores):
     jobs.check_pipelines()
 
 
+def test_context_carries_job_id(stores):
+    job_id = jobs.enqueue_steps("custom", "Тест job_id", ["export"])
+    ctx, _state = jobs.make_context(job_id)
+    assert ctx.job_id == job_id
+
+
 def test_job_lifecycle(stores, tmp_path, monkeypatch):
     """Джоба доходит до done; результат операции попадает в state.jobs."""
     from collector.services.pipeline import export as export_op
