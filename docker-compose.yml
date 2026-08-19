@@ -1,8 +1,7 @@
 # Тот же контур, что и `README.md`: два процесса, browser'у нужен только 3000.
-# writer — не отдельный сервис: его роутер монтируется в api.py (collector/api.py),
-# а .venv собирается тем же образом backend'а, потому что операции системы 2
-# вызываются в том же процессе воркера джобов (services/jobs.py), а writer
-# монтируется через sys.path.
+# writer — не отдельный сервис: его роутер монтируется в api.py (backend/collector/api.py),
+# а venv у него общий с collector'ом (backend/pyproject.toml), потому что операции системы 2
+# вызываются в том же процессе воркера джобов (collector/services/jobs.py).
 #
 # Перед первым запуском: cp collector/.env.example collector/.env и вписать ключи —
 # без них поднимутся сбор/пересборка/веб, но не analyze.* и probe.serp.
@@ -12,21 +11,21 @@
 services:
   backend:
     build:
-      context: .
-      dockerfile: collector/Dockerfile
+      context: ./backend
+      dockerfile: Dockerfile
     ports:
       - "8787:8787"
     env_file:
-      - path: collector/.env
+      - path: backend/collector/.env
         required: false
     volumes:
       # Сырьё и базы — невосстановимые или производные слои (см. CLAUDE.md),
       # им место на хосте, а не в слоях образа.
-      - ./collector/data:/app/collector/data
-      - ./collector/config.toml:/app/collector/config.toml
-      - ./collector/.env:/app/collector/.env
-      - ./writer/config.toml:/app/writer/config.toml
-      - ./writer/.env:/app/writer/.env
+      - ./backend/collector/data:/app/collector/data
+      - ./backend/collector/config.toml:/app/collector/config.toml
+      - ./backend/collector/.env:/app/collector/.env
+      - ./backend/writer/config.toml:/app/writer/config.toml
+      - ./backend/writer/.env:/app/writer/.env
 
   frontend:
     build:
