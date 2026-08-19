@@ -4,7 +4,7 @@
 следующий ход агента строился бы на сообщении, которого лид не получал.
 """
 
-import thread_store
+from writer.db import thread_store
 
 
 def test_draft_stays_out_of_history_until_confirmed():

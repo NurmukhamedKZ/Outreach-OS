@@ -1,11 +1,11 @@
 """Отбор кандидатов: F19 и F21 воспроизведены запросом, не импортом collector'а.
 
-База формы collector'а строится из collector/store/schema.sql (см. conftest):
+База формы collector'а строится из collector/db/schema.sql (см. conftest):
 всегда та же форма, что у живого derived.db, иначе проверка прошла бы на
 выдуманной таблице.
 """
 
-import leads_source
+from writer.db import leads_source
 
 
 def _seed(db, run_id=1):

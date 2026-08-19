@@ -8,7 +8,7 @@ collector/ (uvicorn, который монтирует роутер writer'а). 
 import tomllib
 from pathlib import Path
 
-HOME = Path(__file__).resolve().parent
+HOME = Path(__file__).resolve().parent.parent
 
 
 def load():

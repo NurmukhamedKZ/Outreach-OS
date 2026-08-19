@@ -1,8 +1,7 @@
 """Промпт хода: контекст лида, состоявшаяся переписка и задача — и ничего сверх."""
 
-import agent
-import config
-from schemas.outreach import Draft
+from writer.services import agent, config
+from writer.schemas.outreach import Draft
 
 CONFIG = config.load()
 

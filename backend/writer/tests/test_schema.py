@@ -5,7 +5,7 @@
 модель нарушает ровно в тех случаях, ради которых написана система 2.
 """
 
-from schemas.outreach import BANNED, MAX_CHARS, Draft
+from writer.schemas.outreach import BANNED, MAX_CHARS, Draft
 
 
 def test_draft_passes():

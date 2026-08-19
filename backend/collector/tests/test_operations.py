@@ -179,7 +179,7 @@ def test_no_operation_writes_to_both_dbs():
     """
     root = COLLECTOR
     modules = sorted((root / "services").rglob("*.py")) + sorted((root / "routes").rglob("*.py"))
-    modules += [root / "db" / "lead.py", root.parent / "writer" / "thread_store.py"]
+    modules += [root / "db" / "lead.py", root.parent / "writer" / "db" / "thread_store.py"]
 
     for path in modules:
         if path.name == "store.py":

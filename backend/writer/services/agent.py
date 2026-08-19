@@ -11,7 +11,7 @@ draft -> правка оператора -> отправка требует, ч�
 
 from langchain_openrouter import ChatOpenRouter
 
-from schemas.outreach import Draft
+from writer.schemas.outreach import Draft
 
 MAX_RETRIES = 2
 

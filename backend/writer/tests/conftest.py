@@ -1,7 +1,7 @@
 """Соединение формы collector'а: derived + view + ATTACH state.suppression.
 
 Writer — отдельный uv-проект, services.store ему недоступен. Он собирает
-соединение сам, разбив collector/store/schema.sql на две половины (та же логика,
+соединение сам, разбив collector/db/schema.sql на две половины (та же логика,
 что store._schema), и передаёт его чистым функциям leads_source.* (они принимают
 соединение параметром).
 
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-COLLECTOR_SCHEMA = Path(__file__).resolve().parent.parent.parent / "collector" / "store" / "schema.sql"
+COLLECTOR_SCHEMA = Path(__file__).resolve().parent.parent.parent / "collector" / "db" / "schema.sql"
 
 
 def _part(marker, text):

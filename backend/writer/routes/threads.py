@@ -1,14 +1,15 @@
 """HTTP над threads.db для консоли оператора. Монтируется в collector/api.py.
 
-Файл называется web.py, а не api.py: имя api уже занято модулем collector'а, и
-два одноимённых модуля в одном процессе столкнулись бы в sys.modules.
+Роутер лежит в routes/threads.py, а не api.py: имя api уже занято модулем
+collector'а, и два одноимённых модуля в одном процессе столкнулись бы в
+sys.modules.
 
 Отказ здесь не оформляется: он уже полностью умеет collector
 (POST /api/suppression), а вторая точка входа в юридический контур — это второй
 шанс разойтись с suppression.csv. Writer только проверяет отказ перед каждым
 ходом (F21).
 
-Проверка: uv run -m web
+Проверка: uv run -m writer.routes.threads
 """
 
 import os
@@ -16,10 +17,8 @@ import os
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-import agent
-import config
-import leads_source
-import thread_store
+from writer.services import agent, config
+from writer.db import leads_source, thread_store
 
 router = APIRouter(prefix="/api/threads")
 
