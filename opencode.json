@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "langfuse": {
+      "type": "remote",
+      "url": "http://109.199.125.111:3000/api/public/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Basic {env:LANGFUSE_MCP_AUTH}"
+      }
+    }
+  }
+}

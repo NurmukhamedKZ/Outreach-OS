@@ -63,6 +63,19 @@ reload-режима: `uv run uvicorn main:app --port 8787 --reload`.
 `backend/.env.example`); без них работают сбор/пересборка/веб, но не операции
 `analyze.*`, `probe.serp` и черновики системы 2.
 
+**`observability.py` — единственная точка подключения Langfuse**, тем же
+принципом, что `config.py` для секретов: берёт `LANGFUSE_PUBLIC_KEY`/
+`LANGFUSE_SECRET_KEY`/`LANGFUSE_HOST` из `settings`, отдаёт
+`langfuse.langchain.CallbackHandler` (`None`, если ключей нет — трейсинг молча
+выключен, LLM-вызовы работают как обычно). Handler цепляется в
+`config={"callbacks": [...]}` на каждом `.invoke()` в
+`collector/services/pipeline/llm.py::invoke()` и `writer/services/agent.py::draft()`
+— единственных двух местах, где продукт реально ходит в LLM. Трейсы
+группируются в сессию Langfuse по `job_id` (collector) или `thread_id`
+(writer). Self-host Langfuse — `http://109.199.125.111:3000`. Кэш-хиты
+`state.llm_answers` в Langfuse не попадают: трейсится только вызов, не
+попавший в кэш.
+
 ## Архитектура collector/ (система 1)
 
 **`services/pipeline/rebuild.py` — граница системы.** Слева от неё — сбор и
