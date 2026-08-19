@@ -1,7 +1,7 @@
 """HTTP над derived.db для веб-интерфейса. Читает то же, что выгружает export.
 
 Здесь только сборка приложения. Эндпоинты — в routes/, отбор лидов и отказы —
-в services/, запросы к базе — в store/lead.py рядом со схемой.
+в services/, запросы к базе — в db/lead.py рядом со схемой.
 
 В derived.db пишет только rebuild (прогонами), в state.db — джобы, отказы и
 переписка. Единственное, что возвращается в систему от человека, — отказ, и он
@@ -15,25 +15,22 @@
 """
 
 import asyncio
-import sys
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from collector.routes import events, jobs, leads, operations, pipeline, runs, stats, suppression
 from collector.services import jobs as queue
+from collector.services.pipeline import OPERATIONS, PIPELINES
+from sender import stub as sender
+from writer.routes import threads as writer
+from writer.services import operations as writer_operations
 
-# Система 2 живёт своим проектом и своей базой; здесь только склейка, чтобы у
-# оператора остались одна консоль и один порт. Каталог добавляется в путь
-# целиком: writer импортирует свои модули по коротким именам, как делает и сам
-# collector. Стаб системы 3 называется stub.py: имена web и api заняты модулями
-# collector и writer, а точка входа у стаба одна и зависимости пусты.
-sys.path.append(str(Path(__file__).resolve().parent.parent / "writer"))
-sys.path.append(str(Path(__file__).resolve().parent.parent / "sender"))
-import stub as sender  # noqa: E402
-import web as writer  # noqa: E402
+# Единственное место, где collector знает о существовании writer'а — тот же
+# шов, что монтирует его роутер: подключает операцию очереди в общий реестр.
+OPERATIONS["writer.outreach"] = writer_operations.open_new_threads
+PIPELINES["write"] = {"title": "Черновики топ-N", "steps": ("writer.outreach",)}
 
 WEB_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 

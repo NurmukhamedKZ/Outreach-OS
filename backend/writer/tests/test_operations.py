@@ -64,3 +64,13 @@ def test_open_new_threads_skips_existing_threads_and_drafts_only_new(monkeypatch
     assert result == {"drafted": 1}
     assert drafted == ["t2"]
     assert any("Beta" in line for line in ctx.logs)
+
+
+def test_write_pipeline_is_registered_in_collector_queue():
+    import collector.api  # noqa: F401 — импорт наполняет реестр операций
+    from collector.services.jobs import check_pipelines
+    from collector.services.pipeline import OPERATIONS, PIPELINES
+
+    assert "writer.outreach" in OPERATIONS
+    assert PIPELINES["write"]["steps"] == ("writer.outreach",)
+    check_pipelines()
