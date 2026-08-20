@@ -68,3 +68,30 @@ def test_plan_coverage_matches_config(rubric_pages):
                  (page["match"] for page in rubric_pages)}
     planned = {(city, rubric) for city in cities for rubric in rubrics}
     assert collected <= planned, f"собрано вне плана: {sorted(collected - planned)}"
+
+
+def test_in_parallel_propagates_job_id_and_isolates_entity_per_task(monkeypatch):
+    """ThreadPoolExecutor переиспользует воркер-потоки между заданиями: без
+    явного проброса job_id и reset entity на каждое задание чужой домен или
+    чужая джоба утекли бы в лог следующего задания, выполненного на том же
+    потоке пула."""
+    import logctx
+    from collector.services.pipeline import collect
+
+    monkeypatch.setattr(collect, "MAX_WORKERS", 2)   # 2 потока на 6 заданий — гарантированное переиспользование
+
+    seen = []
+
+    def worker(budget, job):
+        seen.append((job, logctx.current_job_id(), logctx.current_entity()))
+        return None
+
+    jobs = [f"job-{i}" for i in range(6)]
+    with logctx.job("outer-job-1"):
+        list(collect.in_parallel(worker, None, jobs))
+
+    assert logctx.current_job_id() is None, "job_id утёк из in_parallel в вызывающий поток"
+    assert len(seen) == 6
+    for job, job_id, entity in seen:
+        assert job_id == "outer-job-1", f"{job}: неверный job_id внутри потока — {job_id}"
+        assert entity == job, f"{job}: чужая entity внутри потока — {entity}"

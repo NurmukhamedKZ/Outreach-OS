@@ -21,6 +21,7 @@ from functools import partial
 from pathlib import Path
 from threading import Lock
 
+import logctx
 from collector.services import fetch
 from collector.services import sources
 from collector.services import storage
@@ -511,9 +512,23 @@ def in_parallel(worker, budget, jobs):
 
     Отдаёт (номер, задание, результат, ошибка) по мере готовности. Печать — дело
     вызывающего: в рабочих функциях print не появляется, они бегут в потоках.
+
+    job_id пробрасывается в пул явно: ThreadPoolExecutor не копирует
+    contextvars вызывающего потока в свои воркер-потоки (в отличие от
+    asyncio.to_thread). entity ставится и сбрасывается на каждое задание —
+    пул переиспользует воркер-потоки между заданиями, и без reset домен
+    предыдущего задания утёк бы в лог следующего, выполненного на том же
+    потоке.
     """
+    job_id = logctx.current_job_id()
+
+    def run(job):
+        logctx.set_job_id(job_id)
+        with logctx.entity(str(job)):
+            return worker(budget, job)
+
     with ThreadPoolExecutor(MAX_WORKERS) as pool:
-        futures = {pool.submit(partial(worker, budget), job): job for job in jobs}
+        futures = {pool.submit(run, job): job for job in jobs}
         for number, future in enumerate(as_completed(futures), 1):
             try:
                 yield number, futures[future], future.result(), None
