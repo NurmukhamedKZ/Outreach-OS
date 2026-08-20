@@ -74,3 +74,31 @@ def test_write_pipeline_is_registered_in_collector_queue():
     assert "writer.outreach" in OPERATIONS
     assert PIPELINES["write"]["steps"] == ("writer.outreach",)
     check_pipelines()
+
+
+def test_open_new_threads_tags_draft_calls_with_thread_id(monkeypatch):
+    import logctx
+
+    monkeypatch.setattr(operations.settings, "openrouter_api_key", "test-key")
+
+    candidates = [{"thread_id": "t9", "company_id": "c9", "seed": {"name": "Gamma"}}]
+    monkeypatch.setattr(operations.leads_source, "connect", lambda path: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(operations.leads_source, "candidates", lambda db, limit: candidates)
+    monkeypatch.setattr(operations.thread_store, "connect", lambda path: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(operations.thread_store, "thread", lambda db, thread_id: False)
+    monkeypatch.setattr(operations.thread_store, "open_thread", lambda *a: None)
+    monkeypatch.setattr(operations.thread_store, "add_draft", lambda *a: None)
+    monkeypatch.setattr(operations.agent, "model", lambda config: "llm-stub")
+
+    seen_entity = []
+
+    def fake_draft(*a, **kw):
+        seen_entity.append(logctx.current_entity())
+        return SimpleNamespace(stop=False, text="hi", angle="pain")
+
+    monkeypatch.setattr(operations.agent, "draft", fake_draft)
+
+    operations.open_new_threads(DummyCtx())
+
+    assert seen_entity == ["t9"]
+    assert logctx.current_entity() is None, "entity не сброшена после джобы"

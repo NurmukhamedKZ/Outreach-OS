@@ -9,6 +9,8 @@ from config import settings
 from writer.services import agent, config
 from writer.db import leads_source, thread_store
 
+import logctx
+
 CONFIG = config.load()
 
 
@@ -25,15 +27,16 @@ def open_new_threads(ctx):
         for number, lead in enumerate(fresh, 1):
             ctx.check_cancelled()
             ctx.progress(number, len(fresh), lead["seed"]["name"])
-            thread_store.open_thread(threads, lead["thread_id"], lead["company_id"], lead["seed"])
-            proposal = agent.draft(llm, lead["seed"], [], agent.FIRST,
-                                    session_id=lead["thread_id"], name="writer.first",
-                                    offer=CONFIG["offer"]["text"])
-            if proposal.stop:
-                ctx.log(f"{lead['seed']['name']}: агент советует не писать — повода в данных нет")
-                continue
-            thread_store.add_draft(threads, lead["thread_id"], proposal.text, proposal.angle)
-            ctx.log(f"{lead['seed']['name']}: черновик готов ({proposal.angle})")
+            with logctx.entity(lead["thread_id"]):
+                thread_store.open_thread(threads, lead["thread_id"], lead["company_id"], lead["seed"])
+                proposal = agent.draft(llm, lead["seed"], [], agent.FIRST,
+                                        session_id=lead["thread_id"], name="writer.first",
+                                        offer=CONFIG["offer"]["text"])
+                if proposal.stop:
+                    ctx.log(f"{lead['seed']['name']}: агент советует не писать — повода в данных нет")
+                    continue
+                thread_store.add_draft(threads, lead["thread_id"], proposal.text, proposal.angle)
+                ctx.log(f"{lead['seed']['name']}: черновик готов ({proposal.angle})")
         return {"drafted": len(fresh)}
     finally:
         leads.close()
