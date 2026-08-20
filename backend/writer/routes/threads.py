@@ -15,6 +15,7 @@ sys.modules.
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+import logctx
 from config import settings
 from writer.services import agent, config
 from writer.db import leads_source, thread_store
@@ -66,28 +67,29 @@ def make_draft(company_id: str, request: DraftRequest):
         raise HTTPException(400, f"ход {request.kind!r} не бывает: {list(KINDS)}")
     require_api_key()
 
-    leads, threads = open_stores()
-    try:
-        channel = channel_of(leads, company_id)
-        thread = thread_store.thread(threads, channel[1])
-        if not thread:
-            seed = leads_source.seed_of(leads, company_id)
-            if not seed:
-                raise HTTPException(404, f"компании {company_id} нет в базе лидов")
-            thread_store.open_thread(threads, channel[1], company_id, seed)
+    with logctx.entity(company_id):
+        leads, threads = open_stores()
+        try:
+            channel = channel_of(leads, company_id)
             thread = thread_store.thread(threads, channel[1])
+            if not thread:
+                seed = leads_source.seed_of(leads, company_id)
+                if not seed:
+                    raise HTTPException(404, f"компании {company_id} нет в базе лидов")
+                thread_store.open_thread(threads, channel[1], company_id, seed)
+                thread = thread_store.thread(threads, channel[1])
 
-        history = thread_store.history(threads, channel[1])
-        task = task_of(request.kind, threads, thread)
-        proposal = agent.draft(agent.model(CONFIG), thread["seed"], history, task,
-                               session_id=channel[1], name=f"writer.{request.kind}",
-                               offer=CONFIG["offer"]["text"])
-        if not proposal.stop:
-            thread_store.add_draft(threads, channel[1], proposal.text, proposal.angle)
-        return {**state(leads, threads, company_id), "stop": proposal.stop}
-    finally:
-        leads.close()
-        threads.close()
+            history = thread_store.history(threads, channel[1])
+            task = task_of(request.kind, threads, thread)
+            proposal = agent.draft(agent.model(CONFIG), thread["seed"], history, task,
+                                   session_id=channel[1], name=f"writer.{request.kind}",
+                                   offer=CONFIG["offer"]["text"])
+            if not proposal.stop:
+                thread_store.add_draft(threads, channel[1], proposal.text, proposal.angle)
+            return {**state(leads, threads, company_id), "stop": proposal.stop}
+        finally:
+            leads.close()
+            threads.close()
 
 
 @router.post("/{company_id}/sent")
