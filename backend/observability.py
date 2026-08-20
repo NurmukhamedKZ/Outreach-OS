@@ -3,9 +3,12 @@ config.py для секретов. Без ключей трейсинг молч
 должна быть обязательной зависимостью для отправки писем или анализа лидов.
 """
 
+import logging
 from functools import lru_cache
 
 from config import settings
+
+_trace_logger = logging.getLogger("observability")
 
 
 @lru_cache
@@ -21,3 +24,25 @@ def langfuse_handler():
         host=settings.langfuse_host,
     )
     return CallbackHandler()
+
+
+def log_trace(handler):
+    """Строка в backend.log со ссылкой на Langfuse-трейс рядом с LLM-вызовом
+    — чтобы прыгать из лога прямо в промпт/ответ, не открывая Langfuse UI
+    руками и не гадая, какой из трейсов сессии это был.
+
+    get_trace_url() при первом вызове ходит в сеть за project_id (см. SDK) —
+    self-host недоступен точно так же, как любой другой сервис, и эта
+    ссылка — необязательное удобство, а не часть протокола LLM-вызова.
+    """
+    if not handler or not handler.last_trace_id:
+        return
+    import langfuse
+
+    try:
+        url = langfuse.get_client().get_trace_url(trace_id=handler.last_trace_id)
+    except Exception:
+        _trace_logger.warning("не удалось получить ссылку на Langfuse-трейс", exc_info=True)
+        return
+    if url:
+        _trace_logger.info(f"langfuse trace {url}")
