@@ -4,10 +4,15 @@ import { useEffect, useState } from "react";
 import {
   CHANNEL_LABELS,
   SIGNAL_LABELS,
+  addIncoming,
   channelLink,
+  fetchConversation,
   fetchLead,
+  markSent,
   refuse,
+  requestDraft,
   type Channel,
+  type Conversation,
   type LeadDetail,
 } from "./api";
 
@@ -100,6 +105,8 @@ export default function LeadCard({
         </>
       )}
 
+      <Thread companyId={companyId} />
+
       <RefusalForm
         channel={lead.channel}
         onDone={() => {
@@ -144,6 +151,112 @@ function ChannelRow({ channel, primary }: { channel: Channel; primary: boolean }
   );
 }
 
+/** Переписка с лидом. Черновик правится прямо здесь: в историю треда попадает
+ *  то, что оператор реально отправил, — иначе следующий ход агента строился бы
+ *  на сообщении, которого лид не получал. */
+function Thread({ companyId }: { companyId: string }) {
+  const [conversation, setConversation] = useState<Conversation | null>(null);
+  const [text, setText] = useState("");
+  const [reply, setReply] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  useEffect(() => {
+    let stale = false;
+    fetchConversation(companyId)
+      .then((data) => !stale && apply(data))
+      .catch((error) => !stale && setFailure((error as Error).message));
+    return () => {
+      stale = true;
+    };
+  }, [companyId]);
+
+  function apply(data: Conversation) {
+    setConversation(data);
+    setText(data.draft?.draft_text ?? "");
+  }
+
+  async function run(action: () => Promise<Conversation>) {
+    setBusy(true);
+    setFailure(null);
+    try {
+      apply(await action());
+    } catch (error) {
+      setFailure((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!conversation) return <p className="placeholder">Переписка: загрузка…</p>;
+
+  // Ход выбирается по последней реплике: после ответа лида нужен ответ, после
+  // нашего сообщения — новый повод. Молчание отличается от диалога только этим.
+  const last = conversation.messages[conversation.messages.length - 1];
+  const kind = !last ? "first" : last.role === "incoming" ? "reply" : "followup";
+
+  return (
+    <section className="thread">
+      <h3>Переписка · {conversation.thread_id}</h3>
+
+      <ol className="thread-log">
+        {conversation.messages.map((message, index) => (
+          <li key={index} className={message.role}>
+            <span className="thread-who">{message.role === "outgoing" ? "мы" : "они"}</span>
+            <span>{message.text}</span>
+          </li>
+        ))}
+        {conversation.messages.length === 0 && <li className="placeholder">Ещё не писали.</li>}
+      </ol>
+
+      {conversation.draft ? (
+        <div className="thread-draft">
+          <textarea value={text} onChange={(event) => setText(event.target.value)} rows={6} />
+          <p className="note">
+            Угол: <span className="mono">{conversation.draft.angle}</span>. Правьте текст здесь —
+            в историю уйдёт отправленный вариант, исходный черновик сохранится рядом.
+          </p>
+          <button disabled={busy || !text.trim()} onClick={() => run(() => markSent(companyId, text))}>
+            Отправлено
+          </button>
+        </div>
+      ) : (
+        <button disabled={busy} onClick={() => run(() => requestDraft(companyId, kind))}>
+          {kind === "first"
+            ? "Черновик первого сообщения"
+            : kind === "reply"
+              ? "Черновик ответа"
+              : "Черновик с новым поводом"}
+        </button>
+      )}
+
+      {conversation.messages.length > 0 && (
+        <form
+          className="thread-reply"
+          onSubmit={(event) => {
+            event.preventDefault();
+            run(() => addIncoming(companyId, reply)).then(() => setReply(""));
+          }}
+        >
+          <input
+            value={reply}
+            onChange={(event) => setReply(event.target.value)}
+            placeholder="Ответ лида — вставить как есть"
+          />
+          <button type="submit" disabled={busy || !reply.trim()}>
+            Записать ответ
+          </button>
+        </form>
+      )}
+
+      {conversation.stop && (
+        <p className="note">Агент советует не писать: нового повода в данных нет.</p>
+      )}
+      {failure && <p className="failure">{failure}</p>}
+    </section>
+  );
+}
+
 /** Отказ — единственное, что возвращается в систему от человека (PRD F21).
  *  Причина обязательна: список никогда не очищается, и через полгода объяснить
  *  запись будет некому. */
@@ -184,8 +297,8 @@ function RefusalForm({ channel, onDone }: { channel: Channel | null; onDone: () 
         </button>
       </form>
       <p className="note">
-        Запись уходит в <code className="mono">suppression.csv</code> и переживает пересборку
-        базы. Отменить нельзя — список не очищается.
+        Запись уходит в <code className="mono">state.suppression</code> и переживает
+        пересборку базы. Отменить нельзя — список не очищается.
       </p>
       {failure && <p className="failure">{failure}</p>}
     </div>

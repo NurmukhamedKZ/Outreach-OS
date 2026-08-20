@@ -1,0 +1,269 @@
+"""Разбор источников: чистые функции от сырья к строкам.
+
+Тела перенесены из рабочих скриптов дословно. Разбор проверен на живых данных
+августа 2026 и не улучшается: каждая его строка написана против конкретной
+особенности источника.
+
+Здесь нет ни сети, ни диска, ни print. Это условие того, что build.py остаётся
+чистой функцией от raw/ к leads.db, а рабочие скрипты и build.py разбирают одну
+и ту же страницу одинаково — второй копии разбора в проекте не существует.
+"""
+
+import json
+import re
+from datetime import datetime, timezone
+
+INITIAL_STATE = re.compile(r"var initialState = JSON\.parse\('(.*?)'\);", re.S)
+
+CONTACT_KINDS = ("phone", "website", "email", "instagram", "whatsapp")
+FIRM_URL = "https://2gis.kz/{city}/firm/{branch_id}"
+
+IG_POST_URL = "https://www.instagram.com/p/{shortcode}/"
+IG_MEDIA_TYPE = {1: "image", 2: "video", 8: "carousel"}
+
+
+def parse_initial_state(html):
+    """initialState — JS-строка с JSON внутри. Снимаем только JS-экранирование."""
+    raw = INITIAL_STATE.search(html).group(1)
+    return json.loads(re.sub(r"\\(['\\])", r"\1", raw))
+
+
+def parse_search_meta(state):
+    """total, pages и фактическая страница из ветки поиска.
+
+    currentPage — единственный честный признак потолка пагинации: начиная с
+    шестой страницы 2GIS отдаёт HTTP 200 с содержимым первой, а total и pages
+    продолжают обещать больше.
+    """
+    profile = state["data"]["search"]["profile"]
+    data = profile[next(iter(profile))]["data"]
+    return data["total"], data["pages"], data.get("currentPage")
+
+
+def parse_org_list(state, city, rubric_id):
+    """Карточки организаций из ветки entity. Записи без org — не организации."""
+    rows = []
+    for branch_id, node in state["data"]["entity"]["profile"].items():
+        data = node.get("data") or {}
+        org = data.get("org")
+        if not org:
+            continue
+        reviews = data.get("reviews") or {}
+        rows.append({
+            "branch_id": branch_id,
+            "org_id": org.get("id"),
+            "name": data.get("name"),
+            "org_name": org.get("name"),
+            "branch_count": org.get("branch_count"),
+            "rubrics": [r.get("name") for r in data.get("rubrics") or []],
+            "address": data.get("address_name"),
+            "point": data.get("point"),
+            "review_count": reviews.get("general_review_count"),
+            "rating": reviews.get("general_rating"),
+            "city": city,
+            "rubric_id": str(rubric_id),
+        })
+    return rows
+
+
+def parse_firm_card(state, branch_id):
+    """Контакты карточки филиала — по строке на канал.
+
+    Плоские строки вместо словаря с разнотипными полями (phones список, website
+    строка, instagram строка): правило «есть телефон → лид готов» не должно
+    разбирать пять разных форм одного и того же.
+    """
+    data = state["data"]["entity"]["profile"][branch_id]["data"]
+    source_url = FIRM_URL.format(city=data.get("city_alias"), branch_id=branch_id)
+
+    rows, seen = [], set()
+    for group in data.get("contact_groups") or []:
+        for contact in group.get("contacts") or []:
+            kind = contact.get("type")
+            if kind not in CONTACT_KINDS:
+                continue
+            handle = contact.get("value") or contact.get("url") or contact.get("text")
+            if kind == "website":
+                handle = unwrap_2gis_link(handle)
+            if not handle or (kind, handle) in seen:
+                continue
+            seen.add((kind, handle))
+            rows.append({
+                "branch_id": branch_id,
+                "kind": kind,
+                "handle": handle,
+                "source_url": source_url,
+            })
+    return rows
+
+
+def unwrap_2gis_link(url):
+    """2GIS заворачивает сайт в редирект link.2gis.ru — настоящий URL в хвосте после '?'."""
+    if url and "link.2gis." in url and "?" in url:
+        return url.split("?", 1)[1]
+    return url
+
+
+def parse_ig_feed(body):
+    """Аккаунт и его посты из ответа feed/user инстаграма.
+
+    Разбирается именно лента, а не профиль: web_profile_info отвечает 400 на
+    половине аккаунтов и с 2026 года отдаёт edge_owner_to_timeline_media пустым,
+    то есть постов там больше нет вовсе. Лента ответила на 18 запросах из 18.
+    """
+    data = json.loads(json_body(body))
+    user = data.get("user") or {}
+    return {
+        "username": user.get("username"),
+        "full_name": user.get("full_name"),
+        "is_private": bool(user.get("is_private")),
+        "posts": [parse_ig_post(item) for item in data.get("items") or []],
+    }
+
+
+def parse_ig_post(item):
+    """Пост как событие с датой — материал для сигналов Ф6.
+
+    Ссылок на медиа здесь нет намеренно: ни один сигнал не смотрит на картинку,
+    а хранить в базе протухающие за сутки CDN-адреса незачем.
+    """
+    return {
+        "pk": item.get("pk"),
+        "shortcode": item["code"],
+        "url": IG_POST_URL.format(shortcode=item["code"]),
+        "taken_at": iso_utc(item["taken_at"]),
+        "type": IG_MEDIA_TYPE.get(item.get("media_type"), str(item.get("media_type"))),
+        "caption": ((item.get("caption") or {}).get("text") or "").strip(),
+        "likes": item.get("like_count"),
+        "comments": item.get("comment_count"),
+    }
+
+
+def ig_username(handle):
+    """Логин аккаунта из ссылки, как её отдаёт 2GIS: https://instagram.com/<логин>."""
+    return handle.rstrip("/").rsplit("/", 1)[-1]
+
+
+def json_body(body):
+    """JSON из ответа, который fetch.get завернул в <html><body>.
+
+    Scrapling разбирает как разметку любой ответ, включая ответ API. Тело при
+    этом остаётся дословным — проверено сравнением с сырыми байтами, — поэтому
+    достаточно вырезать сам JSON, а не заводить второй путь забора ради него.
+    """
+    return body[body.index("{"): body.rindex("}") + 1]
+
+
+def iso_utc(taken_at):
+    """Unix-время инстаграма -> ISO UTC, в котором даты хранят остальные таблицы.
+
+    Без этого observed_at не сравнить с fetched_at, и затухание в score.py
+    молча считало бы любой пост сегодняшним.
+    """
+    return datetime.fromtimestamp(taken_at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_serper(data, query):
+    return [
+        {
+            "query": query,
+            "url": r.get("link"),
+            "title": r.get("title"),
+            "snippet": r.get("snippet"),
+            "position": r.get("position"),
+        }
+        for r in data.get("organic") or []
+    ]
+
+
+def parse_reviews(body, branch_id):
+    """Отзывы филиала из public-api.reviews.2gis.com.
+
+    Ответ API — JSON, который fetch.get завернул в <html><body>: тело дословно,
+    и json_body() вырезает его, как у ленты инстаграма. Свежие сверху — порядок
+    API, разбор его не меняет. official_answer — текст ответа (есть) или None
+    (нет): на нём держится сигнал reviews_unanswered_complaint.
+    """
+    data = json.loads(json_body(body))
+    rows = []
+    for item in data.get("reviews") or []:
+        answer = item.get("official_answer")
+        rows.append({
+            "branch_id": branch_id,
+            "text": (item.get("text") or "").strip(),
+            "rating": item.get("rating"),
+            "date_created": item.get("date_created"),
+            "comments_count": item.get("comments_count"),
+            "official_answer": (answer or {}).get("text") if isinstance(answer, dict) else answer,
+            "official_answer_date": (answer or {}).get("date_created")
+                if isinstance(answer, dict) else None,
+        })
+    return rows
+
+
+def parse_site_links(html, base_url, domain, keywords, max_pages):
+    """Внутренние ссылки с главной по словарю ключевых слов.
+
+    Детерминированный выбор — regex намеренно (§1.2): модель нужна там, где надо
+    понять смысл живого текста, а не выбрать ссылку. Словарь применяется и к
+    тексту ссылки, и к её адресу: у .kz-сайтов слоги латиницей (/services/), а
+    словарь на русском («о компании», «услуги») — по одному адресу обход находил
+    бы ноль страниц. Только тот же домен, до max_pages.
+    """
+    from urllib.parse import urljoin, urlparse
+    found, seen = [], set()
+    for href, text in re.findall(
+        r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html, re.I | re.S
+    ):
+        label = " ".join(re.sub(r"(?s)<[^>]+>", " ", text).split()).lower()
+        full = urljoin(base_url, href)
+        parsed = urlparse(full)
+        if parsed.netloc and parsed.netloc.split(":")[0] != domain:
+            continue
+        haystack = f"{label} {parsed.path} {href}".lower()
+        if not any(k.lower() in haystack for k in keywords):
+            continue
+        if full in seen:
+            continue
+        seen.add(full)
+        found.append(full)
+        if len(found) == max_pages:
+            break
+    return found
+
+
+def parse_ig_comments(body, media_pk):
+    """Комментарии поста media/{pk}/comments/.
+
+    Нужны, чтобы найти questions: публичный вопрос клиента без ответа компании.
+    Ответ API — JSON в <html><body>, режется json_body().
+    """
+    data = json.loads(json_body(body))
+    out = []
+    for item in data.get("comments") or []:
+        user = item.get("user") or {}
+        out.append({
+            "pk": item.get("pk"),
+            "media_pk": media_pk,
+            "user": user.get("username") or user.get("full_name"),
+            "text": (item.get("text") or "").strip(),
+            "created_at": item.get("created_at"),
+        })
+    return out
+
+
+def parse_ig_profile(body):
+    """Профиль users/{pk}/info/. Полнота не гарантируется: web_profile_info
+    отвечает 400 примерно на половине аккаунтов. feed/user biography не отдаёт,
+    поэтому био берётся отдельным запросом. Числовой pk — из ответа ленты."""
+    data = json.loads(json_body(body))
+    user = data.get("user") or {}
+    return {
+        "pk": user.get("pk"),
+        "username": user.get("username"),
+        "full_name": user.get("full_name"),
+        "biography": user.get("biography"),
+        "follower_count": user.get("follower_count"),
+        "category": user.get("category") or user.get("account_category"),
+        "is_private": bool(user.get("is_private")),
+    }
