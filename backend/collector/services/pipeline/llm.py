@@ -13,7 +13,7 @@ from langchain_openrouter import ChatOpenRouter
 
 from collector.services import storage
 from config import settings
-from observability import langfuse_handler
+from observability import langfuse_handler, log_trace
 
 MAX_RETRIES = 2
 REASONING = {"enabled": False}
@@ -46,7 +46,10 @@ def invoke(llm_model, messages, *, session_id, name, subject):
     }
     for attempt in range(1, TRANSPORT_RETRIES + 1):
         try:
-            return llm_model.invoke(messages, config=config)
+            result = llm_model.invoke(messages, config=config)
+            if handler:
+                log_trace(handler)
+            return result
         except httpx.TransportError:
             if attempt == TRANSPORT_RETRIES:
                 raise

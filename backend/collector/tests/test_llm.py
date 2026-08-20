@@ -71,3 +71,29 @@ def test_invoke_gives_up_after_max_transport_retries(monkeypatch):
         llm.invoke(flaky, [("human", "h")], session_id="job-1", name="analyze.reviews", subject="s")
 
     assert flaky.calls == llm.TRANSPORT_RETRIES
+
+
+def test_invoke_logs_langfuse_trace_when_handler_present(monkeypatch):
+    calls = []
+    fake_handler = object()
+    monkeypatch.setattr(llm, "langfuse_handler", lambda: fake_handler)
+    monkeypatch.setattr(llm, "log_trace", lambda handler: calls.append(handler))
+
+    fake = FakeLLM(answer="ok")
+    result = llm.invoke(
+        fake, [("human", "h")], session_id="job-1", name="analyze.reviews", subject="s",
+    )
+
+    assert result == "ok"
+    assert calls == [fake_handler]
+
+
+def test_invoke_does_not_log_trace_without_handler(monkeypatch):
+    calls = []
+    monkeypatch.setattr(llm, "langfuse_handler", lambda: None)
+    monkeypatch.setattr(llm, "log_trace", lambda handler: calls.append(handler))
+
+    fake = FakeLLM(answer="ok")
+    llm.invoke(fake, [("human", "h")], session_id="job-1", name="analyze.reviews", subject="s")
+
+    assert calls == []

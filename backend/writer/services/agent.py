@@ -73,7 +73,10 @@ def draft(llm, seed, history, task, *, session_id, name, offer=""):
     }
     for attempt in range(1, TRANSPORT_RETRIES + 1):
         try:
-            return llm.invoke(messages, config=config)
+            result = llm.invoke(messages, config=config)
+            if handler:
+                observability.log_trace(handler)
+            return result
         except httpx.TransportError:
             if attempt == TRANSPORT_RETRIES:
                 raise
