@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -171,3 +172,51 @@ def test_operation_and_pipeline_names_do_not_collide(stores):
 
     whole = jobs.job(jobs.enqueue_pipeline("rebuild"))
     assert [s["name"] for s in whole["steps"]] == ["rebuild", "export"], whole["steps"]
+
+
+def test_job_step_exception_logs_full_traceback(stores, caplog):
+    """Необработанное исключение в шаге — не только запись в state.jobs.error,
+    но и полный traceback в логе (backend.log в проде), иначе причину провала
+    можно только гадать по типу+сообщению."""
+    from collector.services.pipeline import OPERATIONS
+
+    def boom(ctx):
+        raise ValueError("детально сломалось на компании adelex.kz")
+
+    OPERATIONS["_boom_test"] = boom
+    try:
+        job_id = jobs.enqueue_steps("custom", "Провал с трейсбэком", ["_boom_test"])
+        with caplog.at_level(logging.ERROR, logger="collector.services.jobs"):
+            asyncio.run(jobs.run_pending())
+
+        record = jobs.job(job_id)
+        assert record["status"] == "failed"
+        assert "детально сломалось" in record["error"]
+
+        tracebacks = [r for r in caplog.records if r.exc_info is not None]
+        assert tracebacks, "исключение упало без exc_info — traceback потерян"
+        assert "ValueError" in tracebacks[0].getMessage() or "ValueError" in str(tracebacks[0].exc_info)
+    finally:
+        OPERATIONS.pop("_boom_test", None)
+
+
+def test_job_context_carries_job_id_during_step(stores):
+    """logctx видит job_id ровно во время исполнения шага, не до и не после."""
+    import logctx
+    from collector.services.pipeline import OPERATIONS
+
+    seen = []
+
+    def probe(ctx):
+        seen.append(logctx.current_job_id())
+        return {}
+
+    OPERATIONS["_probe_test"] = probe
+    try:
+        job_id = jobs.enqueue_steps("custom", "Проба контекста", ["_probe_test"])
+        assert logctx.current_job_id() is None
+        asyncio.run(jobs.run_pending())
+        assert seen == [job_id]
+        assert logctx.current_job_id() is None, "контекст не сброшен после джобы"
+    finally:
+        OPERATIONS.pop("_probe_test", None)

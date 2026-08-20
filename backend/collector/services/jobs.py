@@ -22,13 +22,17 @@ services/pipeline (реестр OPERATIONS): своей логики здесь 
 
 import asyncio
 import json
+import logging
 import time
 from contextlib import closing
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import logctx
 from collector.services import events, store as engine
 from collector.services.pipeline import OPERATIONS, PIPELINES
+
+logger = logging.getLogger(__name__)
 
 # Потолок лога в символах, а не в строках: строку дописывает сам SQLite
 # (log = log || ?), и мерить длину он умеет, а считать переводы строки — нет.
@@ -211,21 +215,26 @@ def make_context(job_id):
 
 async def _execute(job_id):
     names = json.loads(_raw_steps(job_id))   # json-строка имён из state.jobs
-    for index, name in enumerate(names):
-        if name not in OPERATIONS:
-            _finish(job_id, "failed", error=f"нет операции {name}")
-            return
-        _update(job_id, step=index)
-        ctx, _state = make_context(job_id)
-        try:
-            result = await asyncio.to_thread(OPERATIONS[name], ctx)
-            _update(job_id, result=json.dumps(result, ensure_ascii=False))
-        except _Cancelled:
-            _finish(job_id, "cancelled")
-            return
-        except Exception as error:
-            _finish(job_id, "failed", error=f"{type(error).__name__}: {error}")
-            return
+    with logctx.job(job_id):
+        for index, name in enumerate(names):
+            if name not in OPERATIONS:
+                _finish(job_id, "failed", error=f"нет операции {name}")
+                return
+            _update(job_id, step=index)
+            ctx, _state = make_context(job_id)
+            try:
+                result = await asyncio.to_thread(OPERATIONS[name], ctx)
+                _update(job_id, result=json.dumps(result, ensure_ascii=False))
+            except _Cancelled:
+                _finish(job_id, "cancelled")
+                return
+            except Exception as error:
+                # state.jobs.error хранит только тип+сообщение (короткая строка
+                # для фронтенда) — полный traceback идёт в backend.log, иначе
+                # причину провала можно только гадать.
+                logger.exception(f"джоба {job_id}, шаг {name} упала")
+                _finish(job_id, "failed", error=f"{type(error).__name__}: {error}")
+                return
     _finish(job_id, "done")
 
 
