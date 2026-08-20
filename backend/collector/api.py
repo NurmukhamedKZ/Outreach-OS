@@ -40,6 +40,7 @@ async def lifespan(_app: FastAPI):
     queue.fail_orphans()
     worker = asyncio.create_task(queue.worker_loop())
     yield
+    queue.cancel_current()  # без этого фоновый поток текущей джобы держит процесс живым
     worker.cancel()
 
 

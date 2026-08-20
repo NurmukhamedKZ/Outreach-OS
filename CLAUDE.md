@@ -52,7 +52,11 @@ cd frontend && npm run dev                                    # Next.js -> http:
 
 `main.py` поднимает то же приложение, что раньше собирал `collector/api.py`
 через `uvicorn api:app` — включая роутеры writer'а и sender'а. Для
-reload-режима: `uv run uvicorn main:app --port 8787 --reload`.
+reload-режима: `uv run uvicorn main:app --port 8787 --reload --timeout-graceful-shutdown 5`.
+Флаг обязателен: `/api/events` — бесконечный SSE-стрим, и без таймаута
+`Ctrl+C`/перезагрузка на файле виснут на «Waiting for connections to close»,
+пока не закроется вкладка фронтенда — у graceful shutdown в uvicorn нет
+таймаута по умолчанию.
 
 **`config.py` — единственное место чтения переменных окружения**, общее для
 всех трёх систем: `pydantic.BaseSettings` сам подхватывает `backend/.env` при
@@ -259,128 +263,67 @@ CTA, Inter + JetBrains Mono (`next/font`), hairline-границы, тёмные
 
 ---
 
-## Self-improvement protocol
-- After any correction, propose a concise rule and append it to the appropriate section of this CLAUDE.md.
-- Rule format: one imperative sentence, no rationale, no examples unless the case is ambiguous.
-- Before adding a rule, search this file; if an existing rule covers the case, refine it instead of duplicating.
-- Keep total CLAUDE.md under 2500 tokens; when exceeded, merge overlapping rules and delete stale ones.
-- After fixing a bug, write a rule about the root-cause class, not the specific symptom.
-- Never write a rule about a single incident; always generalize to a class of errors.
-- If a new rule contradicts an earlier one, flag the conflict explicitly and ask which to keep.
-- At the first session each week, audit CLAUDE.md and report: which rules never fired, which overlap, which can be deleted.
+## Code Style & Architecture
 
-## Debugging & diagnosis protocol
-- Do not fix symptoms before identifying the root cause.
-- Fix at the source-of-truth (owner layer), not where the symptom appears.
-- Avoid child-layer compensation (fallbacks, patches, duplicated logic, branching).
-- Always do end-to-end system research before fixing: top-down (route → page → container → orchestration → state) and bottom-up (function → hook → service → API → DB).
-- Diagnose by layers: data/contracts → business logic → async/timing → UI state → integration → architecture.
-- If a bug appears in a child, inspect the parent/owner layer first.
-- When changing a mechanic, align all directly coupled layers: contracts, handlers, queries, cache, serializers, loading/error states.
-- Be skeptical of one-file fixes; justify why other layers are unaffected.
-- For frontend issues, inspect the full flow: route → layout → page → hooks → API → backend.
-- Prefer systemic fixes, but keep changes proportional.
-- If re-architecture is required, define scope, risks, compatibility, and rollout order.
+**Naming**: intention-revealing names for files, modules, functions, vars, classes — name must match what the thing _actually does_, not what it was originally meant to do (`getUserOrders` not `getData`, `isEmailVerified` not `flag`; rename `processing.py` → `stripe_api_helpers.py` if that's what it wraps). If a function's behavior drifts from its name during a refactor, rename it — don't leave the name stale.
 
-## Bug fix protocol
-- Before touching code, state the root cause in one line.
-- After a successful fix, propose a Self-improvement rule about that error class.
-- If a fix is rejected, roll it back entirely and reimplement from scratch with the new understanding — do not patch on top.
-- If a bug is not reliably reproducible, add a failing test first, then fix.
+**Functions**: SRP, ≤20-30 lines, 0-2 params (3+ → DTO/options object), no boolean flags (split into separate functions), no hidden side effects, guard clauses over nesting. A function/module should have exactly one reason to change — if a module handles two domains (e.g. payments + accounting), split it; cross-domain imports between two "single-purpose" modules is a smell that they aren't actually separated.
 
-## File hygiene
-- Keep rules short and dense — one tight sentence beats a paragraph.
-- Group rules by section: Architecture, Style, Bug fix protocol, Self-improvement protocol, Project-specific.
-- Before committing any CLAUDE.md changes, show the diff and wait for confirmation.
-- After changing the code you must update the CLAUDE.md or BRD, PRD, TRD, SPEC docs
+**Classes**: small, high cohesion, SRP. Objects = behavior + hidden state; DTOs = pure data, zero behavior. Wrap third-party APIs/DBs/HTTP clients behind adapters — never let vendor types leak into domain layer. Inject dependencies via constructor, don't instantiate internally.
 
+**Errors**: throw exceptions, not error codes/flags/`Optional` return-and-check. A function should either always return a valid value or raise — never return `T | None` to push the null-check onto every caller; that cascades into `Optional` chains up the call stack. No silent null return/pass — use guard clauses, empty collections, or explicit handling. Keep try/catch out of happy-path logic.
 
-## Clean Code & Architecture Rules for Claude Code
+**Comments**: explain _why_, never _what_ (e.g. "need this timestamp to filter recent intents" not "compute timestamp"); if code needs a what-comment, rewrite the code. Allowed only for legal notices, non-obvious algorithms, TODO/FIXME. Zero dead code — delete unused/commented-out code immediately.
 
-  
+**Law of Demeter**: don't drill into a nested object's internals across module boundaries to extract one field (e.g. reaching into a `financial_statement` response 3 levels deep for a `mutation_id`). Instead, have the owning function return only what the caller needs; pull cross-cutting data (e.g. `application_fee`) into the primary domain object itself (as a field/custom attribute) rather than passing two parallel objects (`invoice` + `invoice_data`) everywhere just so callers can dig through both.
 
-### 1. Naming & Readability
+**Domain modeling**: before splitting a "god function," understand the domain well enough to see which data naturally belongs on which entity — the right refactor is usually a data-model fix (add a field to the entity) not just a function split. Bring outside/fresh technical judgment on top of domain knowledge — don't just implement what a domain expert dictates without a critical technical pass.
 
-- **Self-Documenting Code**: Choose explicit, intention-revealing names for variables, functions, classes, and files. Code must read like clear prose.
+**File structure**: newspaper metaphor (high-level → low-level top to bottom), 100-500 lines/file max, follow linter/formatter.
 
-- **Avoid Ambiguity & Noise**: Avoid meaningless abbreviations, prefixes, or magic numbers/strings (e.g., use named constants instead of raw values).
+**Testing**: FIRST principles (Fast, Independent, Repeatable, Self-validating, Timely), same quality bar as prod code.
 
-- **Domain Accuracy**: Use terminology that directly reflects the business domain.
+**Refactoring**: Boy Scout Rule — leave code cleaner than found. Make it work → make it clean, in small incremental steps, not big-bang rewrites.
 
-  
+## Python-Specific
 
-### 2. Functions & Methods
+- Type-hint every function signature: params and return type (`def get_user(user_id: int) -> User | None`). No untyped `def`.
+- Use `dataclass` or `pydantic.BaseModel` for DTOs, never raw dicts/tuples passed across boundaries.
+- Prefer `Enum`/`Literal` over raw strings for fixed value sets.
+- Use `pathlib.Path`, not string paths.
+- No mutable default args (`def f(items: list = [])` → use `None` + guard, or `field(default_factory=list)`).
+- Prefer f-strings over `%`/`.format()`.
+- Use `@property` for computed attributes, not getter methods.
+- Raise custom exception classes (`class OrderNotFoundError(Exception)`), not bare `Exception`/`ValueError` for domain errors.
+- Use context managers (`with`) for resources (files, connections, locks) — never manual open/close.
+- Prefer list/dict comprehensions over manual loops for simple transforms; drop back to a loop once logic needs branching/side effects.
+- Use `is None`/`is not None`, never ` == None`.
+- Avoid `*args`/`**kwargs` in public APIs unless genuinely variadic — hides the contract.
+- One class = one file for domain entities; group small related DTOs together.
+- Run `mypy`/`ruff` (or project equivalent) — treat type/lint errors as build failures, not warnings.
+- Docstrings only for public functions/classes with non-obvious behavior (Google or NumPy style) — describe _why_/_contract_, not restate the type hints.
 
-- **Single Responsibility (SRP)**: Functions must be small and do exactly one thing at a single level of abstraction.
+## Debugging Protocol
 
-- **Minimize Parameters**: Prefer 0 to 2 arguments. If a function requires 3+ parameters, group them into a Data Transfer Object (DTO) or dedicated parameter object.
-- **No Flag Arguments**: Avoid passing boolean flags to functions (`doSomething(true)`). Split them into separate, descriptive functions instead.
-- **Zero Unexpected Side Effects**: Functions must not alter global state or make silent modifications outside their immediate scope.
+- State root cause in one line before touching code.
+- Fix at source-of-truth/owner layer, never patch symptoms in child layers (no fallbacks/duplicated logic there).
+- Before fixing: trace top-down (route→page→container→state) and bottom-up (function→hook→service→API→DB).
+- Diagnose in order: data/contracts → business logic → async/timing → UI state → integration → architecture.
+- When changing a mechanic, update all coupled layers together: contracts, handlers, queries, cache, serializers, loading/error states.
+- Justify why other layers are unaffected before a one-file fix.
+- If not reliably reproducible, write a failing test first, then fix.
+- Re-architecture requires explicit scope/risk/compatibility/rollout plan.
+- Two tools must never share a side-effect surface — split the lighter tool's concern off so the heavy one stays one-per-lifecycle.
 
-### 3. Architecture & Boundaries
-- **Core Domain Isolation**: Separate business logic from infrastructure details (frameworks, ORMs, databases, HTTP clients).
-- **Dependency Inversion & Injection**: Higher-level modules must never depend on lower-level implementation details. Inject dependencies (repositories, external adapters) into constructors/initializers rather than instantiating them inside classes.
-- **Third-Party Wrappers**: Isolate external libraries and APIs behind custom interface adapters. Never let vendor-specific contracts spread across the domain layer.
-- **DTOs vs. Rich Objects**: Keep Data Transfer Objects (pure state, zero behavior) distinct from domain entities/objects (behavior-focused, hiding internal data structure).
+## Self-Improvement Protocol
 
-### 4. Formatting & File Structure
-- **Newspaper Metaphor**: Structure files chronologically — high-level orchestration/entry points at the top, detailed low-level execution helpers toward the bottom.
-- **File & Class Limits**: Keep classes and modules tightly focused (prefer 100–500 lines max). Large files indicate mixed responsibilities.
-- **Consistency**: Strictly adhere to the project's linter and formatter rules.
+- After a correction/successful fix: add one imperative-sentence rule about the _error class_, not the incident, to the right section.
+- Search existing rules first; refine instead of duplicating.
+- Contradicting rules → flag and ask which to keep.
+- Keep this file under 2500 tokens; merge/delete overlapping or stale rules when exceeded.
+- Weekly: audit which rules never fired or overlap, report findings.
 
-### 5. Comments & Documentation
-- **Code First**: Rely on clean code rather than explanatory comments. If code requires a comment to explain *what* it does, rewrite the code.
-- **Allowed Comments**: Legal headers, warnings about subtle performance/side effects, complex algorithm explanations, or actionable `TODO`s.
-- **Zero Dead Code**: Never leave commented-out code, unused functions, or obsolete commentary in the codebase. Delete immediately.
+## File Hygiene
 
-### 6. Error Handling
-- **Explicit Exceptions**: Use exceptions/structured error objects over return status flags or error codes.
-- **No Null Returns/Passes**: Avoid returning or passing `null`/`None` silently. Handle boundary edge cases early with guard clauses.
-- **Clean Main Execution**: Keep core happy-path execution logic unpolluted by nesting entire routines inside massive `try/catch` blocks.  
-
-### 7. Testing & Incremental Refactoring
-- **Clean Unit Tests**: Treat test code with the same quality standards as production code. Tests must be Fast, Independent, Repeatable, Self-validating, and Timely (FIRST).
-- **Boy Scout Rule**: Always leave the code cleaner than you found it.
-- **Atomic Refactoring**: Make small, incremental edits that preserve passing tests rather than attempting massive single-commit rewrites. First make it work, then make it clean.
-
-## Code Style & Clean Code Guidelines
-
-### General Philosophy
-- Write self-documenting, maintainable code meant to be read by humans, not just executed by machines.
-- **Boy Scout Rule:** Always leave the codebase cleaner than you found it.
-- **Refactoring:** First make the code work, then refine and clean it up in small, safe, incremental steps.
-- **Simplicity:** Keep units small, explicit, and focused on a single responsibility (SRP).
-
-### Naming Conventions
-- **Meaningful & Self-Explanatory:** Names must clearly state purpose and intent (`getUserOrders` > `getData`, `isEmailVerified` > `flag`).
-- **Context-Specific:** Use distinct nouns for entities/classes/variables, active verbs for functions/methods.
-- **Avoid Ambiguity:** Do not use broad terms (`data`, `info`, `item`, `list`) when precise terms exist (`UserOrderPayments`, `activeUserIdList`).
-- **No Magic Values:** Replace hardcoded numbers, strings, and status codes with descriptive constants, enums, or named types.
-
-### Functions & Methods
-- **Single Responsibility (SRP):** Each function must do one thing, do it well, and do it only.
-- **Keep It Small:** Keep functions concise (ideally under 20–30 lines). Avoid high nesting levels (prefer early returns/guard clauses).
-- **Function Arguments:** Minimize parameters (0–2 ideal). If 3+ arguments are needed, group them into a single options object/DTO.
-- **No Flag Arguments:** Avoid passing boolean flags (`doX(true)`); split into separate, intent-revealing functions instead.
-- **Side Effects:** Avoid hidden side effects. A function should only perform what its name implies.
-
-### Classes & Architecture
-- **Cohesion & SRP:** Classes must be small with a focused boundary. High cohesion means methods operate on shared class state.
-- **Objects vs. Data Structures:**
-- *Objects* hide internal state and expose high-level behavioral methods.
-- *Data Structures / DTOs* expose raw fields without business logic (used purely for data transfer across boundaries).
-- **Boundary Isolation & Adapters:**
-- Wrap third-party APIs, external HTTP clients, and database clients in abstraction interfaces / adapters.
-- Never allow raw vendor/framework types to bleed across core domain logic.
-- **Dependency Injection (DI):** Pass dependencies explicitly via constructors/initializers rather than instantiating them internally.  
-
-### Error Handling
-- **Exceptions over Error Codes:** Throw clear, descriptive exceptions rather than returning error result codes or custom error objects.
-- **Separate Error Logic:** Isolate error-handling (try-catch, middleware) from happy-path business logic.
-- **No Null Tricks:** Do not return `null`/`undefined` or pass `null` as arguments where possible; return empty collections, default objects, or handle missing values explicitly.
-
-### Comments & Formatting
-- **Code as Documentation:** If code needs a comment to explain *what* it does, rewrite the code to be clearer.
-- **When Comments Are Valid:** Legal notices, explanations of complex/unavoidable domain algorithms, or explicit warning markers (`TODO`, `FIXME`).
-- **No Dead Code:** Remove commented-out code, unused variables, and orphaned functions immediately.
-- **Formatting:** Keep vertical organization natural (high-level functions at the top, helper/detail functions below). Use automated linters and formatters.
+- One dense sentence per rule, grouped by section (Architecture, Style, Bug Fix, Self-Improvement, Project-specific).
+- After code changes, update CLAUDE.md/BRD/PRD/TRD/SPEC docs accordingly.
