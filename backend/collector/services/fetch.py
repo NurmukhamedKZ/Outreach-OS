@@ -20,9 +20,9 @@ from scrapling.fetchers import Fetcher
 
 from collector.services import storage
 
-# Scrapling пишет INFO на каждый запрос, включая штатные 404 (у листовой рубрики
-# нет страницы подрубрик). Это тонет прогресс скриптов в потоке ложных «ошибок».
-logging.getLogger("scrapling").setLevel(logging.WARNING)
+# Уровень и propagate для этого логгера настраивает logging_setup.configure()
+# (единая точка) — здесь только сам логгер.
+network_logger = logging.getLogger("collector.fetch")
 
 # Производные JSONL до Ф3 живут отдельно от сырья: build.py пересоберёт их из raw/.
 JSONL_DIR = Path("data/raw_jsonl_legacy")
@@ -59,6 +59,10 @@ def get(url, **kw):
     if is_cached(url):
         return storage.get(hashlib.sha1(url.encode()).hexdigest())
 
+    # Часть curl-ошибок (например "URL rejected: Port number...") не несёт URL
+    # в тексте — эта строка компенсирует их, сопоставление по соседней строке
+    # в network.log.
+    network_logger.info(f"fetching {url}")
     page = Fetcher.get(url, impersonate="chrome", **kw)
     if page.status != 200:
         raise HttpError(page.status, url)
