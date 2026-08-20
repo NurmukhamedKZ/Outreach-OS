@@ -10,6 +10,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+import logctx
 from collector.services import sources
 from collector.services.pipeline import llm, rebuild
 
@@ -48,16 +49,17 @@ def reviews(ctx):
         spent = 0
         for number, (company_id, name, city, text) in enumerate(targets, 1):
             ctx.check_cancelled()
-            prompt = reviews_prompt(name, city, text)
-            subject = f"{name} | {city}"
-            if not llm.answered(db, REVIEWS_KIND, subject, model, prompt):
-                answer = llm.invoke(
-                    llm_model, [("system", REVIEWS_SYSTEM), ("human", prompt)],
-                    session_id=ctx.job_id, name="analyze.reviews", subject=subject,
-                )
-                llm.store_answer(db, REVIEWS_KIND, subject, model, prompt,
-                                 {"analysis": answer.model_dump()})
-                spent += 1
+            with logctx.entity(f"{name} ({company_id})"):
+                prompt = reviews_prompt(name, city, text)
+                subject = f"{name} | {city}"
+                if not llm.answered(db, REVIEWS_KIND, subject, model, prompt):
+                    answer = llm.invoke(
+                        llm_model, [("system", REVIEWS_SYSTEM), ("human", prompt)],
+                        session_id=ctx.job_id, name="analyze.reviews", subject=subject,
+                    )
+                    llm.store_answer(db, REVIEWS_KIND, subject, model, prompt,
+                                     {"analysis": answer.model_dump()})
+                    spent += 1
             ctx.progress(number, len(targets), "отзывы")
         ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
         return {"companies": len(targets), "new_calls": spent}
@@ -138,16 +140,17 @@ def site(ctx):
         spent = 0
         for number, (company_id, name, city, pages_text) in enumerate(targets, 1):
             ctx.check_cancelled()
-            prompt = site_prompt(name, city, pages_text)
-            subject = f"{name} | {city}"
-            if not llm.answered(db, SITE_KIND, subject, model, prompt):
-                answer = llm.invoke(
-                    llm_model, [("system", SITE_SYSTEM), ("human", prompt)],
-                    session_id=ctx.job_id, name="analyze.site", subject=subject,
-                )
-                llm.store_answer(db, SITE_KIND, subject, model, prompt,
-                                 {"analysis": answer.model_dump()})
-                spent += 1
+            with logctx.entity(f"{name} ({company_id})"):
+                prompt = site_prompt(name, city, pages_text)
+                subject = f"{name} | {city}"
+                if not llm.answered(db, SITE_KIND, subject, model, prompt):
+                    answer = llm.invoke(
+                        llm_model, [("system", SITE_SYSTEM), ("human", prompt)],
+                        session_id=ctx.job_id, name="analyze.site", subject=subject,
+                    )
+                    llm.store_answer(db, SITE_KIND, subject, model, prompt,
+                                     {"analysis": answer.model_dump()})
+                    spent += 1
             ctx.progress(number, len(targets), "сайты")
         ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
         return {"companies": len(targets), "new_calls": spent}
@@ -233,14 +236,15 @@ def instagram(ctx):
         spent = 0
         for number, (username, prompt_text) in enumerate(accounts, 1):
             ctx.check_cancelled()
-            if not llm.answered(db, IG_LAYER_KIND, username, model, prompt_text):
-                answer = llm.invoke(
-                    llm_model, [("system", IG_LAYER_SYSTEM), ("human", prompt_text)],
-                    session_id=ctx.job_id, name="analyze.instagram", subject=username,
-                )
-                llm.store_answer(db, IG_LAYER_KIND, username, model, prompt_text,
-                                 {"analysis": answer.model_dump()})
-                spent += 1
+            with logctx.entity(username):
+                if not llm.answered(db, IG_LAYER_KIND, username, model, prompt_text):
+                    answer = llm.invoke(
+                        llm_model, [("system", IG_LAYER_SYSTEM), ("human", prompt_text)],
+                        session_id=ctx.job_id, name="analyze.instagram", subject=username,
+                    )
+                    llm.store_answer(db, IG_LAYER_KIND, username, model, prompt_text,
+                                     {"analysis": answer.model_dump()})
+                    spent += 1
             ctx.progress(number, len(accounts), "инстаграм")
         ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
         return {"accounts": len(accounts), "new_calls": spent}
@@ -338,16 +342,17 @@ def dossier(ctx):
         spent = 0
         for number, (company_id, name, city, facts) in enumerate(targets, 1):
             ctx.check_cancelled()
-            prompt = dossier_prompt(name, city, facts)
-            subject = f"{name} | {city}"
-            if not llm.answered(db, DOSSIER_KIND, subject, model, prompt):
-                answer = llm.invoke(
-                    llm_model, [("system", DOSSIER_SYSTEM), ("human", prompt)],
-                    session_id=ctx.job_id, name="analyze.dossier", subject=subject,
-                )
-                llm.store_answer(db, DOSSIER_KIND, subject, model, prompt,
-                                 {"dossier": answer.model_dump()})
-                spent += 1
+            with logctx.entity(f"{name} ({company_id})"):
+                prompt = dossier_prompt(name, city, facts)
+                subject = f"{name} | {city}"
+                if not llm.answered(db, DOSSIER_KIND, subject, model, prompt):
+                    answer = llm.invoke(
+                        llm_model, [("system", DOSSIER_SYSTEM), ("human", prompt)],
+                        session_id=ctx.job_id, name="analyze.dossier", subject=subject,
+                    )
+                    llm.store_answer(db, DOSSIER_KIND, subject, model, prompt,
+                                     {"dossier": answer.model_dump()})
+                    spent += 1
             ctx.progress(number, len(targets), "досье")
         ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
         return {"companies": len(targets), "new_calls": spent}
