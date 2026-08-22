@@ -18,10 +18,16 @@ def langfuse_handler():
     from langfuse import Langfuse
     from langfuse.langchain import CallbackHandler
 
+    # Без timeout здесь httpx.Client(timeout=None) — то есть НИКАКОГО таймаута:
+    # если self-host Langfuse подвисает, get_trace_url() (см. log_trace ниже)
+    # виснет на invoke() навсегда, вообще без исключения. Именно так один
+    # LLM-вызов на живом прогоне вставал на 15+ минут — не из-за OpenRouter,
+    # а из-за этого клиента. 10с достаточно для REST-вызова к своему серверу.
     Langfuse(
         public_key=settings.langfuse_public_key,
         secret_key=settings.langfuse_secret_key,
         host=settings.langfuse_host,
+        timeout=10,
     )
     return CallbackHandler()
 

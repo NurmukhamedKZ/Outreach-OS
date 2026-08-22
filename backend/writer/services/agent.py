@@ -9,25 +9,42 @@ draft -> правка оператора -> отправка требует, ч�
 не попадало в историю, а чекпойнтер дописывает ответ модели в состояние сам.
 """
 
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 import httpx
+from langchain_core.exceptions import OutputParserException
 from langchain_openrouter import ChatOpenRouter
+from openrouter.errors import ResponseValidationError
+from openrouter.utils import BackoffStrategy, RetryConfig
 
+import logctx
 import observability
 from config import settings
 from writer.schemas.outreach import Draft
 
-MAX_RETRIES = 2
+# см. collector/services/pipeline/llm.py::NO_SDK_RETRY — max_retries=0 не
+# отключает ретраи SDK (падает на его часовой дефолт), нужен явный оверрайд.
+NO_SDK_RETRY = RetryConfig("none", BackoffStrategy(0, 0, 1, 0), False)
 # Провайдер ретраит отказ соединения, но не обрыв тела ответа посреди чтения
 # (RemoteProtocolError на протухшем keep-alive) — без этого одна такая ошибка
-# валит весь прогон top_n на середине, а не только текущий черновик.
+# валит весь прогон top_n на середине, а не только текущий черновик. Тот же
+# цикл ловит и OutputParserException, и ResponseValidationError (SDK openrouter
+# заворачивает обрыв тела ответа в свой класс) — см. collector/services/pipeline/llm.py.
 TRANSPORT_RETRIES = 3
 
 # Рассуждение выключено по той же причине, что в classify: задача — написать
 # короткое сообщение по готовым фактам, а не рассуждать. Ответ приходит за
 # секунды, reasoning-токены не оплачиваются.
 REASONING = {"enabled": False}
+
+# Без явного timeout зависшее соединение блокирует draft() навсегда — см.
+# collector/services/pipeline/llm.py::REQUEST_TIMEOUT_MS.
+REQUEST_TIMEOUT_MS = 60_000
+# httpx-таймауту нельзя доверять целиком при стриминге с keep-alive — см.
+# collector/services/pipeline/llm.py::HARD_TIMEOUT_S.
+HARD_TIMEOUT_S = REQUEST_TIMEOUT_MS / 1000 + 15
 
 SYSTEM = """Ты пишешь исходящие сообщения в WhatsApp от лица команды, которая предлагает:
 {offer}
@@ -50,14 +67,35 @@ SYSTEM = """Ты пишешь исходящие сообщения в WhatsApp 
 
 
 def model(config):
-    """Клиент модели. Ключ приходит из settings (backend/.env), а не из окружения процесса."""
+    """Клиент модели. Ключ приходит из settings (backend/.env), а не из окружения процесса.
+
+    require_parameters ограничивает роутинг OpenRouter провайдерами, реально
+    поддерживающими strict json_schema — см. collector/services/pipeline/llm.py::structured_model.
+    """
     return ChatOpenRouter(
         model=config["llm"]["model"],
         api_key=settings.openrouter_api_key,
         temperature=config["llm"]["temperature"],
-        max_retries=MAX_RETRIES,
         reasoning=REASONING,
-    ).with_structured_output(Draft, method="json_schema")
+        timeout=REQUEST_TIMEOUT_MS,
+        model_kwargs={"retries": NO_SDK_RETRY},
+        openrouter_provider={"require_parameters": True},
+    ).with_structured_output(Draft, method="json_schema", strict=True)
+
+
+def _log_trace_background(handler):
+    """Фоновым потоком — см. collector/services/pipeline/llm.py::_log_trace_background:
+    собственный HTTP-клиент Langfuse может зависать глубоко внутри SDK на
+    десятки минут, и наблюдаемость не должна иметь возможность задержать
+    прогон top_n."""
+    job_id, entity = logctx.current_job_id(), logctx.current_entity()
+
+    def run():
+        logctx.set_job_id(job_id)
+        with logctx.entity(entity):
+            observability.log_trace(handler)
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 def draft(llm, seed, history, task, *, session_id, name, offer=""):
@@ -72,15 +110,19 @@ def draft(llm, seed, history, task, *, session_id, name, offer=""):
         "callbacks": [handler] if handler else [],
     }
     for attempt in range(1, TRANSPORT_RETRIES + 1):
+        pool = ThreadPoolExecutor(max_workers=1)
         try:
-            result = llm.invoke(messages, config=config)
+            future = pool.submit(llm.invoke, messages, config=config)
+            result = future.result(timeout=HARD_TIMEOUT_S)
             if handler:
-                observability.log_trace(handler)
+                _log_trace_background(handler)
             return result
-        except httpx.TransportError:
+        except (httpx.TransportError, OutputParserException, ResponseValidationError, FutureTimeoutError):
             if attempt == TRANSPORT_RETRIES:
                 raise
             time.sleep(attempt)
+        finally:
+            pool.shutdown(wait=False)
 
 
 FIRST = (

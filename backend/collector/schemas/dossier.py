@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from llm_schema import LLMSchema
+
 
 class Hook(BaseModel):
     angle: str = Field(description="угол: «хвалят за скорость, но три жалобы на недозвон»")
@@ -17,7 +19,7 @@ class Pain(BaseModel):
     severity: Literal["видно явно", "предполагается", "не видно"]
 
 
-class Dossier(BaseModel):
+class Dossier(LLMSchema):
     summary: str
     hooks: list[Hook] = Field(default_factory=list)
     pains: list[Pain] = Field(default_factory=list, max_length=4)

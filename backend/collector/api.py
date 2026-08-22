@@ -32,7 +32,11 @@ from writer.services import operations as writer_operations
 OPERATIONS["writer.outreach"] = writer_operations.open_new_threads
 PIPELINES["write"] = {"title": "Черновики топ-N", "steps": ("writer.outreach",)}
 
+# next dev занимает следующий свободный порт, если 3000 занят чем-то другим
+# (в докере, например) — фиксированный список origins тогда молча ломает SSE
+# CORS-отказом без единого сообщения в интерфейсе. Регэксп покрывает любой порт.
 WEB_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+WEB_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1):\d+$"
 
 
 @asynccontextmanager
@@ -52,6 +56,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=WEB_ORIGINS,
+    allow_origin_regex=WEB_ORIGIN_REGEX,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )

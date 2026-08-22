@@ -10,9 +10,11 @@ HTTP и сайдкар, а не путь к файлу.
 Повторы делает сам Fetcher (retries=3, retry_delay=1 по умолчанию) — своего цикла нет.
 """
 
+import gzip
 import hashlib
 import json
 import logging
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -57,7 +59,11 @@ def is_cached(url):
 def get(url, **kw):
     """GET через слой сырья. Возвращает сырой HTML."""
     if is_cached(url):
-        return storage.get(hashlib.sha1(url.encode()).hexdigest())
+        try:
+            return storage.get(hashlib.sha1(url.encode()).hexdigest())
+        except (gzip.BadGzipFile, EOFError, zlib.error) as error:
+            network_logger.warning(f"raw/ повреждён для {url} ({error}) — перекачиваю")
+            storage.discard(url)
 
     # Часть curl-ошибок (например "URL rejected: Port number...") не несёт URL
     # в тексте — эта строка компенсирует их, сопоставление по соседней строке

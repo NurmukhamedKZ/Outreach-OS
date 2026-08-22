@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 
+from llm_schema import LLMSchema
+
 
 class Question(BaseModel):
     text: str = Field(description="вопрос клиента, дословно")
@@ -12,7 +14,7 @@ class Promo(BaseModel):
     quote: str = Field(description="ДОСЛОВНАЯ цитата из подписи")
 
 
-class InstagramAnalysis(BaseModel):
+class InstagramAnalysis(LLMSchema):
     bio_summary: str | None = Field(None)
     content_themes: list[str] = Field(default_factory=list)
     selling_style: str | None = Field(None)

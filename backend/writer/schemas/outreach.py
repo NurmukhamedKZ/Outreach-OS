@@ -5,7 +5,9 @@
 Поле stop — не решение, а сигнал оператору: «данных для нового повода нет».
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import Field, field_validator
+
+from llm_schema import LLMSchema
 
 # Фразы, ради отсутствия которых и написана система 2. Follow-up без нового
 # повода — это тот же шаблон, отправленный второй раз, и именно он превращает
@@ -23,7 +25,7 @@ BANNED = (
 MAX_CHARS = 700
 
 
-class Draft(BaseModel):
+class Draft(LLMSchema):
     text: str = Field(description=(
         "сообщение в WhatsApp этому человеку: по-русски, на «вы», без приветственных"
         " шаблонов и без списков. Опирается на факт из данных о компании"

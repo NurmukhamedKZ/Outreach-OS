@@ -204,7 +204,7 @@ def site_ai_signals(db, run_id, pages, weights):
     """
     from collector.services.pipeline import rebuild
     by_url = {p["url"]: p for p in pages}
-    site_texts_by_company = {}
+    site_pages_by_company = {}
     for company_id, name, city, domain in db.execute(
         "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm), c.city, c.domain"
         " FROM companies_all c LEFT JOIN company_links_all l ON l.company_id = c.company_id"
@@ -214,22 +214,26 @@ def site_ai_signals(db, run_id, pages, weights):
         (run_id, run_id, run_id)).fetchall():
         home = next((u for u in (f"https://{domain}/", f"http://{domain}/") if u in by_url), None)
         if home:
-            site_texts_by_company[(name, city)] = rebuild.html_of(by_url[home])
+            site_pages_by_company[(name, city)] = by_url[home]
 
     for answer in rebuild.load_llm_answers(db, "site"):
         company_id = company_by_subject(db, run_id, answer["subject"])
         if not company_id:
             continue
         name, _, city = answer["subject"].partition(" | ")
-        html = site_texts_by_company.get((name, city), "")
+        page = site_pages_by_company.get((name, city))
+        if not page:
+            continue
+        html = rebuild.html_of(page)
+        observed_at = page["fetched_at"]
         analysis = answer.get("analysis") or {}
         if analysis.get("hiring"):
             for hiring in analysis["hiring"]:
                 quote = hiring.get("quote") or ""
                 if quote and quote in html:
-                    emit(db, run_id, company_id, "site_hiring_sales", None, weights, quote, "")
+                    emit(db, run_id, company_id, "site_hiring_sales", observed_at, weights, quote, "")
         if analysis.get("pricing_visible") is False:
-            emit(db, run_id, company_id, "site_no_pricing", None, weights,
+            emit(db, run_id, company_id, "site_no_pricing", observed_at, weights,
                  "цены не выложены — продают через звонок", "")
 
 
@@ -245,7 +249,7 @@ def instagram_ai_signals(db, run_id, pages, weights):
     from collector.services.pipeline import rebuild
     companies = companies_by_username(db, run_id)
     feeds = {}
-    pk_by_shortcode = {}
+    post_by_shortcode = {}
     for page in pages:
         if "feed/user/" not in page["url"]:
             continue
@@ -254,7 +258,7 @@ def instagram_ai_signals(db, run_id, pages, weights):
         feeds[username] = feed["posts"]
         for post in feed["posts"]:
             if post.get("pk") and post.get("shortcode"):
-                pk_by_shortcode[post["shortcode"]] = post["pk"]
+                post_by_shortcode[post["shortcode"]] = post
     comments = {}
     for page in pages:
         if "/media/" not in page["url"] or "/comments/" not in page["url"]:
@@ -281,9 +285,10 @@ def instagram_ai_signals(db, run_id, pages, weights):
             quote = q.get("quote") or ""
             url = q.get("media_url") or ""
             shortcode = url.rstrip("/").rsplit("/p/", 1)[-1] if "/p/" in url else ""
-            pk = pk_by_shortcode.get(shortcode)
+            post = post_by_shortcode.get(shortcode)
+            pk = post["pk"] if post else None
             if pk and any(quote and quote in c["text"] for c in comments.get(pk, [])):
-                emit(db, run_id, company_id, "ig_unanswered_question", None,
+                emit(db, run_id, company_id, "ig_unanswered_question", post["taken_at"],
                      weights, quote, url)
 
 

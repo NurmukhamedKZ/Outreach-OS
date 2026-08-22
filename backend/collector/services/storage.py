@@ -27,12 +27,17 @@ def _paths(url):
 
 
 def put(url, body, meta):
-    """Записать страницу + сайдкар. Сайдкар пишется последним: страница без него
-    считается недокачанной и берётся заново (иначе потерялся бы final_url)."""
+    """Записать страницу + сайдкар. Страница пишется во временный файл и
+    переименовывается атомарно: обрыв процесса посреди gzip.write оставлял бы
+    страницу, которая existence-проверкой считается готовой, а при чтении
+    падает BadGzipFile. Сайдкар пишется последним: страница без него считается
+    недокачанной и берётся заново (иначе потерялся бы final_url)."""
     page_path, sidecar_path = _paths(url)
     RAW.mkdir(parents=True, exist_ok=True)
-    with gzip.open(page_path, "wt", encoding="utf-8") as fh:
+    tmp_path = page_path.with_suffix(page_path.suffix + ".tmp")
+    with gzip.open(tmp_path, "wt", encoding="utf-8") as fh:
         fh.write(body)
+    tmp_path.replace(page_path)
     sidecar_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     return sha_of(url)
 
@@ -42,6 +47,13 @@ def get(sha):
     path = RAW / f"{sha}.html.gz"
     with gzip.open(path, "rt", encoding="utf-8") as fh:
         return fh.read()
+
+
+def discard(url):
+    """Удалить повреждённую страницу из raw/, чтобы она перекачалась заново."""
+    page_path, sidecar_path = _paths(url)
+    page_path.unlink(missing_ok=True)
+    sidecar_path.unlink(missing_ok=True)
 
 
 def exists(url):
