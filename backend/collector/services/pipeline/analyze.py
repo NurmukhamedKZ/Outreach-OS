@@ -7,6 +7,7 @@
 """
 
 import sys
+import threading
 import tomllib
 from pathlib import Path
 
@@ -46,21 +47,27 @@ def reviews(ctx):
             return {"companies": 0, "new_calls": 0}
         llm_model = llm.structured_model(model, ReviewsAnalysis)
         ctx.log(f"отзывы: {len(targets)} компаний, модель {model}")
-        spent = 0
-        for number, (company_id, name, city, text) in enumerate(targets, 1):
-            ctx.check_cancelled()
+        lock = threading.Lock()
+
+        def process(target):
+            company_id, name, city, text = target
             with logctx.entity(f"{name} ({company_id})"):
                 prompt = reviews_prompt(name, city, text)
                 subject = f"{name} | {city}"
-                if not llm.answered(db, REVIEWS_KIND, subject, model, prompt):
-                    answer = llm.invoke(
-                        llm_model, [("system", REVIEWS_SYSTEM), ("human", prompt)],
-                        session_id=ctx.job_id, name="analyze.reviews", subject=subject,
-                    )
+                with lock:
+                    cached = llm.answered(db, REVIEWS_KIND, subject, model, prompt)
+                if cached:
+                    return False
+                answer = llm.invoke(
+                    llm_model, [("system", REVIEWS_SYSTEM), ("human", prompt)],
+                    session_id=ctx.job_id, name="analyze.reviews", subject=subject,
+                )
+                with lock:
                     llm.store_answer(db, REVIEWS_KIND, subject, model, prompt,
                                      {"analysis": answer.model_dump()})
-                    spent += 1
-            ctx.progress(number, len(targets), "отзывы")
+                return True
+
+        spent = sum(llm.run_concurrent(ctx, targets, process, "отзывы"))
         ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
         return {"companies": len(targets), "new_calls": spent}
     finally:
