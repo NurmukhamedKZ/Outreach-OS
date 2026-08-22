@@ -246,19 +246,25 @@ def instagram(ctx):
             return {"accounts": 0, "new_calls": 0}
         llm_model = llm.structured_model(model, InstagramAnalysis)
         ctx.log(f"инстаграм: {len(accounts)} аккаунтов, модель {model}")
-        spent = 0
-        for number, (username, prompt_text) in enumerate(accounts, 1):
-            ctx.check_cancelled()
+        lock = threading.Lock()
+
+        def process(target):
+            username, prompt_text = target
             with logctx.entity(username):
-                if not llm.answered(db, IG_LAYER_KIND, username, model, prompt_text):
-                    answer = llm.invoke(
-                        llm_model, [("system", IG_LAYER_SYSTEM), ("human", prompt_text)],
-                        session_id=ctx.job_id, name="analyze.instagram", subject=username,
-                    )
+                with lock:
+                    cached = llm.answered(db, IG_LAYER_KIND, username, model, prompt_text)
+                if cached:
+                    return False
+                answer = llm.invoke(
+                    llm_model, [("system", IG_LAYER_SYSTEM), ("human", prompt_text)],
+                    session_id=ctx.job_id, name="analyze.instagram", subject=username,
+                )
+                with lock:
                     llm.store_answer(db, IG_LAYER_KIND, username, model, prompt_text,
                                      {"analysis": answer.model_dump()})
-                    spent += 1
-            ctx.progress(number, len(accounts), "инстаграм")
+                return True
+
+        spent = sum(llm.run_concurrent(ctx, accounts, process, "инстаграм"))
         ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
         return {"accounts": len(accounts), "new_calls": spent}
     finally:
