@@ -33,13 +33,24 @@
 
 ## Архитектура
 
-Один новый метод в существующем файле, без новых модулей:
+```
+backend/collector/services/
+  store.py     connect(): DERIVED-соединение получает check_same_thread=False
+  pipeline/
+    llm.py       + MAX_WORKERS, run_concurrent(ctx, targets, worker, label)
+    analyze.py     reviews/site/instagram/dossier: цикл -> closure process(target) + run_concurrent
+```
 
-```
-backend/collector/services/pipeline/
-  llm.py       + MAX_WORKERS, run_concurrent(ctx, targets, worker, label)
-  analyze.py     reviews/site/instagram/dossier: цикл -> closure process(target) + run_concurrent
-```
+**`check_same_thread=False` — обязательная правка, не опция.** По
+умолчанию `sqlite3.connect()` привязывает соединение к создавшему его
+потоку: любое обращение из чужого потока падает
+`sqlite3.ProgrammingError` ещё до захвата `Lock()` — сам лок эту проверку
+не обходит. Флаг снимается только на `DERIVED`-соединении в
+`store.connect()` (`STATE`-соединение закрывается в той же функции, в
+потоки не уходит). Флаг сам по себе не делает соединение потокобезопасным
+— он лишь снимает проверку «тот ли поток»; фактическая безопасность
+обеспечивается `threading.Lock()` вокруг `llm.answered`/`llm.store_answer`
+в `analyze.py`, как и было решено ниже.
 
 `run_concurrent` мирроит `collect.py::in_parallel` в части проброса
 `job_id`, но не мирроит его контракт возврата: `in_parallel` — генератор
@@ -50,6 +61,18 @@ backend/collector/services/pipeline/
 не потеряться в сводке "ошибок ×N".
 
 ## Компоненты
+
+### `collector/services/store.py::connect()`
+
+Единственная строка правки — `DERIVED`-соединение, которое возвращается
+вызывающему и уходит в воркер-потоки `run_concurrent`:
+
+```python
+db = sqlite3.connect(DERIVED, check_same_thread=False)
+```
+
+`STATE`-соединение (строкой выше по файлу) не трогается — оно живёт и
+закрывается внутри `connect()`, наружу не выходит.
 
 ### `collector/services/pipeline/llm.py`
 
@@ -186,10 +209,11 @@ KIND/SYSTEM/prompt-функцией/ключом ответа (`"analysis"` у �
 
 ## Rollout
 
-1. `llm.py` — добавить `MAX_WORKERS`, `run_concurrent`.
-2. `analyze.py` — по очереди `reviews`, `site`, `instagram`, `dossier`:
+1. `store.py::connect()` — `check_same_thread=False` на `DERIVED`-соединении.
+2. `llm.py` — добавить `MAX_WORKERS`, `run_concurrent`.
+3. `analyze.py` — по очереди `reviews`, `site`, `instagram`, `dossier`:
    цикл заменяется на closure `process(target)` + `run_concurrent`.
-3. Новый тест на `run_concurrent` (без сети).
-4. `uv run pytest -q` — все 129+ тестов проходят.
-5. Ручной прогон «Анализ и досье» на дашборде, проверка внахлёст
+4. Новый тест на `run_concurrent` (без сети).
+5. `uv run pytest -q` — все 129+ тестов проходят.
+6. Ручной прогон «Анализ и досье» на дашборде, проверка внахлёст
    таймстампов в `backend.log`.
