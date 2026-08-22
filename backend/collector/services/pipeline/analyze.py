@@ -358,21 +358,27 @@ def dossier(ctx):
             return {"companies": 0, "new_calls": 0}
         llm_model = llm.structured_model(model, Dossier)
         ctx.log(f"досье: {len(targets)} компаний, модель {model}")
-        spent = 0
-        for number, (company_id, name, city, facts) in enumerate(targets, 1):
-            ctx.check_cancelled()
+        lock = threading.Lock()
+
+        def process(target):
+            company_id, name, city, facts = target
             with logctx.entity(f"{name} ({company_id})"):
                 prompt = dossier_prompt(name, city, facts)
                 subject = f"{name} | {city}"
-                if not llm.answered(db, DOSSIER_KIND, subject, model, prompt):
-                    answer = llm.invoke(
-                        llm_model, [("system", DOSSIER_SYSTEM), ("human", prompt)],
-                        session_id=ctx.job_id, name="analyze.dossier", subject=subject,
-                    )
+                with lock:
+                    cached = llm.answered(db, DOSSIER_KIND, subject, model, prompt)
+                if cached:
+                    return False
+                answer = llm.invoke(
+                    llm_model, [("system", DOSSIER_SYSTEM), ("human", prompt)],
+                    session_id=ctx.job_id, name="analyze.dossier", subject=subject,
+                )
+                with lock:
                     llm.store_answer(db, DOSSIER_KIND, subject, model, prompt,
                                      {"dossier": answer.model_dump()})
-                    spent += 1
-            ctx.progress(number, len(targets), "досье")
+                return True
+
+        spent = sum(llm.run_concurrent(ctx, targets, process, "досье"))
         ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
         return {"companies": len(targets), "new_calls": spent}
     finally:
