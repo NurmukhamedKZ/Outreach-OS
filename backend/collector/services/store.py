@@ -56,7 +56,7 @@ def connect():
     state_db.commit()
     state_db.close()
 
-    db = sqlite3.connect(DERIVED)
+    db = sqlite3.connect(DERIVED, check_same_thread=False)
     db.row_factory = sqlite3.Row
     db.executescript(_schema("DERIVED"))
     db.execute("PRAGMA journal_mode=WAL")
