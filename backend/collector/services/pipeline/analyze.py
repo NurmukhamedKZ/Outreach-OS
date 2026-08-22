@@ -144,21 +144,27 @@ def site(ctx):
             return {"companies": 0, "new_calls": 0}
         llm_model = llm.structured_model(model, SiteAnalysis)
         ctx.log(f"сайты: {len(targets)} компаний, модель {model}")
-        spent = 0
-        for number, (company_id, name, city, pages_text) in enumerate(targets, 1):
-            ctx.check_cancelled()
+        lock = threading.Lock()
+
+        def process(target):
+            company_id, name, city, pages_text = target
             with logctx.entity(f"{name} ({company_id})"):
                 prompt = site_prompt(name, city, pages_text)
                 subject = f"{name} | {city}"
-                if not llm.answered(db, SITE_KIND, subject, model, prompt):
-                    answer = llm.invoke(
-                        llm_model, [("system", SITE_SYSTEM), ("human", prompt)],
-                        session_id=ctx.job_id, name="analyze.site", subject=subject,
-                    )
+                with lock:
+                    cached = llm.answered(db, SITE_KIND, subject, model, prompt)
+                if cached:
+                    return False
+                answer = llm.invoke(
+                    llm_model, [("system", SITE_SYSTEM), ("human", prompt)],
+                    session_id=ctx.job_id, name="analyze.site", subject=subject,
+                )
+                with lock:
                     llm.store_answer(db, SITE_KIND, subject, model, prompt,
                                      {"analysis": answer.model_dump()})
-                    spent += 1
-            ctx.progress(number, len(targets), "сайты")
+                return True
+
+        spent = sum(llm.run_concurrent(ctx, targets, process, "сайты"))
         ctx.log(f"  оплачено вызовов: {spent}, остальное взято из кэша")
         return {"companies": len(targets), "new_calls": spent}
     finally:
