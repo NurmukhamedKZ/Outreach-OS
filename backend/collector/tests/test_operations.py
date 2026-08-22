@@ -131,14 +131,17 @@ def test_operations_use_the_context_they_are_given():
 
     Проверка по модулю, а не по телу функции: операции делегируют работу
     соседям в том же файле (probe.gis_list -> collect_list), и требовать вызов
-    именно в теле значило бы запрещать это. ctx.progress не требуется: пробе из
-    двух запросов нечего показывать в счётчике.
+    именно в теле значило бы запрещать это. Слои analyze.* делегируют дальше —
+    общему llm.run_concurrent, который и зовёт ctx.check_cancelled на каждой
+    завершённой задаче; на это требование закрывает вторая ветка условия.
+    ctx.progress не требуется: пробе из двух запросов нечего показывать в счётчике.
     """
     from collector.services.pipeline import OPERATIONS
 
     for name, operation in OPERATIONS.items():
         source = inspect.getsource(inspect.getmodule(operation))
-        assert "ctx.check_cancelled" in source, f"{name}: отмену не спрашивает никто"
+        assert "ctx.check_cancelled" in source or "run_concurrent" in source, \
+            f"{name}: отмену не спрашивает никто"
         assert "ctx.log" in source, f"{name}: молчит в лог"
 
 
