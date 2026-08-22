@@ -8,7 +8,7 @@
 import json
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
 
 import httpx
 from langchain_core.exceptions import OutputParserException
@@ -50,6 +50,37 @@ REQUEST_TIMEOUT_MS = 60_000
 # его в свой класс исключения вместо httpx.TransportError, и без явного
 # перехвата это валило прогон на одном оборванном соединении.
 TRANSPORT_RETRIES = 3
+
+# Провайдеров со structured_outputs для модели из config.toml — около десятка;
+# больше потоков чаще ловит 429, не даёт кэшу состязаться быстрее.
+MAX_WORKERS = 8
+
+
+def run_concurrent(ctx, targets, worker, label):
+    """targets -> worker(target) в пуле потоков; check_cancelled/progress — из
+    главного потока, по мере завершения задач.
+
+    job_id пробрасывается в воркер-потоки явно (ThreadPoolExecutor не
+    наследует contextvars вызывающего потока) — тот же приём, что в
+    collect.py::in_parallel. Первая же ошибка worker() всплывает из
+    future.result() без перехвата: analyze.* должен падать на первой
+    ошибке LLM-вызова так же, как падал последовательный цикл, а не
+    проглатывать её в сводке.
+    """
+    job_id = logctx.current_job_id()
+
+    def run(target):
+        logctx.set_job_id(job_id)
+        return worker(target)
+
+    results = []
+    with ThreadPoolExecutor(MAX_WORKERS) as pool:
+        futures = [pool.submit(run, target) for target in targets]
+        for number, future in enumerate(as_completed(futures), 1):
+            ctx.check_cancelled()
+            results.append(future.result())
+            ctx.progress(number, len(targets), label)
+    return results
 # httpx timeout=REQUEST_TIMEOUT_MS доверять нельзя целиком: если провайдер
 # стримит редкие keep-alive байты, каждый такой байт сбрасывает read-timeout,
 # и запрос технически "не простаивает", просто генерирует ответ очень долго

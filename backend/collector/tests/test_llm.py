@@ -1,5 +1,7 @@
 """llm.invoke(): обёртка над .invoke() с langfuse-callback, без сети."""
 
+import threading
+
 import httpx
 import pytest
 
@@ -97,3 +99,56 @@ def test_invoke_does_not_log_trace_without_handler(monkeypatch):
     llm.invoke(fake, [("human", "h")], session_id="job-1", name="analyze.reviews", subject="s")
 
     assert calls == []
+
+
+class DummyCtx:
+    def __init__(self):
+        self.cancelled_checks = 0
+        self.progress_calls = []
+
+    def check_cancelled(self):
+        self.cancelled_checks += 1
+
+    def progress(self, current, total, label):
+        self.progress_calls.append((current, total, label))
+
+
+def test_run_concurrent_collects_all_results():
+    ctx = DummyCtx()
+    lock = threading.Lock()
+    seen = []
+
+    def worker(target):
+        with lock:
+            seen.append(target)
+        return target * 2
+
+    results = llm.run_concurrent(ctx, [1, 2, 3, 4], worker, "test")
+
+    assert sorted(results) == [2, 4, 6, 8]
+    assert sorted(seen) == [1, 2, 3, 4]
+    assert ctx.cancelled_checks == 4
+    assert len(ctx.progress_calls) == 4
+    assert all(total == 4 and label == "test" for _, total, label in ctx.progress_calls)
+
+
+def test_run_concurrent_raises_first_worker_error():
+    ctx = DummyCtx()
+
+    def worker(target):
+        if target == 2:
+            raise ValueError("boom")
+        return target
+
+    with pytest.raises(ValueError, match="boom"):
+        llm.run_concurrent(ctx, [1, 2, 3], worker, "test")
+
+
+def test_run_concurrent_empty_targets_returns_empty_list():
+    ctx = DummyCtx()
+
+    results = llm.run_concurrent(ctx, [], lambda target: target, "test")
+
+    assert results == []
+    assert ctx.cancelled_checks == 0
+    assert ctx.progress_calls == []
