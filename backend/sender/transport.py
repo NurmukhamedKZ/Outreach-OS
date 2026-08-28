@@ -11,6 +11,7 @@ Node — тупая труба: держит сокеты Baileys, шлёт те
 """
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 import httpx
 
@@ -70,5 +71,9 @@ class Transport:
         return response.json()
 
 
+@lru_cache(maxsize=1)
 def build() -> Transport:
+    """Один клиент на процесс. Новый `AsyncClient` на каждый вызов никто не
+    закрывает, а зовут `build()` из тика прогрева, часового монитора и ручки
+    /pair — это сотни повисших пулов соединений в сутки."""
     return Transport(settings.sender_node_url, httpx.AsyncClient())

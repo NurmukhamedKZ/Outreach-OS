@@ -91,3 +91,31 @@ def test_set_status_rejects_unknown_status(client):
                          json={"status": "почти активен"})
 
     assert response.status_code == 422
+
+
+def test_number_is_normalized_to_one_canonical_form(client):
+    http, db = client
+
+    created = http.post("/api/sender/numbers", json={"number": " +7 (700) 111-22-33 "}).json()
+
+    assert created["number"] == "+77001112233"
+    assert numbers.get(db, "+77001112233")["session_dir"] == "sessions/+77001112233"
+
+
+def test_same_sim_in_two_formats_is_one_pool_row(client):
+    """Иначе одна SIM — две сессии Baileys и два дневных лимита."""
+    http, _ = client
+    http.post("/api/sender/numbers", json={"number": "+77001112233"})
+
+    response = http.post("/api/sender/numbers", json={"number": "77001112233"})
+
+    assert response.status_code == 409
+
+
+def test_path_traversal_in_number_is_rejected(client):
+    """Из номера Node собирает путь к каталогу сессии."""
+    http, _ = client
+
+    response = http.post("/api/sender/numbers", json={"number": "../../etc/passwd"})
+
+    assert response.status_code == 422

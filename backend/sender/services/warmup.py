@@ -108,7 +108,7 @@ async def tick(db: sqlite3.Connection, transport, config: dict,
     отличается от живого общения ровно тем, из-за чего номера и банят.
     """
     _promote_new(db, config, now)
-    recipient = _who_waits_for_incoming(db, config, now) or _anyone_reachable(db)
+    recipient = _recipient(db, config, now)
     if recipient is None:
         return None
     sender_number = _next_sender(db, config, now, skip=recipient)
@@ -145,32 +145,30 @@ def _promote_new(db: sqlite3.Connection, config: dict, now: datetime) -> None:
             numbers.set_status(db, row["number"], "warming")
 
 
-def _who_waits_for_incoming(db: sqlite3.Connection, config: dict,
-                            now: datetime) -> str | None:
-    """Номер в пассивной фазе, которому пора получить входящее.
+def _recipient(db: sqlite3.Connection, config: dict, now: datetime) -> str | None:
+    """Кому пишем в этот тик.
 
-    Дни 2-4 новый номер только принимает — примерно раз в два часа. Без этого
+    Приоритет у пассивной фазы: она короткая, и пропущенные в ней сутки не
+    наверстываются. Но принимает такой номер примерно раз в два часа — без
     интервала десятиминутный тик засыпал бы его полутора сотнями сообщений в
     сутки, то есть ровно тем всплеском, от которого прогрев и защищает.
+    Поэтому номер в пассивной фазе, которому ещё не пора, не выбирается и
+    обычным путём тоже.
     """
     gap = timedelta(hours=config["warmup"]["passive_interval_hours"])
-    waiting = []
+    waiting, ordinary = [], []
     for row in numbers.all(db):
         if row["status"] not in REACHABLE_STATUSES:
             continue
         if plan(row["started_at"], now, config["warmup"]).phase is not Phase.passive:
+            ordinary.append(row["number"])
             continue
         last = numbers.last_warmup_to(db, row["number"])
         if last is None or now - datetime.fromisoformat(last) >= gap:
             waiting.append((last or "", row["number"]))
-    return min(waiting)[1] if waiting else None
-
-
-def _anyone_reachable(db: sqlite3.Connection) -> str | None:
-    """Обычная внутренняя переписка: получатель — любой из своих."""
-    reachable = [row["number"] for row in numbers.all(db)
-                 if row["status"] in REACHABLE_STATUSES]
-    return random.choice(reachable) if reachable else None
+    if waiting:
+        return min(waiting)[1]
+    return random.choice(ordinary) if ordinary else None
 
 
 def _next_sender(db: sqlite3.Connection, config: dict, now: datetime,

@@ -5,6 +5,7 @@
 разъедется с реальностью — и разъедется молча.
 """
 
+import re
 import sqlite3
 from datetime import datetime
 
@@ -13,8 +14,30 @@ STATUSES = ("new", "warming", "active", "quarantined", "banned")
 FIELDS = "number, session_dir, status, started_at, note"
 
 
+NUMBER = re.compile(r"^\+\d{10,15}$")
+
+
 class UnknownNumberError(Exception):
     """Номера нет в пуле — почти всегда опечатка в номере, а не гонка."""
+
+
+class InvalidNumberError(ValueError):
+    """Номер не похож на номер. Проверка не косметическая: из этой строки
+    Node собирает путь к каталогу сессии, а пул — первичный ключ."""
+
+
+def normalize(raw: str) -> str:
+    """Единственная каноническая форма: +7XXXXXXXXXX.
+
+    Без неё одна SIM, заведённая как `+7700…` и как `7700…`, становится двумя
+    строками пула, двумя сессиями Baileys и двумя дневными лимитами, а строка
+    с `../` уводит каталог сессии за пределы `sessions/`.
+    """
+    cleaned = re.sub(r"[\s()\u2010-\u2015-]", "", raw.strip())
+    candidate = "+" + cleaned.lstrip("+")
+    if not NUMBER.match(candidate):
+        raise InvalidNumberError(raw)
+    return candidate
 
 
 def register(db: sqlite3.Connection, number: str, session_dir: str, now: datetime) -> None:

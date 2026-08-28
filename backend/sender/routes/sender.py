@@ -54,17 +54,19 @@ def status() -> dict:
 @router.post("/numbers", status_code=201)
 def register(body: NewNumber) -> dict:
     settings = config.load()
+    number = canonical(body.number)
     with closing(connect()) as db:
         try:
-            numbers.get(db, body.number)
+            numbers.get(db, number)
         except numbers.UnknownNumberError:
-            numbers.register(db, body.number, f"sessions/{body.number}", now())
-            return card(db, numbers.get(db, body.number), settings)
-        raise HTTPException(409, f"номер {body.number} уже в пуле")
+            numbers.register(db, number, f"sessions/{number}", now())
+            return card(db, numbers.get(db, number), settings)
+        raise HTTPException(409, f"номер {number} уже в пуле")
 
 
 @router.post("/numbers/{number}/pair")
 async def pair(number: str) -> dict:
+    number = canonical(number)
     with closing(connect()) as db:
         try:
             numbers.get(db, number)
@@ -76,6 +78,7 @@ async def pair(number: str) -> dict:
 @router.post("/numbers/{number}/status")
 def set_status(number: str, body: NewStatus) -> dict:
     settings = config.load()
+    number = canonical(number)
     with closing(connect()) as db:
         try:
             numbers.set_status(db, number, body.status, body.note)
@@ -84,6 +87,15 @@ def set_status(number: str, body: NewStatus) -> dict:
             raise HTTPException(404, f"номера {number} нет в пуле") from None
         except ValueError as error:
             raise HTTPException(422, str(error)) from None
+
+
+def canonical(raw: str) -> str:
+    """Номер приводится к одной форме на границе, а не в каждом вызове ниже:
+    из этой строки Node собирает путь к каталогу сессии."""
+    try:
+        return numbers.normalize(raw)
+    except numbers.InvalidNumberError:
+        raise HTTPException(422, f"это не похоже на номер: {raw}") from None
 
 
 def card(db: sqlite3.Connection, row: dict, settings: dict) -> dict:

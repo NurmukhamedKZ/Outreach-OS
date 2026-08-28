@@ -15,17 +15,36 @@ const PYTHON_URL = process.env.SENDER_PYTHON_URL ?? "http://127.0.0.1:8787";
 const SESSIONS = path.resolve("sessions");
 const WEBHOOK_RETRY_MS = 5000;
 const WEBHOOK_LOG_INTERVAL_MS = 60000;
+const WEBHOOK_MAX_ATTEMPTS = 12;      // ~час с учётом backoff, потом событие теряется
+const RECONNECT_BASE_MS = 5000;
+const RECONNECT_MAX_MS = 300000;      // пять минут между попытками — потолок
+const RECONNECT_MAX_ATTEMPTS = 12;    // дальше молчим: связь чинит человек
 
 const log = pino({ level: "info" });
-const sockets = new Map();   // number -> {sock, state, reconnects}
+// number -> {sock, state, reconnects, day, attempts}
+const sockets = new Map();
+// key идемпотентности -> provider_id уже отправленного сообщения
+const sentKeys = new Map();
 let lastWebhookLog = 0;
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+// Счётчик реконнектов суточный, а не за всё время работы процесса: Python
+// сравнивает его с health.reconnects_per_day_alert, и накопительный счётчик
+// отправил бы в карантин весь пул за один длинный аптайм.
+function countReconnect(entry) {
+  const day = today();
+  return entry.day === day
+    ? { day, reconnects: entry.reconnects + 1 }
+    : { day, reconnects: 1 };
+}
 
 const jid = (number) => `${number.replace(/\D/g, "")}@s.whatsapp.net`;
 
 async function connect(number) {
   const { state, saveCreds } = await useMultiFileAuthState(path.join(SESSIONS, number));
   const sock = makeWASocket({ auth: state, logger: log.child({ number }) });
-  const entry = sockets.get(number) ?? { reconnects: 0 };
+  const entry = sockets.get(number) ?? { reconnects: 0, day: today(), attempts: 0 };
   sockets.set(number, { ...entry, sock, state: "connecting" });
 
   sock.ev.on("creds.update", saveCreds);
@@ -33,18 +52,33 @@ async function connect(number) {
   sock.ev.on("connection.update", async (update) => {
     const current = sockets.get(number);
     if (update.connection === "open") {
-      sockets.set(number, { ...current, state: "connected" });
+      sockets.set(number, { ...current, state: "connected", attempts: 0 });
     }
     if (update.connection === "close") {
       const code = update.lastDisconnect?.error?.output?.statusCode;
       const loggedOut = code === DisconnectReason.loggedOut;
-      sockets.set(number, {
-        ...current,
-        state: loggedOut ? "loggedOut" : "reconnecting",
-        reconnects: current.reconnects + (loggedOut ? 0 : 1),
-      });
       // loggedOut не переподключается: сессия мертва, номер требует телефона.
-      if (!loggedOut) setTimeout(() => connect(number), WEBHOOK_RETRY_MS);
+      if (loggedOut) {
+        sockets.set(number, { ...current, state: "loggedOut" });
+      } else {
+        const attempts = current.attempts + 1;
+        const exhausted = attempts > RECONNECT_MAX_ATTEMPTS;
+        sockets.set(number, {
+          ...current,
+          ...countReconnect(current),
+          state: exhausted ? "stalled" : "reconnecting",
+          attempts,
+        });
+        // Экспоненциальный backoff с потолком и капом попыток. Плоские пять
+        // секунд давали бы ~17k подключений в сутки с одного адреса на номер,
+        // которому не ввели pairing code, — само по себе повод для бана.
+        if (exhausted) {
+          log.error({ number, attempts }, "сокет не поднимается, дальше — руками");
+        } else {
+          const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempts - 1), RECONNECT_MAX_MS);
+          setTimeout(() => connect(number), delay);
+        }
+      }
     }
     await notify({ kind: "connection", number, state: sockets.get(number).state });
   });
@@ -84,7 +118,7 @@ async function connect(number) {
 // Лог — один раз в минуту, а не на каждый несостоявшийся повтор: до того,
 // как в Python приедет ручка /api/sender/webhook, каждый повтор падал бы
 // 404-строкой и утопил бы реальные события.
-async function notify(payload) {
+async function notify(payload, attempt = 1) {
   try {
     const response = await fetch(`${PYTHON_URL}/api/sender/webhook`, {
       method: "POST",
@@ -98,7 +132,12 @@ async function notify(payload) {
       log.warn({ error: String(error), payload }, "вебхук не доставлен, повтор");
       lastWebhookLog = now;
     }
-    setTimeout(() => notify(payload), WEBHOOK_RETRY_MS);
+    if (attempt >= WEBHOOK_MAX_ATTEMPTS) {
+      log.error({ payload }, "вебхук так и не доставлен, событие потеряно");
+      return;
+    }
+    const delay = Math.min(WEBHOOK_RETRY_MS * 2 ** (attempt - 1), RECONNECT_MAX_MS);
+    setTimeout(() => notify(payload, attempt + 1), delay);
   }
 }
 
@@ -112,6 +151,13 @@ const routes = {
   // которому требуется разнообразный контент. Медиа приезжает как путь к файлу
   // внутри node/media/, потому что Python не должен гонять байты через ручку.
   "POST /send": async ({ number, to, text, type = "text", key }) => {
+    // Ключ идемпотентности: повтор с тем же key не отправляет второе сообщение,
+    // а возвращает id первого. Дубликат в холодном аутриче — прямой повод
+    // нажать Report, и защита от него не может жить только на стороне Python.
+    if (key && sentKeys.has(key)) {
+      log.info({ number, to, key }, "повтор по ключу, второй отправки нет");
+      return { ok: true, sent: true, provider_id: sentKeys.get(key) };
+    }
     const sock = await socketOf(number);
     const content = {
       text: { text },
@@ -121,10 +167,18 @@ const routes = {
     if (!content) return { ok: false, sent: false, error: `unknown type ${type}` };
     try {
       const sent = await sock.sendMessage(jid(to), content);
+      if (key) sentKeys.set(key, sent.key.id);
       log.info({ number, to, key }, "отправлено");
       return { ok: true, sent: true, provider_id: sent.key.id };
     } catch (error) {
-      return { ok: false, sent: false, error: String(error) };
+      // sent:false — обещание «фрейм в сокет не ушёл», на нём Python строит
+      // безопасный ретрай. Дать его можно, только когда сокет и не был поднят;
+      // ошибка на живом сокете (например, таймаут подтверждения) означает
+      // «неизвестно», и это 500 -> TransportError -> разбирается человеком.
+      if (sockets.get(number)?.state !== "connected") {
+        return { ok: false, sent: false, error: String(error) };
+      }
+      throw error;
     }
   },
   "POST /check": async ({ number, to }) => {

@@ -174,18 +174,19 @@ async def test_failed_send_does_not_spend_the_limit(db):
     assert numbers.sent_today(db, "+7701", at(5)) == 0
 
 
-async def test_exhausted_numbers_are_skipped(db):
+async def test_exhausted_number_is_skipped(db, monkeypatch):
+    """Выбор получателя зафиксирован: иначе тест меряет не лимит, а рулетку."""
+    monkeypatch.setattr(warmup.random, "choice", lambda options: options[0])
     add(db, "+7700", "warming")
     add(db, "+7701", "active")
     transport = FakeTransport()
     limit = CONFIG["warmup"]["internal_ramp"][0]
-    for _ in range(limit * 2):
-        await warmup.tick(db, transport, CONFIG, at(5))
+
+    for _ in range(limit):
+        assert await warmup.tick(db, transport, CONFIG, at(5)) == "+7701"
 
     assert await warmup.tick(db, transport, CONFIG, at(5)) is None
-    assert len(transport.calls) <= limit * 2, "дневной лимит превышен"
-    for number in ("+7700", "+7701"):
-        assert numbers.sent_today(db, number, at(5)) <= limit
+    assert numbers.sent_today(db, "+7701", at(5)) == limit
 
 
 async def test_lonely_number_has_nobody_to_write_to(db):
