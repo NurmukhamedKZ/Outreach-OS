@@ -32,7 +32,7 @@ def snapshot():
     return {
         "sourcing": system1,
         "writer": writer_stats(),
-        "sender": {"status": "coming_soon"},
+        "sender": sender_stats(),
         "jobs": {
             "active": jobs.active(),
             "recent": jobs.recent(RECENT_JOBS),
@@ -51,6 +51,21 @@ def writer_stats():
             "sent": counted(db, "role = 'outgoing' AND sent_text IS NOT NULL"),
             "replies": counted(db, "role = 'incoming'"),
         }
+
+
+def sender_stats():
+    """Номера по статусам. Путь до state.db читается так же, как у writer'а, —
+    из конфига системы, а не импортом её модулей."""
+    db_path = threads_db_path()
+    if not db_path.exists():
+        return {"status": "live", "numbers": {}}
+    with closing(sqlite3.connect(db_path)) as db:
+        try:
+            rows = db.execute(
+                "SELECT status, count(*) FROM numbers GROUP BY status").fetchall()
+        except sqlite3.OperationalError:
+            return {"status": "live", "numbers": {}}
+    return {"status": "live", "numbers": dict(rows)}
 
 
 def counted(db, condition):

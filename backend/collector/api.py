@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from collector.routes import events, jobs, leads, operations, pipeline, runs, stats, suppression
 from collector.services import jobs as queue
 from collector.services.pipeline import OPERATIONS, PIPELINES
-from sender import stub as sender
+from sender.routes import sender
 from writer.routes import threads as writer
 from writer.services import operations as writer_operations
 
@@ -43,9 +43,13 @@ WEB_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1):\d+$"
 async def lifespan(_app: FastAPI):
     queue.fail_orphans()
     worker = asyncio.create_task(queue.worker_loop())
+    monitor = asyncio.create_task(sender.monitor_numbers())
+    warming = asyncio.create_task(sender.warm_numbers())
     yield
     queue.cancel_current()  # без этого фоновый поток текущей джобы держит процесс живым
     worker.cancel()
+    monitor.cancel()
+    warming.cancel()
 
 
 app = FastAPI(
