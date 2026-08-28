@@ -17,7 +17,7 @@ def client(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
     db = migrate.connect(path)
     # Роутер закрывает своё соединение после каждого запроса — как в проде, где
-    # каждый запрос открывает своё. Шатолько одна связь на все запросы нельзя:
+    # каждый запрос открывает своё. Шарить одну связь на все запросы нельзя:
     # второй вызов register попал бы в закрытое соединение и дал 500 вместо 409.
     monkeypatch.setattr(routes, "connect", lambda: migrate.connect(path))
     monkeypatch.setattr(routes, "now", lambda: NOW)

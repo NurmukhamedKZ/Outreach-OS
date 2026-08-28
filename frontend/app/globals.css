@@ -169,37 +169,12 @@ a.nav-item:hover {
   color: var(--ink);
 }
 
-.nav-item.is-locked {
-  color: var(--muted);
-  cursor: default;
-}
-
 .nav-label {
   flex: 1;
 }
 
 @media (max-width: 900px) {
   .nav-label {
-    display: none;
-  }
-}
-
-.nav-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: var(--surface-strong);
-  color: var(--ink);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-@media (max-width: 900px) {
-  .nav-badge {
     display: none;
   }
 }
@@ -411,6 +386,12 @@ a.nav-item:hover {
   outline-offset: -1px;
 }
 
+.error-line {
+  margin: 8px 0 0;
+  color: var(--error);
+  font-size: 13px;
+}
+
 /* --- обзор: метрики систем ---------------------------------------------------- */
 
 .metrics {
@@ -437,14 +418,6 @@ a.nav-item:hover {
   border: 1px solid var(--hairline-strong);
   border-radius: var(--radius-card);
   background: var(--canvas);
-}
-
-.metric-card.is-soon {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  border-style: dashed;
-  color: var(--muted);
 }
 
 .metric-head {

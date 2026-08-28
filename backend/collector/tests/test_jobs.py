@@ -97,21 +97,21 @@ def test_events_broker():
 
 
 def test_frontend_contract(stores):
-    """Контракт фронтенда: снапшот счётчиков знает все три системы, у стаба
-    системы 3 есть адрес и честный 501."""
+    """Контракт фронтенда: снапшот счётчиков знает все три системы, у системы 3
+    есть живой пул номеров на своём адресе."""
     snapshot = metrics.snapshot()
     assert set(snapshot) == {"sourcing", "writer", "sender", "jobs"}, sorted(snapshot)
     assert set(snapshot["writer"]) == {"threads", "drafts", "sent", "replies"}
-    assert snapshot["sender"]["status"] == "coming_soon"
+    assert snapshot["sender"]["status"] == "live"
 
     assert metrics.threads_db_path().name == "state.db", \
         "путь state.db разошёлся с config.toml системы 2"
 
-    from sender import stub as sender
+    from sender.routes import sender
 
-    assert sender.status()["status"] == "coming_soon"
+    assert sender.router.prefix == "/api/sender"
     paths = {route.path for route in sender.router.routes}
-    assert "/api/sender" in paths and "/api/sender/{rest_of_path:path}" in paths, paths
+    assert "/api/sender" in paths and "/api/sender/numbers" in paths, paths
 
 def test_publish_from_worker_thread_reaches_subscriber():
     """Событие из рабочего потока доходит до ждущего подписчика сразу.

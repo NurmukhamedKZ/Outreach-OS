@@ -19,12 +19,17 @@ export default function Sender() {
   const [status, setStatus] = useState<SenderStatus | null>(null);
   const [code, setCode] = useState<string | null>(null);
   const [number, setNumber] = useState("");
+  const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(() => {
     fetchSender().then(setStatus).catch(() => undefined);
   }, []);
 
   useEffect(reload, [reload]);
+
+  /** Дубликат номера и лежащий Node приезжают сюда ошибкой запроса: без этого
+   * кнопка молча ничего не делает, а в консоли висит unhandled rejection. */
+  const report = (failure: unknown) => setError(String(failure));
 
   return (
     <>
@@ -69,18 +74,25 @@ export default function Sender() {
         />
         <button
           className="btn"
-          onClick={() => registerNumber(number).then(reload)}
+          onClick={() => {
+            setError(null);
+            registerNumber(number).then(reload).catch(report);
+          }}
           disabled={!number}
         >
           Добавить в пул
         </button>
         <button
           className="btn"
-          onClick={() => pairNumber(number).then((body) => setCode(body.code))}
+          onClick={() => {
+            setError(null);
+            pairNumber(number).then((body) => setCode(body.code)).catch(report);
+          }}
           disabled={!number}
         >
           Получить код привязки
         </button>
+        {error && <p className="error-line">{error}</p>}
         {code && (
           <p className="mono">
             Введите на телефоне: WhatsApp → Связанные устройства → Привязка по коду → {code}
