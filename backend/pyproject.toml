@@ -14,14 +14,16 @@ dependencies = [
     "langchain-openrouter>=0.2.8",
     "pydantic-settings>=2.15.0",
     "langfuse>=3.0.0",
+    "httpx>=0.28",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "pytest-asyncio>=1.0"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-testpaths = ["collector/tests", "writer/tests"]
+testpaths = ["collector/tests", "writer/tests", "sender/tests"]
+asyncio_mode = "auto"
 # Тесты в collector/tests и writer/tests совпадают по базовым именам
 # (test_schema, test_leads, test_operations) и не являются пакетами — без
 # importlib-режима pytest считает их одним модулем и падает на сборке.

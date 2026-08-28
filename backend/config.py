@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None
     langfuse_host: str | None = None
+    sender_node_url: str = "http://127.0.0.1:8788"
+    sender_webhook_secret: str | None = None
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
 
 
 settings = Settings()

@@ -1,0 +1,48 @@
+# Единственное место конфигурации системы 3, по образцу collector/config.toml
+# и writer/config.toml. Пути относительны каталогу sender/, а не текущему:
+# тот же конфиг читается и из sender/, и из backend/ (uvicorn монтирует
+# роутеры sender'а в общее приложение).
+
+state_db = "../collector/data/state.db"
+
+[autopilot]
+mode = "off"                    # off | replies | full; он же kill switch
+
+[window]
+timezone = "Asia/Almaty"
+hours    = [10, 18]
+weekdays = [1, 2, 3, 4, 5]
+
+[pace]
+tick_seconds   = 20
+jitter_minutes = [2, 15]
+
+[cadence]
+follow_up_days = [3, 7]
+max_touches    = 3
+
+[limits]
+auto_replies_per_thread = 1
+max_reply_chars         = 600
+
+[warmup]
+socket_delay_hours = 24
+passive_days       = 3
+internal_ramp      = [6, 12, 20, 30, 45, 60]
+cold_start_day     = 11
+cold_ramp          = [5, 10, 15, 20, 25, 30]
+ceiling            = 30
+# Как часто просыпается прогрев. Одна отправка за тик: шесть сообщений подряд
+# отличаются от живого общения ровно тем, из-за чего номера и банят.
+tick_minutes       = 10
+
+[health]
+window_days              = 7
+min_sample               = 20
+min_delivered_rate       = 0.8
+min_reply_rate           = 0.05
+reconnects_per_day_alert = 5
+
+[retry]
+backoff_minutes     = [1, 5, 30]
+stuck_after_minutes = 5
