@@ -54,6 +54,10 @@ def connect(path: Path) -> sqlite3.Connection:
 
 def apply(db: sqlite3.Connection) -> None:
     db.executescript(SCHEMA)
+    # Кому ушло прогревочное сообщение. У боевой строки получатель выводится из
+    # треда, у прогревочной треда нет — а знать его надо: пассивная фаза требует
+    # не «сколько отправлено», а «как давно этот номер что-то получал».
+    ensure_column(db, "outbox", "recipient", "TEXT")
     db.commit()
 
 

@@ -47,6 +47,23 @@ def test_internal_ramp_follows_the_config():
     assert warmup.plan(STARTED, at(6), WARMUP).daily_limit == 12
 
 
+def test_internal_ramp_is_not_clipped_by_the_cold_ceiling():
+    """`ceiling` — предел холодных касаний, а не переписки со своими: дни 9-10
+    идут объёмом 45 и 60, ради которого рампа и написана."""
+    assert warmup.plan(STARTED, at(9), WARMUP).daily_limit == 45
+    assert warmup.plan(STARTED, at(10), WARMUP).daily_limit == 60
+
+
+def test_socket_delay_counts_hours_not_calendar_days():
+    """Номер, заведённый в 23:50, иначе выходил бы из паузы через 10 минут."""
+    late = "2026-08-01T23:50:00+00:00"
+    ten_minutes_later = datetime(2026, 8, 2, 0, 0, tzinfo=timezone.utc)
+    a_day_later = datetime(2026, 8, 2, 23, 50, tzinfo=timezone.utc)
+
+    assert warmup.plan(late, ten_minutes_later, WARMUP).phase is warmup.Phase.socket_delay
+    assert warmup.plan(late, a_day_later, WARMUP).phase is not warmup.Phase.socket_delay
+
+
 def test_cold_ramp_starts_at_day_eleven_and_stops_at_ceiling():
     assert warmup.plan(STARTED, at(11), WARMUP).daily_limit == 5
     assert warmup.plan(STARTED, at(40), WARMUP).daily_limit == WARMUP["ceiling"]
