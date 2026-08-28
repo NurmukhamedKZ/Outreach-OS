@@ -1,44 +1,91 @@
 "use client";
 
-/** Система 3: отправка. Раздел закрыт, содержимое честно берётся с бэкенда
- * (GET /api/sender), а не хардкодом: когда система появится, страница
- * оживёт без правок фронта.
+/** Система 3: отправка. Пул номеров с днём прогрева и остатком дневного
+ * лимита. Содержимое по-прежнему целиком приезжает с бэкенда (GET /api/sender),
+ * страница не знает ни календаря прогрева, ни порогов.
  */
 
-import { useEffect, useState } from "react";
-import { CheckCircleIcon, LockSimpleIcon } from "@phosphor-icons/react";
-import { fetchSender, type SenderStatus } from "../api";
+import { useCallback, useEffect, useState } from "react";
+import { fetchSender, pairNumber, registerNumber, type SenderStatus } from "../api";
+
+const PHASE_LABEL: Record<string, string> = {
+  socket_delay: "сокет не привязан",
+  passive: "только входящие",
+  internal: "внутренний прогрев",
+  cold: "боевые касания",
+};
 
 export default function Sender() {
   const [status, setStatus] = useState<SenderStatus | null>(null);
+  const [code, setCode] = useState<string | null>(null);
+  const [number, setNumber] = useState("");
 
-  useEffect(() => {
+  const reload = useCallback(() => {
     fetchSender().then(setStatus).catch(() => undefined);
   }, []);
+
+  useEffect(reload, [reload]);
 
   return (
     <>
       <header className="page-head">
         <h1>Отправка</h1>
-        <span className="page-sub">система 3 · в разработке</span>
+        <span className="page-sub">
+          система 3 · автопилот: {status?.autopilot ?? "…"}
+        </span>
       </header>
 
-      <section className="card soon-hero">
-        <span className="badge-pill">
-          <LockSimpleIcon size={12} /> скоро
-        </span>
-        <h2>Письма дойдут, а не пропадут в спаме</h2>
-        <p>
-          Домены для холодных писем, прогрев ящиков и расписание рассылки. Первые
-          две системы соберут и напишут черновики, эта доставит их адресатам.
-        </p>
-        <ul className="soon-list">
-          {(status?.planned ?? []).map((item) => (
-            <li key={item}>
-              <CheckCircleIcon size={15} /> {item}
-            </li>
-          ))}
-        </ul>
+      <section className="card">
+        <h2>Пул номеров</h2>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Номер</th><th>Статус</th><th>День</th><th>Фаза</th>
+              <th>Сегодня</th><th>Осталось</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(status?.numbers ?? []).map((row) => (
+              <tr key={row.number}>
+                <td className="mono">{row.number}</td>
+                <td>{row.status}</td>
+                <td>{row.day}</td>
+                <td>{PHASE_LABEL[row.phase] ?? row.phase}</td>
+                <td>{row.sent_today} / {row.daily_limit}</td>
+                <td>{row.capacity}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="card">
+        <h2>Подключить номер</h2>
+        <input
+          className="input mono"
+          placeholder="+77001112233"
+          value={number}
+          onChange={(event) => setNumber(event.target.value)}
+        />
+        <button
+          className="btn"
+          onClick={() => registerNumber(number).then(reload)}
+          disabled={!number}
+        >
+          Добавить в пул
+        </button>
+        <button
+          className="btn"
+          onClick={() => pairNumber(number).then((body) => setCode(body.code))}
+          disabled={!number}
+        >
+          Получить код привязки
+        </button>
+        {code && (
+          <p className="mono">
+            Введите на телефоне: WhatsApp → Связанные устройства → Привязка по коду → {code}
+          </p>
+        )}
       </section>
     </>
   );

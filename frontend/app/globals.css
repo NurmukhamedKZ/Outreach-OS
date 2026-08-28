@@ -374,6 +374,43 @@ a.nav-item:hover {
   color: var(--muted);
 }
 
+/* --- таблицы и поля ввода ------------------------------------------------------- */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.table th,
+.table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--hairline);
+  text-align: left;
+}
+
+.table th {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.input {
+  font: inherit;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-btn);
+  background: var(--canvas);
+  color: var(--ink);
+}
+
+.input:focus {
+  outline: 2px solid var(--ink);
+  outline-offset: -1px;
+}
+
 /* --- обзор: метрики систем ---------------------------------------------------- */
 
 .metrics {
@@ -1052,64 +1089,6 @@ a.nav-item:hover {
 .inbox-count.has-replies {
   background: var(--ink);
   color: #fff;
-}
-
-/* --- заглушка системы 3 ----------------------------------------------------------- */
-
-.badge-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: var(--surface-strong);
-  color: var(--ink);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.soon-hero {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 16px;
-  padding: 48px;
-  max-width: 560px;
-}
-
-.soon-hero h2 {
-  margin: 0;
-  font-size: 36px;
-  font-weight: 600;
-  letter-spacing: -1.08px;
-}
-
-.soon-hero p {
-  margin: 0;
-  color: var(--body);
-  font-size: 16px;
-  max-width: 44ch;
-}
-
-.soon-list {
-  margin: 8px 0 0;
-  padding: 0;
-  list-style: none;
-  color: var(--body);
-  font-size: 14px;
-}
-
-.soon-list li {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 0;
-}
-
-.soon-list svg {
-  color: var(--muted);
 }
 
 /* --- состояния ---------------------------------------------------------------------- */

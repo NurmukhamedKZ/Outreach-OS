@@ -8,7 +8,6 @@
 */
 
 import { useEffect, useState } from "react";
-import { PaperPlaneTiltIcon } from "@phosphor-icons/react";
 import { fetchCatalogue, type PipelineCatalogue } from "./api";
 import { JobMonitor, PipelineActions } from "@/components/JobMonitor";
 import { OperationsPanel } from "@/components/OperationsPanel";
@@ -80,12 +79,20 @@ export default function Overview() {
             </div>
           </section>
 
-          <section className="metric-card is-soon">
-            <div className="metric-head">
-              <PaperPlaneTiltIcon size={13} /> Отправка
+          <section className="metric-card">
+            <div className="metric-head">Отправка</div>
+            <div className="metric-row is-total">
+              <span>номеров в пуле</span>
+              <b>{totalNumbers(stats.sender)}</b>
             </div>
-            <span>Домены, прогрев ящиков и расписание рассылки.</span>
-            <span className="tag">скоро</span>
+            <div className="metric-row">
+              <span>активных</span>
+              <b>{stats.sender.numbers.active ?? 0}</b>
+            </div>
+            <div className="metric-row">
+              <span>греется</span>
+              <b>{stats.sender.numbers.warming ?? 0}</b>
+            </div>
           </section>
         </div>
       ) : (
@@ -142,3 +149,7 @@ const STATUS: Record<string, string> = {
   failed: "не прошёл",
   cancelled: "прервано",
 };
+
+function totalNumbers(sender: { numbers: Record<string, number> }) {
+  return Object.values(sender.numbers).reduce((sum, count) => sum + count, 0);
+}

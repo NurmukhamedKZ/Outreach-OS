@@ -146,7 +146,7 @@ export function cancelJob(id: number) {
 export type DashboardStats = {
   sourcing: Stats & { available: number };
   writer: { threads: number; drafts: number; sent: number; replies: number };
-  sender: { status: string };
+  sender: { status: string; numbers: Record<string, number> };
   jobs: { active: Job | null; recent: Job[] };
 };
 
@@ -240,12 +240,36 @@ export function fetchThreads() {
   return json<{ threads: ThreadSummary[] }>("/api/threads");
 }
 
-// ---- Система 3: статус отправки ----
+// ---- Система 3: пул номеров ----
 
-export type SenderStatus = { status: string; title: string; planned: string[] };
+export type SenderNumber = {
+  number: string;
+  status: "new" | "warming" | "active" | "quarantined" | "banned";
+  started_at: string;
+  day: number;
+  phase: "socket_delay" | "passive" | "internal" | "cold";
+  daily_limit: number;
+  sent_today: number;
+  capacity: number;
+  note: string | null;
+};
+
+export type SenderStatus = {
+  status: string;
+  autopilot: "off" | "replies" | "full";
+  numbers: SenderNumber[];
+};
 
 export function fetchSender() {
   return json<SenderStatus>("/api/sender");
+}
+
+export async function registerNumber(number: string): Promise<SenderNumber> {
+  return post("/api/sender/numbers", { number });
+}
+
+export async function pairNumber(number: string): Promise<{ code: string }> {
+  return post(`/api/sender/numbers/${encodeURIComponent(number)}/pair`, {});
 }
 
 function post<T>(url: string, body: unknown) {

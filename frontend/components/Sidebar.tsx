@@ -1,13 +1,10 @@
 "use client";
 
-/** Навигация по трём системам. Система 3 закрыта до релиза: пункт виден,
- * замок и бейдж «скоро» честно говорят, что за ней, а клик никуда не ведёт.
- */
+/** Навигация по трём системам. */
 
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import {
-  LockSimpleIcon,
   PulseIcon,
   TargetIcon,
   PenNibIcon,
@@ -20,7 +17,7 @@ const NAV = [
   { href: "/", label: "Обзор", icon: SquaresFourIcon },
   { href: "/sourcing", label: "Сбор лидов", icon: TargetIcon },
   { href: "/writer", label: "Персонализация", icon: PenNibIcon },
-  { href: "/sender", label: "Отправка", icon: PaperPlaneTiltIcon, locked: true },
+  { href: "/sender", label: "Отправка", icon: PaperPlaneTiltIcon },
 ];
 
 export default function Sidebar() {
@@ -40,30 +37,20 @@ export default function Sidebar() {
       </Link>
 
       <nav className="nav">
-        {NAV.map(({ href, label, icon: Icon, locked }) =>
-          locked ? (
-            <span key={href} className="nav-item is-locked" aria-disabled="true">
-              <Icon size={17} />
-              <span className="nav-label">{label}</span>
-              <span className="nav-badge">
-                <LockSimpleIcon size={11} /> скоро
-              </span>
-            </span>
-          ) : (
-            <Link
-              key={href}
-              href={href}
-              className="nav-item"
-              aria-current={pathname === href}
-            >
-              <Icon size={17} />
-              <span className="nav-label">{label}</span>
-              {href !== "/" && active && kindOf(href) === systemOf(active.kind) && (
-                <span className="nav-live" title={`${active.title}: ${active.status === "running" ? "выполняется" : "в очереди"}`} />
-              )}
-            </Link>
-          ),
-        )}
+        {NAV.map(({ href, label, icon: Icon }) => (
+          <Link
+            key={href}
+            href={href}
+            className="nav-item"
+            aria-current={pathname === href}
+          >
+            <Icon size={17} />
+            <span className="nav-label">{label}</span>
+            {href !== "/" && active && kindOf(href) === systemOf(active.kind) && (
+              <span className="nav-live" title={`${active.title}: ${active.status === "running" ? "выполняется" : "в очереди"}`} />
+            )}
+          </Link>
+        ))}
       </nav>
 
       <div className="sidebar-foot">
