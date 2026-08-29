@@ -13,6 +13,7 @@ test_frontend_contract в tests/test_jobs.py.
 import sqlite3
 import tomllib
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 
 from collector.db import lead as store
@@ -54,18 +55,27 @@ def writer_stats():
 
 
 def sender_stats():
-    """Номера по статусам. Путь до state.db читается так же, как у writer'а, —
-    из конфига системы, а не импортом её модулей."""
+    """Номера по статусам, очередь и пульс воркера.
+
+    Счётчики очереди берутся у самой системы 3, а не своим SQL: дублировать её
+    определение «созревших, но не отправленных» здесь значило бы иметь две
+    версии главного симптома аварии.
+    """
+    from sender.db import outbox
+    from sender.services import worker
     db_path = threads_db_path()
     if not db_path.exists():
-        return {"status": "live", "numbers": {}}
+        return {"status": "live", "numbers": {}, "queue": {}, "heartbeat": None}
     with closing(sqlite3.connect(db_path)) as db:
+        db.row_factory = sqlite3.Row
         try:
             rows = db.execute(
                 "SELECT status, count(*) FROM numbers GROUP BY status").fetchall()
+            queue = outbox.counters(db, datetime.now(timezone.utc))
         except sqlite3.OperationalError:
-            return {"status": "live", "numbers": {}}
-    return {"status": "live", "numbers": dict(rows)}
+            return {"status": "live", "numbers": {}, "queue": {}, "heartbeat": None}
+    return {"status": "live", "numbers": dict(rows),
+            "queue": queue, "heartbeat": worker.heartbeat()}
 
 
 def counted(db, condition):

@@ -1,6 +1,6 @@
 """Веб-контур системы 3: пул наружу, регистрация номера, pairing code."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi import FastAPI
@@ -8,6 +8,9 @@ from fastapi.testclient import TestClient
 
 from sender.db import migrate, numbers
 from sender.routes import sender as routes
+from sender.tests.conftest import FakeTransport
+from sender.tests.test_config import switch  # noqa: F401  — фикстура, а не имя
+from sender.tests.test_conversation import add_draft, open_thread
 
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -119,3 +122,90 @@ def test_path_traversal_in_number_is_rejected(client):
     response = http.post("/api/sender/numbers", json={"number": "../../etc/passwd"})
 
     assert response.status_code == 422
+
+
+def _client_with(monkeypatch, tmp_path, transport):
+    """Роутер поверх базы со всеми тремя слоями и транспортом без сети."""
+    from writer.db import thread_store
+    path = tmp_path / "state.db"
+    owner = thread_store.connect(path)
+    owner.execute("CREATE TABLE IF NOT EXISTS suppression ("
+                  " handle TEXT PRIMARY KEY, added_at TEXT NOT NULL, reason TEXT)")
+    owner.commit()
+    owner.close()
+    db = migrate.connect(path)
+    monkeypatch.setattr(routes, "connect", lambda: migrate.connect(path))
+    monkeypatch.setattr(routes, "now", lambda: NOW)
+    monkeypatch.setattr(routes, "build_transport", lambda: transport)
+    numbers.register(db, "+77001112233", "sessions/x", NOW - timedelta(days=20))
+    numbers.set_status(db, "+77001112233", "active")
+    open_thread(db, "+77010000001")
+    add_draft(db, "+77010000001")
+    app = FastAPI()
+    app.include_router(routes.router)
+    return TestClient(app), db
+
+
+@pytest.fixture
+def client_with_thread(tmp_path, monkeypatch):
+    http, db = _client_with(monkeypatch, tmp_path, FakeTransport())
+    yield http, db
+    db.close()
+
+
+@pytest.fixture
+def client_no_whatsapp(tmp_path, monkeypatch):
+    http, db = _client_with(monkeypatch, tmp_path, FakeTransport(has_whatsapp=False))
+    yield http, db
+    db.close()
+
+
+def test_queue_puts_the_operators_text_into_the_outbox(client_with_thread):
+    http, db = client_with_thread
+
+    body = http.post("/api/sender/queue", json={
+        "thread_id": "+77010000001", "text": "Правленый оператором текст"}).json()
+
+    assert body["status"] == "pending"
+    assert db.execute("SELECT queued_text FROM messages").fetchone()[0] \
+        == "Правленый оператором текст"
+    assert db.execute("SELECT sent_text FROM messages").fetchone()[0] is None, \
+        "сообщение попало в историю до отправки"
+
+
+def test_queueing_the_same_message_twice_is_a_conflict(client_with_thread):
+    http, _ = client_with_thread
+    http.post("/api/sender/queue", json={"thread_id": "+77010000001"})
+
+    response = http.post("/api/sender/queue", json={"thread_id": "+77010000001"})
+
+    assert response.status_code == 409
+
+
+def test_a_number_without_whatsapp_answers_with_words_not_a_traceback(client_no_whatsapp):
+    http, _ = client_no_whatsapp
+
+    response = http.post("/api/sender/queue", json={"thread_id": "+77010000001"})
+
+    assert response.status_code == 422
+    assert "whatsapp" in response.json()["detail"].lower()
+
+
+def test_autopilot_switches_and_is_visible_in_the_status(client, switch):
+    http, _ = client
+
+    assert http.post("/api/sender/autopilot", json={"mode": "full"}).json() == \
+        {"autopilot": "full"}
+    assert http.get("/api/sender").json()["autopilot"] == "full"
+
+
+def test_autopilot_rejects_an_unknown_mode(client, switch):
+    http, _ = client
+    assert http.post("/api/sender/autopilot", json={"mode": "turbo"}).status_code == 422
+
+
+def test_status_carries_the_queue_and_the_heartbeat(client):
+    http, _ = client
+    body = http.get("/api/sender").json()
+    assert set(body["queue"]) == {"queued", "sent_today", "overdue"}
+    assert "heartbeat" in body

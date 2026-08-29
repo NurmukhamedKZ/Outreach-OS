@@ -13,14 +13,15 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from sender.db import migrate, numbers
-from sender.services import config, health, pool, warmup
+from sender.db import conversation, migrate, numbers, outbox
+from sender.services import config, health, pool, queue, warmup, worker
 from sender.transport import build as build_transport
 
 router = APIRouter(prefix="/api/sender")
 log = logging.getLogger(__name__)
 
 MONITOR_INTERVAL_SECONDS = 3600
+RECENT_SENDS = 10
 
 
 class NewNumber(BaseModel):
@@ -30,6 +31,15 @@ class NewNumber(BaseModel):
 class NewStatus(BaseModel):
     status: str
     note: str | None = None
+
+
+class QueueRequest(BaseModel):
+    thread_id: str
+    text: str | None = None
+
+
+class AutopilotRequest(BaseModel):
+    mode: str
 
 
 def connect() -> sqlite3.Connection:
@@ -46,8 +56,10 @@ def status() -> dict:
     with closing(connect()) as db:
         return {
             "status": "live",
-            "autopilot": settings["autopilot"]["mode"],
+            "autopilot": config.autopilot(),
             "numbers": [card(db, row, settings) for row in numbers.all(db)],
+            "queue": outbox.counters(db, now()),
+            "heartbeat": worker.heartbeat(),
         }
 
 
@@ -87,6 +99,70 @@ def set_status(number: str, body: NewStatus) -> dict:
             raise HTTPException(404, f"номера {number} нет в пуле") from None
         except ValueError as error:
             raise HTTPException(422, str(error)) from None
+
+
+@router.post("/queue", status_code=201)
+async def enqueue(body: QueueRequest) -> dict:
+    """Кнопка оператора. Работает в любом режиме автопилота: режим ограничивает
+    автомат, а не человека."""
+    settings = config.load()
+    with closing(connect()) as db:
+        if body.text is not None:
+            message_id = conversation.pending_message(db, body.thread_id)
+            if message_id is None:
+                raise HTTPException(409, "отправлять нечего: черновика нет")
+            if not body.text.strip():
+                raise HTTPException(400, "пустой текст отправленным не бывает")
+            with db:
+                conversation.set_queued_text(db, message_id, body.text.strip())
+        try:
+            outbox_id = await queue.enqueue(db, build_transport(), body.thread_id,
+                                            now(), settings)
+        except conversation.UnknownThreadError:
+            raise HTTPException(404, f"треда {body.thread_id} нет") from None
+        except queue.NotReachableError:
+            raise HTTPException(422, f"у {body.thread_id} нет WhatsApp — "
+                                     "тред закрыт как unreachable") from None
+        except (queue.ClosedThreadError, queue.NothingToQueueError,
+                outbox.AlreadyQueuedError) as conflict:
+            raise HTTPException(409, str(conflict)) from None
+        except pool.NoNumberAvailableError as busy:
+            raise HTTPException(503, str(busy)) from None
+        return _queue_row(db, outbox_id)
+
+
+@router.get("/queue")
+def show_queue(thread_id: str | None = None) -> dict:
+    with closing(connect()) as db:
+        rows = outbox.recent(db, RECENT_SENDS)
+        if thread_id is not None:
+            rows = [row for row in rows if row["thread_id"] == thread_id]
+        return {"queue": [row for row in rows if row["status"] in ("pending", "sending")],
+                "recent": rows}
+
+
+@router.post("/autopilot")
+def switch_autopilot(body: AutopilotRequest) -> dict:
+    """Kill switch. Одно нажатие, никакого перезапуска процесса."""
+    try:
+        config.set_autopilot(body.mode)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from None
+    log.warning("автопилот переключён в %s", body.mode)
+    return {"autopilot": body.mode}
+
+
+def _queue_row(db: sqlite3.Connection, outbox_id: int) -> dict:
+    row = db.execute(
+        f"SELECT {outbox.FIELDS} FROM outbox WHERE outbox_id = ?",
+        (outbox_id,)).fetchone()
+    return dict(row)
+
+
+async def send_queue(publish=None) -> None:
+    """Цикл воркера для lifespan. `publish` прокидывается из collector/api.py:
+    шина событий принадлежит системе 1, и знать о ней sender не обязан."""
+    await worker.loop(connect, build_transport, publish)
 
 
 def canonical(raw: str) -> str:

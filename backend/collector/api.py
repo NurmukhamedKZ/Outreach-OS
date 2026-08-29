@@ -21,9 +21,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from collector.routes import events, jobs, leads, operations, pipeline, runs, stats, suppression
+from collector.services import events as bus
 from collector.services import jobs as queue
 from collector.services.pipeline import OPERATIONS, PIPELINES
-from sender.routes import sender
+from sender.routes import sender, webhook as sender_webhook
 from writer.routes import threads as writer
 from writer.services import operations as writer_operations
 
@@ -45,11 +46,15 @@ async def lifespan(_app: FastAPI):
     worker = asyncio.create_task(queue.worker_loop())
     monitor = asyncio.create_task(sender.monitor_numbers())
     warming = asyncio.create_task(sender.warm_numbers())
+    # Шина событий приезжает в sender параметром — тот же шов, что монтирует
+    # его роутеры и подключает операцию writer'а в общий реестр.
+    sending = asyncio.create_task(sender.send_queue(bus.publish))
     yield
     queue.cancel_current()  # без этого фоновый поток текущей джобы держит процесс живым
     worker.cancel()
     monitor.cancel()
     warming.cancel()
+    sending.cancel()
 
 
 app = FastAPI(
@@ -74,3 +79,4 @@ app.include_router(stats.router)
 app.include_router(suppression.router)
 app.include_router(writer.router)
 app.include_router(sender.router)
+app.include_router(sender_webhook.router)

@@ -92,24 +92,6 @@ def make_draft(company_id: str, request: DraftRequest):
             threads.close()
 
 
-@router.post("/{company_id}/sent")
-def mark_sent(company_id: str, request: TextRequest):
-    """Правленый оператором текст становится историей. Черновик остаётся рядом."""
-    leads, threads = open_stores()
-    try:
-        channel = channel_of(leads, company_id)
-        draft = thread_store.pending_draft(threads, channel[1])
-        if not draft:
-            raise HTTPException(409, "отправлять нечего: черновика нет")
-        if not request.text.strip():
-            raise HTTPException(400, "пустой текст отправленным не бывает")
-        thread_store.confirm(threads, draft["message_id"], request.text.strip())
-        return state(leads, threads, company_id)
-    finally:
-        leads.close()
-        threads.close()
-
-
 @router.post("/{company_id}/incoming")
 def add_incoming(company_id: str, request: TextRequest):
     leads, threads = open_stores()
@@ -177,7 +159,6 @@ def demo():
         "/api/threads",
         "/api/threads/{company_id}",
         "/api/threads/{company_id}/draft",
-        "/api/threads/{company_id}/sent",
         "/api/threads/{company_id}/incoming",
     }
     leads.close()

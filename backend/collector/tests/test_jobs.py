@@ -103,6 +103,7 @@ def test_frontend_contract(stores):
     assert set(snapshot) == {"sourcing", "writer", "sender", "jobs"}, sorted(snapshot)
     assert set(snapshot["writer"]) == {"threads", "drafts", "sent", "replies"}
     assert snapshot["sender"]["status"] == "live"
+    assert set(snapshot["sender"]) == {"status", "numbers", "queue", "heartbeat"}
 
     assert metrics.threads_db_path().name == "state.db", \
         "путь state.db разошёлся с config.toml системы 2"
@@ -111,7 +112,8 @@ def test_frontend_contract(stores):
 
     assert sender.router.prefix == "/api/sender"
     paths = {route.path for route in sender.router.routes}
-    assert "/api/sender" in paths and "/api/sender/numbers" in paths, paths
+    assert {"/api/sender", "/api/sender/numbers", "/api/sender/queue",
+            "/api/sender/autopilot"} <= paths, paths
 
 def test_publish_from_worker_thread_reaches_subscriber():
     """Событие из рабочего потока доходит до ждущего подписчика сразу.

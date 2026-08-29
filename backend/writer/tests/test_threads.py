@@ -4,6 +4,8 @@
 следующий ход агента строился бы на сообщении, которого лид не получал.
 """
 
+from pathlib import Path
+
 from writer.db import thread_store
 
 
@@ -20,7 +22,11 @@ def test_draft_stays_out_of_history_until_confirmed():
         "неподтверждённый черновик попал в историю"
     assert thread_store.pending_draft(db, "+77010000001")["message_id"] == message_id
 
-    thread_store.confirm(db, message_id, "Здравствуйте! Правленый оператором текст")
+    # sent_text теперь пишет ровно один автор — воркер после ответа транспорта
+    # (sender/services/worker.py), поэтому тест подтверждает то же UPDATE'ом.
+    db.execute("UPDATE messages SET sent_text = ?, sent_at = ? WHERE message_id = ?",
+               ("Здравствуйте! Правленый оператором текст", thread_store.now(), message_id))
+    db.commit()
     assert thread_store.pending_draft(db, "+77010000001") is None, "черновик остался висеть"
     history = thread_store.history(db, "+77010000001")
     assert [m["text"] for m in history] == ["Здравствуйте! Правленый оператором текст"], history
@@ -38,3 +44,12 @@ def test_draft_stays_out_of_history_until_confirmed():
         "угол отправленного сообщения потерян — follow-up повторит его"
     assert thread_store.silent_days(db, "+77010000001", thread_store.now()) == 0
     db.close()
+
+
+def test_writer_never_writes_sent_text_itself():
+    """Отправку подтверждает система 3 после ответа транспорта. Вторая точка
+    записи sent_text означала бы историю треда из сообщений, которых лид не
+    получал."""
+    assert not hasattr(thread_store, "confirm")
+    source = (Path(thread_store.__file__).parent.parent / "routes" / "threads.py").read_text()
+    assert "sent_text" not in source, "writer снова пишет sent_text сам"

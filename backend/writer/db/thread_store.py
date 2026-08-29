@@ -138,15 +138,6 @@ def add_draft(db, thread_id, text, angle):
     return cursor.lastrowid
 
 
-def confirm(db, message_id, sent_text):
-    """Правленый текст ложится рядом с черновиком, а не вместо него."""
-    db.execute(
-        "UPDATE messages SET sent_text = ?, sent_at = ? WHERE message_id = ?",
-        (sent_text, now(), message_id),
-    )
-    db.commit()
-
-
 def add_incoming(db, thread_id, text):
     """Ответ лида. Правкам не подлежит, поэтому draft_text у него пуст."""
     stamp = now()
