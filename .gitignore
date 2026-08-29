@@ -58,3 +58,8 @@ backend/sender/node/sessions/
 .playwright-mcp/
 
 .DS_Store
+
+# Режим автопилота — состояние машины, а не конфигурация проекта: на боевом
+# сервере он «full», в репозитории его быть не должно вовсе.
+backend/sender/autopilot
+backend/sender/autopilot.tmp
