@@ -119,7 +119,7 @@ async def monitor_numbers() -> None:
     while True:
         try:
             with closing(connect()) as db:
-                await health.check(db, build_transport(), config.load())
+                await health.check(db, build_transport(), config.load(), now())
         except Exception:
             log.exception("монитор здоровья номеров упал на тике")
         await asyncio.sleep(MONITOR_INTERVAL_SECONDS)

@@ -138,6 +138,27 @@ def counters(db: sqlite3.Connection, now: datetime) -> dict:
     }
 
 
+def rates(db: sqlite3.Connection, our_number: str, now: datetime,
+          window_days: int) -> dict:
+    """Боевые отправки номера за окно: сколько ушло, дошло и получило ответ.
+
+    Прогревочные строки (`message_id IS NULL`) исключены намеренно: свои номера
+    читают друг друга всегда, и статистика по ним говорила бы о нас, а не о том,
+    как WhatsApp относится к номеру.
+    """
+    border = stamp(now - timedelta(days=window_days))
+    row = db.execute(
+        "SELECT count(*), count(delivered_at),"
+        " (SELECT count(DISTINCT m.thread_id) FROM messages m"
+        "  WHERE m.role = 'incoming' AND m.thread_id IN"
+        "        (SELECT thread_id FROM outbox WHERE our_number = ?"
+        "         AND status = 'sent' AND message_id IS NOT NULL AND updated_at >= ?))"
+        " FROM outbox WHERE our_number = ? AND status = 'sent'"
+        "   AND message_id IS NOT NULL AND updated_at >= ?",
+        (our_number, border, our_number, border)).fetchone()
+    return {"sent": row[0], "delivered": row[1], "replies": row[2]}
+
+
 def recent(db: sqlite3.Connection, limit: int) -> list[dict]:
     rows = db.execute(
         f"SELECT {FIELDS} FROM outbox WHERE message_id IS NOT NULL"
