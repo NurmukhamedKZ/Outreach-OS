@@ -1,0 +1,101 @@
+"""Статусы доставки от Node: delivered/read и переход треда в active."""
+
+from pathlib import Path
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from sender.db import conversation, migrate, outbox
+from sender.routes import webhook
+from sender.tests.conftest import NOW
+from sender.tests.test_conversation import add_draft, open_thread
+
+
+@pytest.fixture
+def http(db, monkeypatch):
+    # Каждый запрос открывает свою связь — как в проде: sqlite-соединение,
+    # созданное в потоке теста, из портала TestClient не переживает.
+    path = Path(db.execute("PRAGMA database_list").fetchone()[2])
+    monkeypatch.setattr(webhook, "connect", lambda: migrate.connect(path))
+    monkeypatch.setattr(webhook, "now", lambda: NOW)
+    app = FastAPI()
+    app.include_router(webhook.router)
+    return TestClient(app)
+
+
+def sent_row(db, thread_id="+77010000001"):
+    open_thread(db, thread_id)
+    message_id = add_draft(db, thread_id)
+    with db:
+        outbox_id = outbox.put(db, message_id, thread_id, "+77001112233", NOW)
+        outbox.claim(db, outbox_id, NOW)
+        outbox.mark_sent(db, outbox_id, "3EB0", NOW)
+        conversation.confirm_sent(db, message_id, "3EB0", NOW)
+    return outbox_id
+
+
+def test_delivery_marks_the_row_and_wakes_the_thread(db, http):
+    """queued -> active: лид получил сообщение, чат состоялся."""
+    sent_row(db)
+
+    response = http.post("/api/sender/webhook", json={
+        "kind": "status", "number": "+77001112233",
+        "provider_id": "3EB0", "status": webhook.DELIVERED})
+
+    assert response.status_code == 200
+    assert db.execute("SELECT delivered_at FROM outbox").fetchone()[0] is not None
+    assert conversation.get(db, "+77010000001")["status"] == "active"
+
+
+def test_read_marks_read_at(db, http):
+    sent_row(db)
+    http.post("/api/sender/webhook", json={
+        "kind": "status", "number": "+77001112233",
+        "provider_id": "3EB0", "status": webhook.READ})
+    row = db.execute("SELECT delivered_at, read_at FROM outbox").fetchone()
+    assert row["read_at"] is not None
+
+
+def test_a_repeated_event_changes_nothing(db, http):
+    """Транспорт повторяет доставку события, если мы не ответили 200."""
+    sent_row(db)
+    event = {"kind": "status", "number": "+77001112233",
+             "provider_id": "3EB0", "status": webhook.DELIVERED}
+    http.post("/api/sender/webhook", json=event)
+    first = db.execute("SELECT delivered_at FROM outbox").fetchone()[0]
+
+    assert http.post("/api/sender/webhook", json=event).status_code == 200
+
+    assert db.execute("SELECT delivered_at FROM outbox").fetchone()[0] == first
+
+
+def test_delivery_does_not_resurrect_a_thread_the_human_took(db, http):
+    """Из escalated автоматического выхода нет — даже по доставке."""
+    sent_row(db)
+    with db:
+        conversation.set_status(db, "+77010000001", "escalated")
+
+    http.post("/api/sender/webhook", json={
+        "kind": "status", "number": "+77001112233",
+        "provider_id": "3EB0", "status": webhook.DELIVERED})
+
+    assert conversation.get(db, "+77010000001")["status"] == "escalated"
+
+
+def test_a_status_for_a_message_we_do_not_know_is_still_accepted(db, http):
+    """200, иначе Node будет повторять его до упора. Прогревочные строки как раз
+    такие: провайдерский id у них наш, а строки для лида за ними нет."""
+    assert http.post("/api/sender/webhook", json={
+        "kind": "status", "number": "+77001112233",
+        "provider_id": "неизвестный", "status": webhook.DELIVERED}).status_code == 200
+
+
+def test_incoming_is_accepted_and_parked_until_part_3(db, http, caplog):
+    """Ответить 200 обязаны: иначе Node ретраит входящее и топит лог."""
+    response = http.post("/api/sender/webhook", json={
+        "kind": "incoming", "number": "+77001112233", "from": "+77010000001@s.whatsapp.net",
+        "provider_id": "3EB1", "text": "а сколько это стоит?"})
+
+    assert response.status_code == 200
+    assert response.json()["handled"] is False
