@@ -214,10 +214,6 @@ export function requestDraft(companyId: string, kind: "first" | "reply" | "follo
   return post<Conversation>(`/api/threads/${encodeURIComponent(companyId)}/draft`, { kind });
 }
 
-export function markSent(companyId: string, text: string) {
-  return post<Conversation>(`/api/threads/${encodeURIComponent(companyId)}/sent`, { text });
-}
-
 export function addIncoming(companyId: string, text: string) {
   return post<Conversation>(`/api/threads/${encodeURIComponent(companyId)}/incoming`, { text });
 }
@@ -258,10 +254,37 @@ export type SenderStatus = {
   status: string;
   autopilot: "off" | "replies" | "full";
   numbers: SenderNumber[];
+  queue: { queued: number; sent_today: number; overdue: number };
+  heartbeat: string | null;
 };
 
 export function fetchSender() {
   return json<SenderStatus>("/api/sender");
+}
+
+export type QueueRow = {
+  outbox_id: number;
+  message_id: number | null;
+  thread_id: string | null;
+  our_number: string;
+  send_after: string;
+  status: string;
+  attempts: number;
+  error: string | null;
+};
+
+/** Кнопка оператора. Постановка в очередь живёт в системе 3: отправляет она же. */
+export function queueMessage(threadId: string, text: string) {
+  return post<QueueRow>("/api/sender/queue", { thread_id: threadId, text });
+}
+
+export function fetchQueue(threadId?: string) {
+  const query = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
+  return json<{ queue: QueueRow[]; recent: QueueRow[] }>(`/api/sender/queue${query}`);
+}
+
+export function setAutopilot(mode: "off" | "replies" | "full") {
+  return post<{ autopilot: string }>("/api/sender/autopilot", { mode });
 }
 
 export async function registerNumber(number: string): Promise<SenderNumber> {

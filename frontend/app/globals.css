@@ -953,6 +953,24 @@ a.nav-item:hover {
   font-size: 12px;
 }
 
+/* Третье состояние сообщения: уже не черновик, ещё не история. Пунктир вместо
+   сплошной границы — то же различие, что между «написано» и «получено». */
+.thread-log li.queued {
+  border-left: 1px dashed var(--hairline-strong);
+  opacity: 0.75;
+}
+
+.autopilot {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.autopilot .btn[aria-current="true"] {
+  background: var(--ink);
+  color: var(--canvas);
+}
+
 .thread-draft textarea,
 .thread-reply input,
 .refusal input {

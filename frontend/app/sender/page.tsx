@@ -1,12 +1,22 @@
 "use client";
 
 /** Система 3: отправка. Пул номеров с днём прогрева и остатком дневного
- * лимита. Содержимое по-прежнему целиком приезжает с бэкенда (GET /api/sender),
- * страница не знает ни календаря прогрева, ни порогов.
+ * лимита, очередь исходящих и kill switch автопилота. Содержимое по-прежнему
+ * целиком приезжает с бэкенда (GET /api/sender), страница не знает ни
+ * календаря прогрева, ни порогов.
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { fetchSender, pairNumber, registerNumber, type SenderStatus } from "../api";
+import {
+  fetchQueue,
+  fetchSender,
+  pairNumber,
+  registerNumber,
+  setAutopilot,
+  type QueueRow,
+  type SenderStatus,
+} from "../api";
+import { useLive } from "@/components/live";
 
 const PHASE_LABEL: Record<string, string> = {
   socket_delay: "сокет не привязан",
@@ -15,8 +25,23 @@ const PHASE_LABEL: Record<string, string> = {
   cold: "боевые касания",
 };
 
+const AUTOPILOT_LABEL = {
+  off: "Стоп",
+  replies: "Только ответы",
+  full: "Полный автопилот",
+} as const;
+
+const WHEN = new Intl.DateTimeFormat("ru", {
+  day: "numeric",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
 export default function Sender() {
+  const { refreshTick } = useLive();
   const [status, setStatus] = useState<SenderStatus | null>(null);
+  const [recent, setRecent] = useState<QueueRow[]>([]);
   const [code, setCode] = useState<string | null>(null);
   const [number, setNumber] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -25,7 +50,11 @@ export default function Sender() {
     fetchSender().then(setStatus).catch(() => undefined);
   }, []);
 
-  useEffect(reload, [reload]);
+  useEffect(reload, [reload, refreshTick]);
+
+  useEffect(() => {
+    fetchQueue().then((data) => setRecent(data.recent)).catch(() => undefined);
+  }, [refreshTick]);
 
   /** Дубликат номера и лежащий Node приезжают сюда ошибкой запроса: без этого
    * кнопка молча ничего не делает, а в консоли висит unhandled rejection. */
@@ -39,6 +68,59 @@ export default function Sender() {
           система 3 · автопилот: {status?.autopilot ?? "…"}
         </span>
       </header>
+
+      <section className="card">
+        <h2>Очередь</h2>
+        <div className="counters">
+          <span>
+            в очереди <b>{status?.queue.queued ?? 0}</b>
+          </span>
+          <span>
+            отправлено сегодня <b>{status?.queue.sent_today ?? 0}</b>
+          </span>
+          <span className={status && status.queue.overdue > 0 ? "has-replies" : ""}>
+            созрели, но стоят <b>{status?.queue.overdue ?? 0}</b>
+          </span>
+          <span>
+            пульс воркера{" "}
+            <b>{status?.heartbeat ? WHEN.format(new Date(status.heartbeat)) : "—"}</b>
+          </span>
+        </div>
+        <div className="autopilot">
+          {(["off", "replies", "full"] as const).map((mode) => (
+            <button
+              key={mode}
+              className="btn"
+              aria-current={status?.autopilot === mode}
+              onClick={() => {
+                setError(null);
+                setAutopilot(mode).then(reload).catch(report);
+              }}
+            >
+              {AUTOPILOT_LABEL[mode]}
+            </button>
+          ))}
+        </div>
+        {recent.length > 0 && (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Сообщение</th><th>Номер</th><th>Статус</th><th>Не раньше</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recent.map((row) => (
+                <tr key={row.outbox_id}>
+                  <td className="mono">{row.thread_id ?? "прогрев"}</td>
+                  <td className="mono">{row.our_number}</td>
+                  <td>{row.status}</td>
+                  <td>{WHEN.format(new Date(row.send_after))}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
 
       <section className="card">
         <h2>Пул номеров</h2>

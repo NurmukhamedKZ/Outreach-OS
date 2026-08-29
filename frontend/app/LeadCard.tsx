@@ -8,13 +8,23 @@ import {
   channelLink,
   fetchConversation,
   fetchLead,
-  markSent,
+  fetchQueue,
+  queueMessage,
   refuse,
   requestDraft,
   type Channel,
   type Conversation,
   type LeadDetail,
+  type QueueRow,
 } from "./api";
+import { useLive } from "@/components/live";
+
+const WHEN = new Intl.DateTimeFormat("ru", {
+  day: "numeric",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+});
 
 export default function LeadCard({
   companyId,
@@ -153,11 +163,17 @@ function ChannelRow({ channel, primary }: { channel: Channel; primary: boolean }
 
 /** Переписка с лидом. Черновик правится прямо здесь: в историю треда попадает
  *  то, что оператор реально отправил, — иначе следующий ход агента строился бы
- *  на сообщении, которого лид не получал. */
+ *  на сообщении, которого лид не получал.
+ *
+ *  Третье состояние сообщения — «в очереди»: кнопка поставила текст в outbox
+ *  системы 3, отправка случится в окне с прогретого номера. Смотрится оно там
+ *  же — между черновиком и историей, пунктиром вместо сплошной границы. */
 function Thread({ companyId }: { companyId: string }) {
+  const { refreshTick } = useLive();
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [text, setText] = useState("");
   const [reply, setReply] = useState("");
+  const [queue, setQueue] = useState<QueueRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
@@ -170,6 +186,17 @@ function Thread({ companyId }: { companyId: string }) {
       stale = true;
     };
   }, [companyId]);
+
+  useEffect(() => {
+    if (!conversation?.thread_id) return;
+    let stale = false;
+    fetchQueue(conversation.thread_id)
+      .then((data) => !stale && setQueue(data.queue))
+      .catch(() => undefined);
+    return () => {
+      stale = true;
+    };
+  }, [conversation?.thread_id, refreshTick]);
 
   function apply(data: Conversation) {
     setConversation(data);
@@ -194,6 +221,7 @@ function Thread({ companyId }: { companyId: string }) {
   // нашего сообщения — новый повод. Молчание отличается от диалога только этим.
   const last = conversation.messages[conversation.messages.length - 1];
   const kind = !last ? "first" : last.role === "incoming" ? "reply" : "followup";
+  const pending = queue.find((row) => row.message_id === conversation.draft?.message_id);
 
   return (
     <section className="thread">
@@ -206,7 +234,15 @@ function Thread({ companyId }: { companyId: string }) {
             <span>{message.text}</span>
           </li>
         ))}
-        {conversation.messages.length === 0 && <li className="placeholder">Ещё не писали.</li>}
+        {pending && (
+          <li className="queued">
+            <span className="thread-who">мы</span>
+            <span>{conversation.draft?.draft_text ?? ""}</span>
+          </li>
+        )}
+        {conversation.messages.length === 0 && !pending && (
+          <li className="placeholder">Ещё не писали.</li>
+        )}
       </ol>
 
       {conversation.draft ? (
@@ -216,9 +252,25 @@ function Thread({ companyId }: { companyId: string }) {
             Угол: <span className="mono">{conversation.draft.angle}</span>. Правьте текст здесь —
             в историю уйдёт отправленный вариант, исходный черновик сохранится рядом.
           </p>
-          <button disabled={busy || !text.trim()} onClick={() => run(() => markSent(companyId, text))}>
-            Отправлено
+          <button
+            disabled={busy || !text.trim() || Boolean(pending)}
+            onClick={() =>
+              run(async () => {
+                await queueMessage(conversation.thread_id, text);
+                setQueue((await fetchQueue(conversation.thread_id)).queue);
+                return fetchConversation(companyId);
+              })
+            }
+          >
+            {pending ? "В очереди" : "Поставить в очередь"}
           </button>
+          {pending && (
+            <p className="note">
+              Уйдёт с номера <span className="mono">{pending.our_number}</span> не раньше{" "}
+              {WHEN.format(new Date(pending.send_after))}. В историю треда сообщение попадёт
+              после подтверждения отправки.
+            </p>
+          )}
         </div>
       ) : (
         <button disabled={busy} onClick={() => run(() => requestDraft(companyId, kind))}>
