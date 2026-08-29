@@ -25,6 +25,12 @@
 **Контракт с Системой №2** — таблица `mart.lead_profiles`: `company_id`, `contact_id`,
 `segment_id`, `fit_score`, `intent_score`, `best_channel`, `why_now`, `profile`.
 
+**Состояние Системы №3.** Очередь исходящих (`outbox`), воркер с гейтами окна
+10:00–18:00 Asia/Almaty и режимы `autopilot` (`off | replies | full`, файл-переключатель
+— kill switch) реализованы; доставка по кнопке оператора и при `full` идёт через один
+путь (`sender/services/queue.py`). Входящие, агент-продавец и каденция follow-up —
+часть 3, в этой таблице остаются заявленными.
+
 ---
 
 ## 2. Пользователи
