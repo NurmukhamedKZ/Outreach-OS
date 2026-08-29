@@ -6,19 +6,30 @@
 взял кто-то другой, и мы молча уходим.
 """
 
+import asyncio
 import logging
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sender import notify
 from sender.db import conversation, numbers, outbox
-from sender.services import gates, pool
+from sender.services import config as sender_config, gates, pool, queue
 from sender.transport import TransportError
 
 log = logging.getLogger(__name__)
 
 TICK_OUTCOMES = ("sent", "cancelled", "rescheduled", "taken", "retry",
-                 "failed", "stuck")
+                 "failed", "stuck", "queued")
+
+# Один вход в очередь на тик. Автопилот, ставящий пачку, отличается от живого
+# отправителя ровно тем, из-за чего номера и банят.
+COLD_PER_TICK = 1
+
+# Кто уходит сам в каком режиме. `replies` наполнит часть 3: ответы в диалоге
+# приносит она, а холодные касания и follow-up остаются на кнопке.
+COLD_MODES = ("full",)
+
+_last_tick: datetime | None = None
 
 
 async def tick(db, transport, config: dict, now: datetime) -> str | None:
@@ -27,6 +38,9 @@ async def tick(db, transport, config: dict, now: datetime) -> str | None:
         await notify.send(f"Отправка {outbox_id} висит в sending дольше "
                           f"{config['retry']['stuck_after_minutes']} минут. "
                           "Проверь в телефоне, ушло или нет")
+    if sender_config.autopilot() in COLD_MODES:
+        if await _queue_cold_touch(db, transport, config, now):
+            return "queued"
     row = outbox.due(db, now)
     if row is None:
         return None
@@ -168,3 +182,58 @@ def sweep_stuck(db, config: dict, now: datetime) -> list[int]:
             log.error("строка %s зависла в sending: ушло или нет — знает телефон",
                       row["outbox_id"])
     return [row["outbox_id"] for row in stale]
+
+
+async def _queue_cold_touch(db, transport, config: dict, now: datetime) -> bool:
+    """Одно холодное касание за тик. False — ставить нечего или номер лида
+    оказался мёртвым: и то и другое не повод ронять тик."""
+    for candidate in conversation.first_touch_candidates(db, COLD_PER_TICK):
+        try:
+            await queue.enqueue(db, transport, candidate["thread_id"], now, config)
+            return True
+        except (queue.NotReachableError, queue.ClosedThreadError,
+                queue.NothingToQueueError, outbox.AlreadyQueuedError) as skip:
+            log.info("не ставим в очередь %s: %s", candidate["thread_id"], skip)
+        except pool.NoNumberAvailableError:
+            log.info("свободных номеров нет — холодные касания ждут завтра")
+            return False
+    return False
+
+
+def heartbeat() -> str | None:
+    """Время последнего тика. Живёт в памяти процесса, а не в базе: воркер
+    поднимается вместе с процессом, а симптом, который heartbeat ловит (задача
+    умерла, процесс жив), виден изнутри того же процесса — им же и отдаётся
+    в /api/stats."""
+    return _last_tick.isoformat(timespec="seconds") if _last_tick else None
+
+
+async def loop(db_factory, transport_factory, publish=None) -> None:
+    """Тело целиком в try/except: упавшая asyncio-задача исчезает без строки в
+    логе, и ноль отправок обнаружился бы через сутки. Heartbeat двигается даже
+    на исключении — иначе «воркер умер» и «воркеру нечего делать» выглядели бы
+    одинаково.
+
+    `publish` приходит снаружи, а не импортом шины collector'а: система 3 не
+    знает о существовании системы 1, и шов, где она узнаёт, — тот же
+    collector/api.py, что монтирует её роутеры.
+    """
+    global _last_tick
+    while True:
+        settings = sender_config.load()
+        try:
+            db = db_factory()
+            try:
+                outcome = await tick(db, transport_factory(), settings, _now())
+            finally:
+                db.close()
+            if outcome is not None and publish is not None:
+                publish({"type": "refresh", "reason": f"sender.{outcome}"})
+        except Exception:
+            log.exception("воркер outbox упал на тике")
+        _last_tick = _now()
+        await asyncio.sleep(settings["pace"]["tick_seconds"])
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
