@@ -52,20 +52,58 @@ def connect(path: Path) -> sqlite3.Connection:
     return db
 
 
+# Колонки состояния в чужих таблицах. Таблицы принадлежат системе 2, состояние
+# в них ведёт система 3: другого места для «с какого номера идёт чат» нет —
+# заводить свою копию треда значило бы два источника правды на одну переписку.
+CONVERSATION_COLUMNS = (
+    ("threads", "our_number", "TEXT"),
+    ("threads", "auto_replies", "INTEGER NOT NULL DEFAULT 0"),
+    ("threads", "next_touch_at", "TEXT"),
+    ("threads", "touch_no", "INTEGER NOT NULL DEFAULT 0"),
+    ("messages", "provider_id", "TEXT"),
+    ("messages", "handled_at", "TEXT"),
+    ("messages", "queued_text", "TEXT"),
+)
+
+
 def apply(db: sqlite3.Connection) -> None:
     db.executescript(SCHEMA)
     # Кому ушло прогревочное сообщение. У боевой строки получатель выводится из
     # треда, у прогревочной треда нет — а знать его надо: пассивная фаза требует
     # не «сколько отправлено», а «как давно этот номер что-то получал».
     ensure_column(db, "outbox", "recipient", "TEXT")
+    _conversation_state(db)
     db.commit()
 
 
+def _conversation_state(db: sqlite3.Connection) -> None:
+    """Состояние треда и сообщения. Ничего не делает, пока таблиц переписки нет:
+    их создаёт владелец (writer/collector), и порядок старта не гарантирован."""
+    if ensure_column(db, "threads", "status", "TEXT NOT NULL DEFAULT 'queued'"):
+        # Треды, существовавшие до системы 3, вёл человек: они остаются в
+        # состоянии, из которого автомат не пишет. Новые приезжают в 'queued'
+        # значением по умолчанию — open_thread системы 2 о колонке не знает.
+        db.execute("UPDATE threads SET status = 'escalated'")
+    for table, column, ddl in CONVERSATION_COLUMNS:
+        ensure_column(db, table, column, ddl)
+    if _has_table(db, "messages"):
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS messages_provider"
+                   " ON messages (provider_id) WHERE provider_id IS NOT NULL")
+
+
 def ensure_column(db: sqlite3.Connection, table: str, column: str, ddl: str) -> bool:
-    """True, если колонку добавили; False, если она уже была."""
+    """True, если колонку добавили; False, если она уже была или таблицы ещё нет."""
+    if not _has_table(db, table):
+        return False
     existing = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
     if column in existing:
         return False
     db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
     db.commit()
     return True
+
+
+def _has_table(db: sqlite3.Connection, table: str) -> bool:
+    return db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,)).fetchone() is not None

@@ -53,7 +53,8 @@ def open_thread(db, thread_id, company_id, seed):
     if thread(db, thread_id):
         return False
     db.execute(
-        "INSERT INTO threads VALUES (?, ?, ?, ?)",
+        "INSERT INTO threads (thread_id, company_id, seed, created_at)"
+        " VALUES (?, ?, ?, ?)",
         (thread_id, company_id, json.dumps(seed, ensure_ascii=False), now()),
     )
     db.commit()

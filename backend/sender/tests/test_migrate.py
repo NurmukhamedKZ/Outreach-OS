@@ -70,3 +70,74 @@ def test_one_queue_row_per_message(db):
     db.execute(insert, row)
     with pytest.raises(sqlite3.IntegrityError):
         db.execute(insert, row)
+
+
+def conversation_tables(db):
+    """Таблицы переписки создаёт их владелец (writer/collector), sender их только
+    правит. В тесте создаём их той же формы, что thread_store.SCHEMA."""
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS threads (
+          thread_id TEXT PRIMARY KEY, company_id TEXT NOT NULL,
+          seed TEXT NOT NULL, created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS messages (
+          message_id INTEGER PRIMARY KEY, thread_id TEXT NOT NULL,
+          role TEXT NOT NULL, draft_text TEXT, sent_text TEXT, angle TEXT,
+          created_at TEXT NOT NULL, sent_at TEXT);
+    """)
+    db.commit()
+
+
+def test_conversation_columns_are_added(db):
+    conversation_tables(db)
+    migrate.apply(db)
+    assert {"status", "our_number", "auto_replies", "next_touch_at", "touch_no"} \
+        <= columns(db, "threads")
+    assert {"provider_id", "handled_at", "queued_text"} <= columns(db, "messages")
+
+
+def test_threads_that_existed_before_system_3_stay_with_the_human(db):
+    """Их вёл человек. Миграция не имеет права отдать их роботу."""
+    conversation_tables(db)
+    db.execute("INSERT INTO threads VALUES ('+77010000001', 'c1', '{}', '2026-08-01T10:00:00+00:00')")
+    db.commit()
+
+    migrate.apply(db)
+
+    status = db.execute("SELECT status FROM threads").fetchone()[0]
+    assert status == "escalated", status
+
+
+def test_thread_opened_after_migration_is_queued(db):
+    """open_thread системы 2 вставляет четыре колонки и о status не знает:
+    новый тред обязан приезжать в состояние, из которого автомат пишет."""
+    conversation_tables(db)
+    migrate.apply(db)
+
+    db.execute("INSERT INTO threads (thread_id, company_id, seed, created_at)"
+               " VALUES ('+77010000002', 'c2', '{}', '2026-08-29T10:00:00+00:00')")
+    db.commit()
+
+    status = db.execute(
+        "SELECT status FROM threads WHERE thread_id = '+77010000002'").fetchone()[0]
+    assert status == "queued", status
+
+
+def test_ensure_column_skips_a_table_that_does_not_exist_yet(db):
+    """Порядок создания схемы не гарантирован: sender может подняться раньше,
+    чем collector создаст threads. Падать нельзя — колонка доедет следующим
+    connect'ом."""
+    assert migrate.ensure_column(db, "threads", "status", "TEXT") is False
+
+
+def test_provider_id_is_unique_but_nulls_do_not_collide(db):
+    """Уникальный индекс закрывает повтор вебхука: транспорт повторяет доставку
+    события, пока мы не ответили 200."""
+    conversation_tables(db)
+    migrate.apply(db)
+    insert = ("INSERT INTO messages (thread_id, role, created_at, provider_id)"
+              " VALUES ('+77010000001', 'outgoing', '2026-08-29T10:00:00+00:00', ?)")
+    db.execute(insert, ("3EB0",))
+    db.execute(insert, (None,))
+    db.execute(insert, (None,))
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute(insert, ("3EB0",))
