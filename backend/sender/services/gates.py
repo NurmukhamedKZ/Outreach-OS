@@ -87,7 +87,7 @@ def next_window_start(now: datetime, window: dict) -> datetime:
     local = now.astimezone(zone)
     if local.isoweekday() in window["weekdays"]:
         if local.hour < opens:
-            return _at(local, opens)
+            return _at(local, opens).astimezone(now.tzinfo)
         if local.hour < closes:
             return now
     candidate = _at(local, opens) + timedelta(days=1)
