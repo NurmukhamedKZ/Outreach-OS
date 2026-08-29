@@ -1,0 +1,112 @@
+"""Что делает воркер, когда отправка не удалась или её судьба неизвестна.
+
+Оба исхода плохи, но не одинаково: дубликат в холодном аутриче — прямой повод
+нажать Report, потеря сообщения — минус один лид из пятидесяти. Отсюда правило:
+переотправляем только то, про что транспорт сказал «не ушло»; всё неясное
+уходит человеку.
+"""
+
+from datetime import timedelta
+
+import pytest
+
+from sender.db import outbox
+from sender.services import config, worker
+from sender.tests.conftest import FakeTransport
+from sender.tests.test_worker import INSIDE, ready
+
+CONFIG = config.load()
+
+
+class DeadTransport:
+    """Node не ответил: результат отправки неизвестен."""
+
+    async def send(self, number, to, text, key, kind="text"):
+        from sender.transport import TransportError
+        raise TransportError("POST /send: соединение закрыто")
+
+
+@pytest.fixture(autouse=True)
+def telegram(monkeypatch):
+    """Уведомления перехватываются: тест не имеет права писать в телеграм."""
+    sent = []
+
+    async def fake(text, client=None):
+        sent.append(text)
+        return True
+
+    monkeypatch.setattr(worker.notify, "send", fake)
+    return sent
+
+
+async def test_a_frame_that_never_left_is_retried_with_backoff(db):
+    """`sent: false` — честное «фрейм в сокет не ушёл»: сообщение точно не
+    доставлено, повтор дубликата не создаст."""
+    outbox_id, _ = ready(db)
+
+    assert await worker.tick(db, FakeTransport(sent=False), CONFIG, INSIDE) == "retry"
+
+    row = db.execute("SELECT status, attempts, send_after FROM outbox").fetchone()
+    assert (row["status"], row["attempts"]) == ("pending", 1)
+    assert row["send_after"] == outbox.stamp(INSIDE + timedelta(minutes=1))
+
+
+async def test_the_backoff_grows_and_the_fourth_failure_gives_up(db, telegram):
+    outbox_id, _ = ready(db)
+    moment = INSIDE
+    for delay in CONFIG["retry"]["backoff_minutes"]:            # 1, 5, 30
+        assert await worker.tick(db, FakeTransport(sent=False), CONFIG, moment) == "retry"
+        row = db.execute("SELECT send_after FROM outbox").fetchone()
+        assert row["send_after"] == outbox.stamp(moment + timedelta(minutes=delay))
+        moment = moment + timedelta(minutes=delay)
+
+    assert await worker.tick(db, FakeTransport(sent=False), CONFIG, moment) == "failed"
+
+    assert db.execute("SELECT status FROM outbox").fetchone()[0] == "failed"
+    assert len(telegram) == 1 and "+77010000001" in telegram[0]
+
+
+async def test_an_unknown_outcome_goes_to_a_human_not_to_a_retry(db, telegram):
+    """Процесс мог умереть между отправкой и записью результата. Переотправлять
+    вслепую нельзя — дубликат дороже потери."""
+    ready(db)
+
+    assert await worker.tick(db, DeadTransport(), CONFIG, INSIDE) == "stuck"
+
+    row = db.execute("SELECT status, attempts FROM outbox").fetchone()
+    assert (row["status"], row["attempts"]) == ("stuck", 0)
+    assert db.execute("SELECT sent_text FROM messages").fetchone()[0] is None
+    assert "проверь в телефоне" in telegram[0].lower()
+
+
+async def test_a_row_hanging_in_sending_is_swept_to_stuck(db, telegram):
+    """Отправка занимает секунды. Пять минут в sending — это авария, а не работа."""
+    outbox_id, _ = ready(db)
+    with db:
+        outbox.claim(db, outbox_id, INSIDE)
+
+    swept = worker.sweep_stuck(db, CONFIG, INSIDE + timedelta(minutes=6))
+
+    assert swept == [outbox_id]
+    assert db.execute("SELECT status FROM outbox").fetchone()[0] == "stuck"
+
+
+async def test_a_fresh_row_in_sending_is_left_alone(db):
+    outbox_id, _ = ready(db)
+    with db:
+        outbox.claim(db, outbox_id, INSIDE)
+
+    assert worker.sweep_stuck(db, CONFIG, INSIDE + timedelta(minutes=4)) == []
+
+
+async def test_a_stuck_row_is_never_resent(db, telegram):
+    outbox_id, _ = ready(db)
+    with db:
+        outbox.claim(db, outbox_id, INSIDE)
+    later = INSIDE + timedelta(minutes=6)
+    transport = FakeTransport()
+
+    assert await worker.tick(db, transport, CONFIG, later) is None
+
+    assert transport.sent_calls == [], "застрявшую строку переотправили"
+    assert db.execute("SELECT status FROM outbox").fetchone()[0] == "stuck"

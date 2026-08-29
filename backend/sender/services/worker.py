@@ -8,18 +8,25 @@
 
 import logging
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 
+from sender import notify
 from sender.db import conversation, numbers, outbox
 from sender.services import gates, pool
+from sender.transport import TransportError
 
 log = logging.getLogger(__name__)
 
-TICK_OUTCOMES = ("sent", "cancelled", "rescheduled", "taken")
+TICK_OUTCOMES = ("sent", "cancelled", "rescheduled", "taken", "retry",
+                 "failed", "stuck")
 
 
 async def tick(db, transport, config: dict, now: datetime) -> str | None:
     """Исход тика или None, если делать было нечего."""
+    for outbox_id in sweep_stuck(db, config, now):
+        await notify.send(f"Отправка {outbox_id} висит в sending дольше "
+                          f"{config['retry']['stuck_after_minutes']} минут. "
+                          "Проверь в телефоне, ушло или нет")
     row = outbox.due(db, now)
     if row is None:
         return None
@@ -98,8 +105,18 @@ def _try_another_number(db, row: dict, now: datetime, config: dict) -> bool:
 
 async def _send(db, transport, row: dict, now: datetime, config: dict) -> str:
     text = conversation.outgoing_text(db, row["message_id"])
-    result = await transport.send(row["our_number"], row["thread_id"], text,
-                                  key=f"outbox-{row['outbox_id']}")
+    try:
+        result = await transport.send(row["our_number"], row["thread_id"], text,
+                                      key=f"outbox-{row['outbox_id']}")
+    except TransportError as error:
+        # «Мы не знаем, ушло ли». Это случай для человека, а не для повтора:
+        # дубликат в холодном аутриче — прямой повод нажать Report.
+        with db:
+            outbox.mark_stuck(db, row["outbox_id"], now)
+        log.warning("судьба отправки в тред %s неизвестна: %s", row["thread_id"], error)
+        await notify.send(f"Отправка в {row['thread_id']} оборвалась: {error}. "
+                          "Проверь в телефоне, ушло или нет")
+        return "stuck"
     if not result.sent:
         return await _retry(db, row, result.error, now, config)
     # Правило 2 зонтичной спеки: статус треда и запись в messages/outbox — одной
@@ -115,9 +132,39 @@ async def _send(db, transport, row: dict, now: datetime, config: dict) -> str:
 
 
 async def _retry(db, row: dict, error: str | None, now: datetime, config: dict) -> str:
-    """Безопасный ретрай: `sent: false` значит, что фрейм в сокет не ушёл.
-    Расписание попыток — Task 8."""
+    """Безопасный ретрай. `sent: false` — сокет отвалился, номер разлогинен:
+    сообщение точно не ушло, и повтор дубликата не создаст."""
+    backoff = config["retry"]["backoff_minutes"]
+    attempt = row["attempts"] + 1
+    if attempt > len(backoff):
+        with db:
+            outbox.fail(db, row["outbox_id"], error or "транспорт отказал", now)
+        log.error("отправка в тред %s не удалась %s раз — сдаёмся",
+                  row["thread_id"], len(backoff))
+        await notify.send(f"Не смогли отправить в {row['thread_id']} "
+                          f"{len(backoff)} раза подряд: {error}")
+        return "failed"
     with db:
-        outbox.reschedule(db, row["outbox_id"], now, now)
-    log.warning("не ушло (%s): тред %s", error, row["thread_id"])
-    return "rescheduled"
+        outbox.retry(db, row["outbox_id"],
+                     now + timedelta(minutes=backoff[attempt - 1]), now)
+    log.warning("не ушло (%s), попытка %s из %s: тред %s",
+                error, attempt, len(backoff), row["thread_id"])
+    return "retry"
+
+
+def sweep_stuck(db, config: dict, now: datetime) -> list[int]:
+    """Строки, висящие в sending дольше лимита. Отправка занимает секунды, так
+    что это не работа, а последствие смерти процесса между send и записью
+    результата.
+
+    ponytail: exactly-once здесь сознательно не строится — при нашем объёме это
+    единицы случаев в год; путь апгрейда — сверять с историей чата, которую
+    Baileys отдаёт при реконнекте.
+    """
+    stale = outbox.sending_since(db, now, config["retry"]["stuck_after_minutes"])
+    with db:
+        for row in stale:
+            outbox.mark_stuck(db, row["outbox_id"], now)
+            log.error("строка %s зависла в sending: ушло или нет — знает телефон",
+                      row["outbox_id"])
+    return [row["outbox_id"] for row in stale]
