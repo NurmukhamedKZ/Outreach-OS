@@ -6,9 +6,11 @@
 """
 
 import logging
+import re
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
+from functools import lru_cache
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -16,7 +18,7 @@ from pydantic import BaseModel, Field
 from config import settings
 from sender import notify
 from sender.db import conversation, migrate, numbers, outbox
-from sender.services import config
+from sender.services import config, refusal
 
 router = APIRouter(prefix="/api/sender")
 log = logging.getLogger(__name__)
@@ -59,6 +61,20 @@ def thread_of(jid: str | None) -> str | None:
         return numbers.normalize(jid.removesuffix(PERSONAL_JID))
     except numbers.InvalidNumberError:
         return None
+
+
+@lru_cache
+def _stopwords(patterns: tuple[str, ...]) -> re.Pattern:
+    """Компиляция один раз на набор: тик и ручка зовут это на каждое входящее."""
+    return re.compile("|".join(patterns), re.IGNORECASE)
+
+
+def stopword(text: str, settings: dict) -> str | None:
+    """Сработавший фрагмент или None. Проверяется ДО модели: классификатор
+    вероятностный, и его проценты ошибок приходятся ровно на раздражённые
+    короткие сообщения — то есть на тех, кто и жмёт Report."""
+    found = _stopwords(tuple(settings["stopwords"]["patterns"])).search(text)
+    return found.group(0) if found else None
 
 
 def connect() -> sqlite3.Connection:
@@ -132,6 +148,8 @@ async def _record_incoming(event: Event, moment: datetime) -> bool:
     if thread_id is None:
         log.info("входящее не из личного чата, пропускаем: %s", event.sender)
         return False
+    settings = config.load()
+    refused = stopword(event.text or "", settings)
     with closing(connect()) as db:
         if conversation.get(db, thread_id) is None:
             # Написал тот, кому мы не писали. Автомат такое не трогает.
@@ -139,12 +157,22 @@ async def _record_incoming(event: Event, moment: datetime) -> bool:
             return False
         try:
             with db:
-                conversation.add_incoming(db, thread_id, event.text or "",
-                                          event.provider_id)
+                message_id = conversation.add_incoming(db, thread_id, event.text or "",
+                                                       event.provider_id)
                 outbox.cancel_scheduled(db, thread_id, "лид ответил", moment)
                 conversation.clear_schedule(db, thread_id)
+                if refused:
+                    conversation.set_status(db, thread_id, "closed_refused")
+                    conversation.mark_handled(db, message_id, moment)
         except conversation.DuplicateIncomingError:
             log.info("повтор события %s — уже записано", event.provider_id)
             return False
+    if refused:
+        # Отказ пишется ПОСЛЕ коммита треда: шов ходит в чужую базу, и держать
+        # на нём открытую транзакцию state.db значило бы блокировать очередь.
+        # Подтверждения лиду нет: гейт треда всё равно отменил бы строку, а
+        # человек, попросивший не писать, получает ровно то, что попросил.
+        refusal.refuse(thread_id, f"стоп-слово: {refused}")
+        log.warning("тред %s закрыт по стоп-слову %r", thread_id, refused)
     log.info("входящее в тред %s записано, ждёт тика", thread_id)
     return True

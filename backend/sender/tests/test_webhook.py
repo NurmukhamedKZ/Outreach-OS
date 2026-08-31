@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from sender import notify
 from sender.db import conversation, migrate, outbox
 from sender.routes import webhook
+from sender.services import config as sender_config, refusal
 from sender.tests.conftest import NOW
 from sender.tests.test_conversation import add_draft, open_thread
 
@@ -239,3 +240,51 @@ def sent_to_telegram(monkeypatch):
 
     monkeypatch.setattr(notify, "send", fake)
     return sent
+
+
+@pytest.fixture
+def refusals(monkeypatch):
+    """Отказ без collector'а: собираем то, что ушло бы в state.suppression."""
+    written = []
+    monkeypatch.setattr(refusal, "_hook",
+                        lambda handle, reason: written.append((handle, reason)) or True)
+    return written
+
+
+def test_a_stop_word_refuses_and_closes_the_thread(db, http, refusals):
+    """Правило до модели стоит десять строк и не ошибается никогда, а проценты
+    ошибок классификатора приходятся ровно на тех, кто и жмёт Report."""
+    open_thread(db, "+77010000001", status="active")
+
+    http.post("/api/sender/webhook", json=incoming(text="отпишите меня, надоели"))
+
+    assert refusals and refusals[0][0] == "+77010000001"
+    assert conversation.get(db, "+77010000001")["status"] == "closed_refused"
+
+
+def test_a_stop_word_never_wakes_the_agent(db, http, refusals):
+    """handled_at проставлен ручкой: тик не должен звать модель на «отпишите»."""
+    open_thread(db, "+77010000001", status="active")
+
+    http.post("/api/sender/webhook", json=incoming(text="это спам, жалоба"))
+
+    assert db.execute("SELECT handled_at FROM messages").fetchone()[0] is not None
+
+
+def test_a_refused_lead_gets_no_confirmation(db, http, refusals):
+    """Гейт треда всё равно отменил бы строку подтверждения. Человек,
+    попросивший не писать, получает ровно то, что попросил, — тишину."""
+    open_thread(db, "+77010000001", status="active")
+
+    http.post("/api/sender/webhook", json=incoming(text="отпишитесь от меня"))
+
+    assert db.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
+
+
+def test_an_ordinary_question_is_not_a_stop_word(db, http, refusals):
+    open_thread(db, "+77010000001", status="active")
+
+    http.post("/api/sender/webhook", json=incoming(text="а сколько это стоит?"))
+
+    assert refusals == []
+    assert db.execute("SELECT handled_at FROM messages").fetchone()[0] is None
