@@ -113,3 +113,17 @@ async def test_a_failing_model_clears_nothing_and_does_not_kill_the_tick(matured
 
     assert matured.execute("SELECT next_touch_at FROM threads").fetchone()[0] is not None
     assert conversation.get(matured, "+77010000001")["status"] == "active"
+
+
+async def test_a_hand_typed_reply_disarms_the_schedule(matured, monkeypatch):
+    """Оператор вписал ответ лида через инбокс системы 2 — мимо вебхука, а
+    значит мимо его отмены расписания. Без этой ветки «напоминаю о своём
+    сообщении» ушло бы человеку, который только что ответил."""
+    with matured:
+        conversation.add_incoming(matured, "+77010000001", "да, интересно", None)
+    monkeypatch.setattr(followup, "_llm",
+                        lambda: pytest.fail("модель звали ради треда с ответом"))
+
+    assert await followup.touch_one(matured, FakeTransport(), CONFIG, NOW) is None
+
+    assert matured.execute("SELECT next_touch_at FROM threads").fetchone()[0] is None

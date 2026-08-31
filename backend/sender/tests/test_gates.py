@@ -16,11 +16,12 @@ INSIDE = datetime(2026, 9, 2, 7, 0, tzinfo=timezone.utc)
 
 
 def attempt(*, thread_status="active", suppressed=False, number_status="active",
-            capacity=5, last_sent_at=None, jitter_minutes=0.0, kind="cold"):
+            capacity=5, last_sent_at=None, jitter_minutes=0.0, kind="cold",
+            lead_spoke_last=False):
     return gates.Attempt(thread_status=thread_status, suppressed=suppressed,
                          number_status=number_status, capacity=capacity,
                          last_sent_at=last_sent_at, jitter_minutes=jitter_minutes,
-                         kind=kind)
+                         kind=kind, lead_spoke_last=lead_spoke_last)
 
 
 def test_everything_open_lets_the_message_through():
@@ -140,3 +141,22 @@ def test_a_reply_still_obeys_the_daily_limit_of_the_number():
     decision = gates.check(attempt(kind="reply", capacity=0), night, CONFIG)
     assert decision.action == gates.RESCHEDULE
     assert decision.blame == gates.NUMBER
+
+
+def test_a_reply_from_the_lead_cancels_a_waiting_touch():
+    """Та же причина, по которой suppression проверяется перед каждой
+    отправкой: лид мог ответить за те часы, что строка ждала утра."""
+    decision = gates.check(attempt(kind="followup", lead_spoke_last=True), INSIDE, CONFIG)
+    assert decision.action == gates.CANCEL
+    assert decision.blame == gates.THREAD
+
+
+def test_a_cold_touch_is_cancelled_the_same_way():
+    assert gates.check(attempt(kind="cold", lead_spoke_last=True),
+                       INSIDE, CONFIG).action == gates.CANCEL
+
+
+def test_an_answer_in_a_dialogue_is_the_exception():
+    """Ответ уходит ровно потому, что лид сказал последнее слово."""
+    assert gates.check(attempt(kind="reply", lead_spoke_last=True),
+                       INSIDE, CONFIG).action == gates.SEND

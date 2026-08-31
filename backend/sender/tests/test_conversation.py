@@ -184,7 +184,7 @@ def test_a_thread_with_replies_is_not_exhausted(db):
     assert conversation.get(db, "+77010000001")["status"] == "queued"
 
 
-def test_due_touch_takes_only_active_threads_whose_time_has_come(db):
+def test_due_touches_take_only_threads_whose_time_has_come(db):
     open_thread(db, "+77010000001", status="active")
     open_thread(db, "+77010000002", status="escalated")
     open_thread(db, "+77010000003", status="active")
@@ -195,12 +195,13 @@ def test_due_touch_takes_only_active_threads_whose_time_has_come(db):
     db.execute("UPDATE threads SET next_touch_at = ? WHERE thread_id = '+77010000003'", (soon,))
     db.commit()
 
-    assert conversation.due_touch(db, NOW)["thread_id"] == "+77010000001"
+    assert [t["thread_id"] for t in conversation.due_touches(db, NOW)] \
+        == ["+77010000001"]
 
 
-def test_due_touch_is_none_when_nothing_matured(db):
+def test_due_touches_are_empty_when_nothing_matured(db):
     open_thread(db, status="active")
-    assert conversation.due_touch(db, NOW) is None
+    assert conversation.due_touches(db, NOW) == []
 
 
 def test_incoming_is_deduplicated_by_provider_id(db):
@@ -288,3 +289,28 @@ def test_counters_show_what_waits_for_a_human(db):
         conversation.mark_handled(db, handled, NOW)
 
     assert conversation.counters(db) == {"waiting": 1, "escalated": 1}
+
+
+def test_a_queued_thread_is_due_too(db):
+    """В active тред переводит только подтверждение доставки, а его пишет
+    вебхук: лежащий Node оставил бы всю каденцию стоять — тихо, потому что
+    next_touch_at при этом исправно взводится отправкой."""
+    open_thread(db, "+77010000001", status="queued")
+    db.execute("UPDATE threads SET next_touch_at = ? WHERE thread_id = '+77010000001'",
+               ((NOW - timedelta(days=1)).isoformat(timespec="seconds"),))
+    db.commit()
+
+    assert [t["thread_id"] for t in conversation.due_touches(db, NOW)] == ["+77010000001"]
+
+
+def test_lead_spoke_last_sees_who_said_the_last_word(db):
+    open_thread(db)
+    assert conversation.lead_spoke_last(db, "+77010000001") is False
+
+    with db:
+        conversation.add_incoming(db, "+77010000001", "перезвоните", "IN1")
+    assert conversation.lead_spoke_last(db, "+77010000001") is True
+
+    with db:
+        conversation.add_draft(db, "+77010000001", "Ответ агента", "answer")
+    assert conversation.lead_spoke_last(db, "+77010000001") is False

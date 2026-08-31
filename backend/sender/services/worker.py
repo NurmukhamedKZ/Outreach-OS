@@ -113,6 +113,7 @@ def _decide(db, row: dict, now: datetime, config: dict) -> gates.Decision:
         last_sent_at=outbox.last_sent_at(db, row["our_number"]),
         jitter_minutes=random.uniform(*config["pace"]["jitter_minutes"]),
         kind=row["kind"],
+        lead_spoke_last=conversation.lead_spoke_last(db, row["thread_id"]),
     )
     return gates.check(attempt, now, config)
 

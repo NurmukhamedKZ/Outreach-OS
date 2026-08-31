@@ -31,7 +31,7 @@ KIND = "followup"
 async def touch_one(db, transport, config: dict, now: datetime) -> str | None:
     """Один созревший тред за тик. None — будить некого либо модель не
     ответила: ни то, ни другое не повод ронять тик."""
-    thread = conversation.due_touch(db, now)
+    thread = _next_due(db, now)
     if thread is None:
         return None
     try:
@@ -71,6 +71,23 @@ async def touch_one(db, transport, config: dict, now: datetime) -> str | None:
             pool.NoNumberAvailableError) as skip:
         log.info("касание в %s не встало в очередь: %s", thread["thread_id"], skip)
     return "touched"
+
+
+def _next_due(db, now: datetime) -> dict | None:
+    """Созревший тред, которого ещё можно будить. Один, а не пачка: генерация
+    текста стоит денег и секунд, а тик обязан оставаться коротким.
+
+    Тред, где последнее слово за лидом, теряет расписание прямо здесь. Вебхук
+    гасит его сам, но ответ, введённый оператором руками, идёт мимо вебхука —
+    и без этой строки касание ушло бы человеку, который только что ответил.
+    """
+    for thread in conversation.due_touches(db, now):
+        if not conversation.lead_spoke_last(db, thread["thread_id"]):
+            return thread
+        with db:
+            conversation.clear_schedule(db, thread["thread_id"])
+        log.info("расписание треда %s погашено: лид ответил", thread["thread_id"])
+    return None
 
 
 @lru_cache

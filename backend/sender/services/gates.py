@@ -48,6 +48,7 @@ class Attempt:
     last_sent_at: str | None
     jitter_minutes: float
     kind: str
+    lead_spoke_last: bool = False
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,12 @@ def check(attempt: Attempt, now: datetime, config: dict) -> Decision:
         return Decision(CANCEL, "стоит отказ (F21)", blame=SUPPRESSION)
     if attempt.thread_status in conversation.AUTOMATON_STOPS:
         return Decision(CANCEL, f"тред в состоянии {attempt.thread_status}", blame=THREAD)
+    if attempt.lead_spoke_last and attempt.kind not in REPLY_KINDS:
+        # Та же причина, по которой suppression проверяется перед каждой
+        # отправкой, а не при постановке: лид мог ответить за те часы, что
+        # строка ждала утра. Ответ в диалоге исключение — он и уходит потому,
+        # что лид сказал последнее слово.
+        return Decision(CANCEL, "лид ответил — касание больше не нужно", blame=THREAD)
 
     window = window_of(attempt.kind, config)
     window_opens = next_window_start(now, window)

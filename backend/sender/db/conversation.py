@@ -109,15 +109,36 @@ def clear_schedule(db: sqlite3.Connection, thread_id: str) -> None:
                (thread_id,))
 
 
-def due_touch(db: sqlite3.Connection, now: datetime) -> dict | None:
-    """Один созревший тред. Один, а не пачка: генерация текста стоит денег и
-    секунд, а тик обязан оставаться коротким."""
-    row = db.execute(
-        f"SELECT {FIELDS} FROM threads WHERE status = 'active'"
+def due_touches(db: sqlite3.Connection, now: datetime) -> list[dict]:
+    """Треды, которым срок настал, от старшего.
+
+    `queued` наравне с `active` намеренно. В `active` тред переводит только
+    подтверждение доставки, а его пишет вебхук: лежащий Node, выключенные
+    квитанции или молчащий WhatsApp оставили бы всю каденцию стоять — тихо,
+    без единого симптома, потому что `next_touch_at` при этом исправно
+    взводится отправкой.
+    """
+    rows = db.execute(
+        f"SELECT {FIELDS} FROM threads WHERE status IN ('queued', 'active')"
         " AND next_touch_at IS NOT NULL AND next_touch_at <= ?"
-        " ORDER BY next_touch_at LIMIT 1",
-        (now.isoformat(timespec="seconds"),)).fetchone()
-    return dict(row) if row else None
+        " ORDER BY next_touch_at",
+        (now.isoformat(timespec="seconds"),)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def lead_spoke_last(db: sqlite3.Connection, thread_id: str) -> bool:
+    """Последнее слово в треде за лидом.
+
+    Единственное определение «лид ответил» на всю систему: его читает и
+    планировщик касаний, и гейт перед отправкой. Вебхук гасит расписание сам,
+    но ответ, введённый оператором руками через инбокс системы 2, проходит мимо
+    вебхука — а «напоминаю о своём сообщении» человеку, который только что
+    ответил, и есть то, из-за чего на рассылки жалуются.
+    """
+    row = db.execute(
+        "SELECT role FROM messages WHERE thread_id = ?"
+        " ORDER BY message_id DESC LIMIT 1", (thread_id,)).fetchone()
+    return row is not None and row["role"] == "incoming"
 
 
 def has_replies(db: sqlite3.Connection, thread_id: str) -> bool:
