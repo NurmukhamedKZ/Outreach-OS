@@ -61,21 +61,24 @@ def sender_stats():
     определение «созревших, но не отправленных» здесь значило бы иметь две
     версии главного симптома аварии.
     """
-    from sender.db import outbox
+    from sender.db import conversation, outbox
     from sender.services import worker
     db_path = threads_db_path()
     if not db_path.exists():
-        return {"status": "live", "numbers": {}, "queue": {}, "heartbeat": None}
+        return {"status": "live", "numbers": {}, "queue": {},
+                "threads": {"waiting": 0, "escalated": 0}, "heartbeat": None}
     with closing(sqlite3.connect(db_path)) as db:
         db.row_factory = sqlite3.Row
         try:
             rows = db.execute(
                 "SELECT status, count(*) FROM numbers GROUP BY status").fetchall()
             queue = outbox.counters(db, datetime.now(timezone.utc))
+            threads = conversation.counters(db)
         except sqlite3.OperationalError:
-            return {"status": "live", "numbers": {}, "queue": {}, "heartbeat": None}
-    return {"status": "live", "numbers": dict(rows),
-            "queue": queue, "heartbeat": worker.heartbeat()}
+            return {"status": "live", "numbers": {}, "queue": {},
+                    "threads": {"waiting": 0, "escalated": 0}, "heartbeat": None}
+    return {"status": "live", "numbers": dict(rows), "queue": queue,
+            "threads": threads, "heartbeat": worker.heartbeat()}
 
 
 def counted(db, condition):

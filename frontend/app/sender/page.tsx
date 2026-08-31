@@ -81,6 +81,12 @@ export default function Sender() {
           <span className={status && status.queue.overdue > 0 ? "has-replies" : ""}>
             созрели, но стоят <b>{status?.queue.overdue ?? 0}</b>
           </span>
+          <span className={status && status.threads.waiting > 0 ? "has-replies" : ""}>
+            ждут ответа <b>{status?.threads.waiting ?? 0}</b>
+          </span>
+          <span className={status && status.threads.escalated > 0 ? "has-replies" : ""}>
+            эскалировано <b>{status?.threads.escalated ?? 0}</b>
+          </span>
           <span>
             пульс воркера{" "}
             <b>{status?.heartbeat ? WHEN.format(new Date(status.heartbeat)) : "—"}</b>
@@ -105,13 +111,14 @@ export default function Sender() {
           <table className="table">
             <thead>
               <tr>
-                <th>Сообщение</th><th>Номер</th><th>Статус</th><th>Не раньше</th>
+                <th>Сообщение</th><th>Вид</th><th>Номер</th><th>Статус</th><th>Не раньше</th>
               </tr>
             </thead>
             <tbody>
               {recent.map((row) => (
                 <tr key={row.outbox_id}>
                   <td className="mono">{row.thread_id ?? "прогрев"}</td>
+                  <td>{row.kind}</td>
                   <td className="mono">{row.our_number}</td>
                   <td>{row.status}</td>
                   <td>{WHEN.format(new Date(row.send_after))}</td>

@@ -59,6 +59,7 @@ def status() -> dict:
             "autopilot": config.autopilot(),
             "numbers": [card(db, row, settings) for row in numbers.all(db)],
             "queue": outbox.counters(db, now()),
+            "threads": conversation.counters(db),
             "heartbeat": worker.heartbeat(),
         }
 
@@ -107,21 +108,17 @@ async def enqueue(body: QueueRequest) -> dict:
     автомат, а не человека."""
     settings = config.load()
     with closing(connect()) as db:
-        if body.text is not None:
-            message_id = conversation.pending_message(db, body.thread_id)
-            if message_id is None:
-                raise HTTPException(409, "отправлять нечего: черновика нет")
-            if not body.text.strip():
-                raise HTTPException(400, "пустой текст отправленным не бывает")
-            with db:
-                conversation.set_queued_text(db, message_id, body.text.strip())
+        if body.text is not None and not body.text.strip():
+            raise HTTPException(400, "пустой текст отправленным не бывает")
+        thread_id = canonical(body.thread_id)
         try:
-            outbox_id = await queue.enqueue(db, build_transport(), body.thread_id,
-                                            now(), settings)
+            outbox_id = await queue.enqueue(db, build_transport(), thread_id,
+                                            now(), settings,
+                                            body.text.strip() if body.text else None)
         except conversation.UnknownThreadError:
-            raise HTTPException(404, f"треда {body.thread_id} нет") from None
+            raise HTTPException(404, f"треда {thread_id} нет") from None
         except queue.NotReachableError:
-            raise HTTPException(422, f"у {body.thread_id} нет WhatsApp — "
+            raise HTTPException(422, f"у {thread_id} нет WhatsApp — "
                                      "тред закрыт как unreachable") from None
         except (queue.ClosedThreadError, queue.NothingToQueueError,
                 outbox.AlreadyQueuedError) as conflict:
@@ -133,10 +130,15 @@ async def enqueue(body: QueueRequest) -> dict:
 
 @router.get("/queue")
 def show_queue(thread_id: str | None = None) -> dict:
+    """Отбор сужается в SQL, а не после LIMIT: иначе десяток чужих отправок
+    вытеснял бы строку этого треда, и карточка теряла бы «в очереди».
+
+    Тред — это номер лида, поэтому он проходит ту же канонизацию, что номера
+    пула: незакодированный `+` приезжает из query-string пробелом, и без неё
+    очередь треда молча оказывалась бы пустой."""
     with closing(connect()) as db:
-        rows = outbox.recent(db, RECENT_SENDS)
-        if thread_id is not None:
-            rows = [row for row in rows if row["thread_id"] == thread_id]
+        rows = outbox.recent(db, RECENT_SENDS,
+                             canonical(thread_id) if thread_id else None)
         return {"queue": [row for row in rows if row["status"] in ("pending", "sending")],
                 "recent": rows}
 
@@ -194,8 +196,14 @@ async def monitor_numbers() -> None:
     исчезает без строки в логе, и бан номера обнаружился бы через сутки."""
     while True:
         try:
+            settings = config.load()
             with closing(connect()) as db:
-                await health.check(db, build_transport(), config.load(), now())
+                moment = now()
+                await health.check(db, build_transport(), settings, moment)
+                # Треды, которым при прошлом бане не нашлось номера, ждут в
+                # blocked_channel. Освободившийся номер — единственное событие,
+                # которое их оттуда выпускает, и заметить его больше некому.
+                pool.rescue_stranded(db, moment, settings)
         except Exception:
             log.exception("монитор здоровья номеров упал на тике")
         await asyncio.sleep(MONITOR_INTERVAL_SECONDS)

@@ -215,7 +215,32 @@ def bump_auto_replies(db: sqlite3.Connection, thread_id: str) -> None:
                " WHERE thread_id = ?", (thread_id,))
 
 
+def counters(db: sqlite3.Connection) -> dict:
+    """Что ждёт человека. `waiting` — входящее, на которое ещё не ответили:
+    единственное число, по которому одинаково видно и вставший тик, и агента,
+    который молча ничего не делает.
+
+    Ноль при отсутствующих таблицах: их владелец система 2, и sender может
+    подняться раньше неё — счётчик в таком состоянии просто не существует.
+    """
+    if not _has_table(db, "messages") or not _has_table(db, "threads"):
+        return {"waiting": 0, "escalated": 0}
+    return {
+        "waiting": db.execute(
+            "SELECT count(DISTINCT thread_id) FROM messages"
+            " WHERE role = 'incoming' AND handled_at IS NULL").fetchone()[0],
+        "escalated": db.execute(
+            "SELECT count(*) FROM threads WHERE status = 'escalated'").fetchone()[0],
+    }
+
+
 def now_stamp() -> str:
     """Момент записи сообщения. Формат — тот же, что у thread_store: таблица
     одна, и две формы штампа в ней сломали бы сортировку истории."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _has_table(db: sqlite3.Connection, table: str) -> bool:
+    return db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,)).fetchone() is not None

@@ -103,7 +103,7 @@ def test_frontend_contract(stores):
     assert set(snapshot) == {"sourcing", "writer", "sender", "jobs"}, sorted(snapshot)
     assert set(snapshot["writer"]) == {"threads", "drafts", "sent", "replies"}
     assert snapshot["sender"]["status"] == "live"
-    assert set(snapshot["sender"]) == {"status", "numbers", "queue", "heartbeat"}
+    assert set(snapshot["sender"]) == {"status", "numbers", "queue", "threads", "heartbeat"}
 
     assert metrics.threads_db_path().name == "state.db", \
         "путь state.db разошёлся с config.toml системы 2"

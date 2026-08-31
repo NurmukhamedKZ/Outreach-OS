@@ -274,3 +274,17 @@ def test_add_draft_does_not_commit(db):
     db.rollback()
     assert db.execute("SELECT count(*) FROM messages WHERE message_id = ?",
                       (message_id,)).fetchone()[0] == 0
+
+
+def test_counters_show_what_waits_for_a_human(db):
+    """«Ждут ответа» и «эскалировано» — два числа, по которым видно, что
+    автомат встал, а люди ждут."""
+    open_thread(db, "+77010000001", status="active")
+    open_thread(db, "+77010000002", status="escalated")
+    open_thread(db, "+77010000003", status="active")
+    with db:
+        conversation.add_incoming(db, "+77010000001", "сколько стоит?", "IN1")
+        handled = conversation.add_incoming(db, "+77010000003", "ок", "IN2")
+        conversation.mark_handled(db, handled, NOW)
+
+    assert conversation.counters(db) == {"waiting": 1, "escalated": 1}

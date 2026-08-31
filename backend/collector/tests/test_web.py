@@ -54,3 +54,10 @@ def test_the_refusal_seam_is_registered_on_import():
     from sender.services import refusal
 
     assert refusal._hook is not None
+
+
+def test_stats_report_what_waits_for_a_human():
+    from collector.services import metrics
+
+    sender = metrics.sender_stats()
+    assert set(sender["threads"]) == {"waiting", "escalated"}

@@ -255,6 +255,7 @@ export type SenderStatus = {
   autopilot: "off" | "replies" | "full";
   numbers: SenderNumber[];
   queue: { queued: number; sent_today: number; overdue: number };
+  threads: { waiting: number; escalated: number };
   heartbeat: string | null;
 };
 
@@ -271,6 +272,7 @@ export type QueueRow = {
   status: string;
   attempts: number;
   error: string | null;
+  kind: string;
 };
 
 /** Кнопка оператора. Постановка в очередь живёт в системе 3: отправляет она же. */
