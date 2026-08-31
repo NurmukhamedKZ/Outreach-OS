@@ -42,10 +42,6 @@ class Event(BaseModel):
     sender: str | None = Field(default=None, alias="from")
 
 
-class Config:
-    populate_by_name = True
-
-
 INCOMING = "incoming"
 
 # Чат лида в WhatsApp — это JID (`77010000001@s.whatsapp.net`), а тред живёт
