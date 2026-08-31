@@ -34,7 +34,8 @@ class ClosedThreadError(Exception):
     """Тред в состоянии, из которого автомат не пишет."""
 
 
-async def enqueue(db, transport, thread_id: str, now: datetime, config: dict) -> int:
+async def enqueue(db, transport, thread_id: str, now: datetime, config: dict,
+                  text: str | None = None, kind: str = "cold") -> int:
     thread = conversation.get(db, thread_id)
     if thread is None:
         raise conversation.UnknownThreadError(thread_id)
@@ -47,8 +48,14 @@ async def enqueue(db, transport, thread_id: str, now: datetime, config: dict) ->
 
     our_number = thread["our_number"] or await _first_number(
         db, transport, thread_id, now, config)
+    # Правка оператора ложится в базу той же транзакцией, что строка очереди, и
+    # только если строка встала. Иначе отказ («уже в очереди») оставлял бы текст
+    # записанным, и стоящая строка отправила бы именно его — тот текст, который
+    # оператор считает отклонённым.
     with db:
-        outbox_id = outbox.put(db, message_id, thread_id, our_number, now)
+        outbox_id = outbox.put(db, message_id, thread_id, our_number, now, kind)
+        if text is not None:
+            conversation.set_queued_text(db, message_id, text)
     log.info("в очередь: тред %s, сообщение %s, с номера %s",
              thread_id, message_id, our_number)
     return outbox_id
