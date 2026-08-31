@@ -126,8 +126,8 @@ async def tick(db: sqlite3.Connection, transport, config: dict,
         return None
 
     db.execute(
-        "INSERT INTO outbox (our_number, recipient, send_after, status, provider_id,"
-        " created_at, updated_at) VALUES (?, ?, ?, 'sent', ?, ?, ?)",
+        "INSERT INTO outbox (our_number, recipient, send_after, status, kind,"
+        " provider_id, created_at, updated_at) VALUES (?, ?, ?, 'sent', 'warmup', ?, ?, ?)",
         (sender_number, recipient, stamp, result.provider_id, stamp, stamp))
     db.commit()
     log.info("прогрев %s -> %s", sender_number, recipient)

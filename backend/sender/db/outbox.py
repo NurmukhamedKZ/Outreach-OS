@@ -21,13 +21,14 @@ class AlreadyQueuedError(Exception):
 
 
 def put(db: sqlite3.Connection, message_id: int, thread_id: str,
-        our_number: str, now: datetime) -> int:
+        our_number: str, now: datetime, kind: str = "cold") -> int:
     moment = stamp(now)
     try:
         cursor = db.execute(
             "INSERT INTO outbox (message_id, thread_id, our_number, send_after,"
-            " status, created_at, updated_at) VALUES (?, ?, ?, ?, 'pending', ?, ?)",
-            (message_id, thread_id, our_number, moment, moment, moment))
+            " status, kind, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)",
+            (message_id, thread_id, our_number, moment, kind, moment, moment))
     except sqlite3.IntegrityError as error:
         raise AlreadyQueuedError(message_id) from error
     return cursor.lastrowid
@@ -78,6 +79,21 @@ def cancel(db: sqlite3.Connection, outbox_id: int, reason: str, now: datetime) -
     db.execute(
         "UPDATE outbox SET status = 'cancelled', error = ?, updated_at = ?"
         " WHERE outbox_id = ?", (reason, stamp(now), outbox_id))
+
+
+def cancel_scheduled(db: sqlite3.Connection, thread_id: str, reason: str,
+                     now: datetime) -> int:
+    """Все живые строки треда — в cancelled. Зовётся, когда лид ответил:
+    запланированное касание после ответа станет издевательством.
+
+    `sending` не трогаем: её судьба уже в руках транспорта, и отмена строки,
+    которая, возможно, уже ушла, дала бы неверную историю треда.
+    """
+    cursor = db.execute(
+        "UPDATE outbox SET status = 'cancelled', error = ?, updated_at = ?"
+        " WHERE thread_id = ? AND status = 'pending'",
+        (reason, stamp(now), thread_id))
+    return cursor.rowcount
 
 
 def fail(db: sqlite3.Connection, outbox_id: int, error: str, now: datetime) -> None:

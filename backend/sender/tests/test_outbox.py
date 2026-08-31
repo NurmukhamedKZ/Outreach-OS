@@ -133,3 +133,87 @@ def test_counters_separate_the_queue_from_the_overdue(db):
 
     counters = outbox.counters(db, NOW + timedelta(minutes=1))
     assert counters == {"queued": 2, "sent_today": 1, "overdue": 1}
+
+
+def test_a_failed_row_lets_the_message_be_queued_again(db):
+    """Три неудачных попытки не должны хоронить лида навсегда. Запрет двойной
+    отправки касается живых строк: одно сообщение — одна строка В ОЧЕРЕДИ, а не
+    одна строка за всю историю."""
+    first = queued(db, message_id=7)
+    with db:
+        outbox.fail(db, first, "транспорт отказал", NOW)
+
+    second = queued(db, message_id=7)
+
+    assert second != first
+    assert outbox.due(db, NOW)["outbox_id"] == second
+
+
+def test_a_stuck_row_lets_the_message_be_queued_again(db):
+    """Оператор проверил телефон, сообщение не ушло — он имеет право повторить."""
+    first = queued(db, message_id=8)
+    with db:
+        outbox.claim(db, first, NOW)
+        outbox.mark_stuck(db, first, NOW)
+
+    assert queued(db, message_id=8) != first
+
+
+def test_a_live_row_still_blocks_a_second_one(db):
+    """Структурный запрет двойной отправки на месте: пока строка жива, второй
+    быть не может."""
+    queued(db, message_id=9)
+    with pytest.raises(outbox.AlreadyQueuedError):
+        queued(db, message_id=9)
+
+    with db:
+        outbox.claim(db, outbox.due(db, NOW)["outbox_id"], NOW)
+    with pytest.raises(outbox.AlreadyQueuedError):
+        queued(db, message_id=9)
+
+
+def test_kind_defaults_to_cold_and_is_readable_back(db):
+    outbox_id = outbox.put(db, 1, "+77010000001", "+77001112233", NOW)
+    db.commit()
+    row = outbox.due(db, NOW)
+    assert row["outbox_id"] == outbox_id and row["kind"] == "cold"
+
+
+def test_a_reply_row_carries_its_kind(db):
+    outbox.put(db, 1, "+77010000001", "+77001112233", NOW, kind="reply")
+    db.commit()
+    assert outbox.due(db, NOW)["kind"] == "reply"
+
+
+def test_cancel_scheduled_kills_the_live_rows_of_one_thread(db):
+    """Лид ответил, и «напоминаю о своём сообщении» через три дня станет
+    издевательством. Именно эта строка превращает систему в ту, на которую
+    жалуются."""
+    ours = outbox.put(db, 1, "+77010000001", "+77001112233", NOW, kind="followup")
+    stranger = outbox.put(db, 2, "+77010000009", "+77001112233", NOW)
+    db.commit()
+
+    with db:
+        killed = outbox.cancel_scheduled(db, "+77010000001", "лид ответил", NOW)
+
+    assert killed == 1
+    assert status_of(db, ours) == "cancelled"
+    assert status_of(db, stranger) == "pending", "погашена чужая строка"
+
+
+def test_cancel_scheduled_does_not_touch_what_already_went_out(db):
+    """Отправленное отменить нельзя: лид его уже получил."""
+    outbox_id = outbox.put(db, 1, "+77010000001", "+77001112233", NOW)
+    outbox.claim(db, outbox_id, NOW)
+    outbox.mark_sent(db, outbox_id, "3EB0", NOW)
+    db.commit()
+
+    with db:
+        assert outbox.cancel_scheduled(db, "+77010000001", "лид ответил", NOW) == 0
+
+    assert status_of(db, outbox_id) == "sent"
+
+
+def status_of(db, outbox_id):
+    return db.execute("SELECT status FROM outbox WHERE outbox_id = ?",
+                      (outbox_id,)).fetchone()[0]
