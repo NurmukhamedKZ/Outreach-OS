@@ -223,3 +223,26 @@ def test_every_outcome_is_declared():
     экран строкой, которую никто не ждал."""
     assert {"answered", "escalated", "closed", "touched", "exhausted"} \
         <= set(worker.TICK_OUTCOMES)
+
+
+async def test_a_reply_does_not_spend_a_cold_touch(db):
+    """Ответ в диалоге — не касание: он уходит потому, что лид написал сам.
+    Считать его касанием значит выжечь тред за два автоответа и завести
+    «напоминание молчащему лиду» посреди живого разговора."""
+    outbox_id, _ = ready(db)
+    db.execute("UPDATE outbox SET kind = 'reply' WHERE outbox_id = ?", (outbox_id,))
+    db.commit()
+
+    assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "sent"
+
+    thread = db.execute("SELECT touch_no, next_touch_at FROM threads").fetchone()
+    assert thread["touch_no"] == 0 and thread["next_touch_at"] is None
+
+
+async def test_a_cold_touch_still_spends_one(db):
+    ready(db)
+
+    assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "sent"
+
+    thread = db.execute("SELECT touch_no, next_touch_at FROM threads").fetchone()
+    assert thread["touch_no"] == 1 and thread["next_touch_at"] is not None

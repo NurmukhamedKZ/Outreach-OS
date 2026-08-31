@@ -27,6 +27,11 @@ TICK_OUTCOMES = ("sent", "cancelled", "rescheduled", "taken", "retry",
 # отправителя ровно тем, из-за чего номера и банят.
 COLD_PER_TICK = 1
 
+# Кто расходует касание из каденции. Ответ в диалоге — не касание: он уходит
+# потому, что лид написал сам. Считать его касанием значит и выжечь тред за два
+# автоответа, и завести молчащему лиду «напоминание» посреди живого разговора.
+OUTREACH_KINDS = ("cold", "followup")
+
 # Кто уходит сам в каком режиме. `replies` наполнит часть 3: ответы в диалоге
 # приносит она, а холодные касания и follow-up остаются на кнопке.
 COLD_MODES = ("full",)
@@ -180,7 +185,8 @@ async def _send(db, transport, row: dict, now: datetime, config: dict) -> str:
     with db:
         outbox.mark_sent(db, row["outbox_id"], result.provider_id, now)
         conversation.confirm_sent(db, row["message_id"], result.provider_id, now)
-        conversation.bump_touch(db, row["thread_id"], config["cadence"], now)
+        if row["kind"] in OUTREACH_KINDS:
+            conversation.bump_touch(db, row["thread_id"], config["cadence"], now)
     log.info("ушло: тред %s, сообщение %s, provider %s",
              row["thread_id"], row["message_id"], result.provider_id)
     return "sent"
