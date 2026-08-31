@@ -3,6 +3,7 @@
 Всё без сети: транспорт и «сейчас» приезжают аргументами.
 """
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from sender.db import conversation, numbers, outbox
@@ -246,3 +247,54 @@ async def test_a_cold_touch_still_spends_one(db):
 
     thread = db.execute("SELECT touch_no, next_touch_at FROM threads").fetchone()
     assert thread["touch_no"] == 1 and thread["next_touch_at"] is not None
+
+
+async def test_a_locked_base_does_not_bury_the_message(db, monkeypatch):
+    """Строка ещё pending — транспорт не трогали. `database is locked` бывает
+    оттого, что в ту же state.db пишет вебхук: это «сейчас не получилось», а
+    не «строка неисправна»."""
+    outbox_id, _ = ready(db)
+
+    def занята(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(worker, "_decide", занята)
+
+    assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "retry"
+
+    row = db.execute("SELECT status, attempts FROM outbox WHERE outbox_id = ?",
+                     (outbox_id,)).fetchone()
+    assert row["status"] == "pending" and row["attempts"] == 1
+
+
+async def test_a_row_already_taken_is_left_to_sweep_stuck(db, monkeypatch):
+    """Захвачена — и ушло ли сообщение, мы не знаем. Слепой повтор дал бы
+    дубликат в холодном аутриче, а это прямой повод нажать Report."""
+    outbox_id, _ = ready(db)
+
+    async def падает_после_захвата(db_, transport_, row_, now_, config_):
+        with db_:
+            outbox.claim(db_, row_["outbox_id"], now_)
+        raise RuntimeError("умерли между захватом и отправкой")
+
+    monkeypatch.setattr(worker, "_process", падает_после_захвата)
+
+    assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "taken"
+
+    assert db.execute("SELECT status FROM outbox WHERE outbox_id = ?",
+                      (outbox_id,)).fetchone()[0] == "sending"
+
+
+async def test_three_broken_ticks_still_stop_the_traffic_jam(db, monkeypatch):
+    """`due` детерминированно отдаёт одну и ту же старшую строку: без предела
+    сломанная строка встала бы вечной пробкой."""
+    outbox_id, _ = ready(db)
+    db.execute("UPDATE outbox SET attempts = 3 WHERE outbox_id = ?", (outbox_id,))
+    db.commit()
+    monkeypatch.setattr(worker, "_decide",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("сломано")))
+
+    assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "failed"
+
+    assert db.execute("SELECT status FROM outbox WHERE outbox_id = ?",
+                      (outbox_id,)).fetchone()[0] == "failed"

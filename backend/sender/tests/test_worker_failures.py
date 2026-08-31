@@ -141,7 +141,15 @@ async def test_a_broken_config_does_not_kill_the_worker(db, monkeypatch, telegra
 async def test_a_poisoned_head_row_does_not_block_the_whole_queue(db, telegram):
     """`outbox.due` детерминированно отдаёт одну и ту же старшую строку. Любое
     исключение на ней — вечная пробка: цикл глотает, логирует, overdue растёт, а
-    heartbeat бодрый. Строка обязана уйти в failed, чтобы очередь двинулась."""
+    heartbeat бодрый.
+
+    Строка обязана отойти в сторону, чтобы очередь двинулась. В сторону, а не
+    сразу в failed: до захвата транспорт не трогали, и чаще всего это `database
+    is locked` от вебхука, пишущего в ту же базу, — гасить за это сообщение
+    лида значит терять его из-за секундной блокировки. Что три неудачи подряд
+    строку всё-таки гасят, проверяет
+    test_worker.py::test_three_broken_ticks_still_stop_the_traffic_jam.
+    """
     from sender.db import outbox as queue_rows
     from sender.tests.test_worker import INSIDE, ready
 
@@ -149,10 +157,14 @@ async def test_a_poisoned_head_row_does_not_block_the_whole_queue(db, telegram):
         poisoned = queue_rows.put(db, 999, "+77010000009", "номера-нет-в-пуле", INSIDE)
     good, _ = ready(db)
 
-    assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "failed"
+    assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "retry"
 
-    assert db.execute("SELECT status FROM outbox WHERE outbox_id = ?",
-                      (poisoned,)).fetchone()[0] == "failed"
+    stepped_aside = db.execute(
+        "SELECT status, send_after FROM outbox WHERE outbox_id = ?",
+        (poisoned,)).fetchone()
+    assert stepped_aside["status"] == "pending"
+    assert stepped_aside["send_after"] > INSIDE.isoformat(timespec="seconds"), \
+        "битая строка осталась старшей и снова закроет собой очередь"
 
     transport = FakeTransport()
     assert await worker.tick(db, transport, CONFIG, INSIDE) == "sent"

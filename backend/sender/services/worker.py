@@ -67,15 +67,33 @@ async def tick(db, transport, config: dict, now: datetime) -> str | None:
     try:
         return await _process(db, transport, row, now, config) or handled or matured
     except Exception:
-        # `due` детерминированно отдаёт одну и ту же старшую строку, поэтому
-        # исключение на ней — вечная пробка: цикл его проглотит, overdue будет
-        # расти, а heartbeat останется бодрым. Гасим строку, чтобы очередь
-        # двинулась, и разбираемся по логу.
-        log.exception("строка %s не обрабатывается — гасим, чтобы очередь шла",
-                      row["outbox_id"])
-        with db:
-            outbox.fail(db, row["outbox_id"], "необрабатываемая строка, см. лог", now)
-        return "failed"
+        log.exception("строка %s сломала тик", row["outbox_id"])
+        return await _after_a_broken_tick(db, row, now, config)
+
+
+async def _after_a_broken_tick(db, row: dict, now: datetime, config: dict) -> str:
+    """Строка сломала тик. Что с ней делать, решает её статус, а не сам факт
+    исключения.
+
+    `sending` — строку успели захватить, и ушло ли сообщение, мы не знаем.
+    Решение уже принято частью 2: неопределённость идёт человеку, а не в
+    повтор, — `sweep_stuck` отдаст её через `stuck_after_minutes`. Слепой
+    повтор дал бы дубликат в холодном аутриче, а это прямой повод нажать
+    Report.
+
+    `pending` — до захвата, транспорт не трогали. Значит сломалось наше: чаще
+    всего `database is locked`, потому что в ту же `state.db` пишет вебхук.
+    Это «сейчас не получилось», а не «строка неисправна»: гасить её насмерть
+    значит терять сообщение лида из-за секундной блокировки. Переносим с тем же
+    backoff, и три неудачи подряд всё-таки гасят строку — иначе `due`,
+    детерминированно отдающая одну и ту же старшую строку, встанет вечной
+    пробкой.
+    """
+    current = db.execute("SELECT status FROM outbox WHERE outbox_id = ?",
+                         (row["outbox_id"],)).fetchone()
+    if current is not None and current["status"] == "sending":
+        return "taken"
+    return await _retry(db, row, "тик сломался, см. лог", now, config)
 
 
 async def _guarded(work, what: str) -> str | None:
