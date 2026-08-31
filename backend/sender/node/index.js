@@ -12,6 +12,7 @@ import pino from "pino";
 
 const PORT = Number(process.env.SENDER_NODE_PORT ?? 8788);
 const PYTHON_URL = process.env.SENDER_PYTHON_URL ?? "http://127.0.0.1:8787";
+const WEBHOOK_SECRET = process.env.SENDER_WEBHOOK_SECRET ?? "";
 const SESSIONS = path.resolve("sessions");
 const WEBHOOK_RETRY_MS = 5000;
 const WEBHOOK_LOG_INTERVAL_MS = 60000;
@@ -122,7 +123,10 @@ async function notify(payload, attempt = 1) {
   try {
     const response = await fetch(`${PYTHON_URL}/api/sender/webhook`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(WEBHOOK_SECRET ? { "x-sender-secret": WEBHOOK_SECRET } : {}),
+      },
       body: JSON.stringify(payload),
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);

@@ -46,3 +46,11 @@ def test_refusal_does_not_leak_to_web(stores):
     db.commit()
     web = web_leads.leads(limit=10)["leads"]
     assert web == [], f"{len(web)} лидов из suppression в веб-выдаче (F21)"
+
+def test_the_refusal_seam_is_registered_on_import():
+    """Единственное место, где система 3 узнаёт о системе 1. Незарегистрированный
+    шов — это потерянный отказ, а отказ юридический контур (F21)."""
+    import collector.api  # noqa: F401 — импорт и есть регистрация
+    from sender.services import refusal
+
+    assert refusal._hook is not None

@@ -23,8 +23,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from collector.routes import events, jobs, leads, operations, pipeline, runs, stats, suppression
 from collector.services import events as bus
 from collector.services import jobs as queue
+from collector.services import suppression as suppression_service
+from collector.db import lead as lead_store
 from collector.services.pipeline import OPERATIONS, PIPELINES
 from sender.routes import sender, webhook as sender_webhook
+from sender.services import refusal as sender_refusal
 from writer.routes import threads as writer
 from writer.services import operations as writer_operations
 
@@ -32,6 +35,23 @@ from writer.services import operations as writer_operations
 # шов, что монтирует его роутер: подключает операцию очереди в общий реестр.
 OPERATIONS["writer.outreach"] = writer_operations.open_new_threads
 PIPELINES["write"] = {"title": "Черновики топ-N", "steps": ("writer.outreach",)}
+
+
+def _write_refusal(handle: str, reason: str) -> bool:
+    """Шов к юридическому контуру: отказ, найденный системой 3, пишет система 1.
+
+    Здесь же, а не импортом из sender'а: collector системе 3 недоступен (тест
+    графа импортов части 1), и api.py — единственное место, где обе системы
+    вообще видят друг друга.
+    """
+    db = lead_store.connect()
+    try:
+        return suppression_service.refuse(db, handle, reason)
+    finally:
+        db.close()
+
+
+sender_refusal.use(_write_refusal)
 
 # next dev занимает следующий свободный порт, если 3000 занят чем-то другим
 # (в докере, например) — фиксированный список origins тогда молча ломает SSE
