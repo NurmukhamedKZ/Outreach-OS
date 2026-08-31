@@ -30,6 +30,29 @@ def test_autopilot_starts_off():
     assert config.load()["autopilot"]["mode"] == "off"
 
 
+def test_reply_window_is_round_the_clock_by_default():
+    """Лид написал сам и ждёт сейчас; молчание пятнадцать часов убивает диалог.
+    Окно всё же параметром, а не отсутствием проверки: сузить его потом —
+    правка конфига, а не кода."""
+    window = config.load()["window"]
+    assert window["reply"]["hours"] == [0, 24]
+    assert window["reply"]["weekdays"] == [1, 2, 3, 4, 5, 6, 7]
+    # Часовой пояс у окна ответа свой не заводится: он свойство человека на том
+    # конце, а не вида сообщения.
+    assert "timezone" not in window["reply"]
+
+
+def test_stopwords_are_configuration_not_code():
+    """Список правит человек без программиста — как окна и каденцию."""
+    patterns = config.load()["stopwords"]["patterns"]
+    assert "отпиш" in patterns
+    assert all(isinstance(pattern, str) and pattern for pattern in patterns)
+
+
+def test_handle_attempts_limit_is_configured():
+    assert config.load()["limits"]["max_handle_attempts"] == 3
+
+
 @pytest.fixture
 def switch(tmp_path, monkeypatch):
     """Переключатель в tmp: боевой файл трогать нельзя — тест не имеет права

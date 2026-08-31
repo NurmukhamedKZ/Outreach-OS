@@ -141,3 +141,22 @@ def test_provider_id_is_unique_but_nulls_do_not_collide(db):
     db.execute(insert, (None,))
     with pytest.raises(sqlite3.IntegrityError):
         db.execute(insert, ("3EB0",))
+
+
+def test_outbox_learns_the_kind_of_row(db):
+    """Гейт выбирает окно по виду строки, а дашборд перестаёт показывать
+    холодное касание и ответ в диалоге одинаковыми."""
+    migrate.apply(db)
+    assert "kind" in columns(db, "outbox")
+    db.execute("INSERT INTO outbox (our_number, send_after, status, created_at,"
+               " updated_at) VALUES ('+77001112233', ?, 'pending', ?, ?)",
+               ("2026-09-02T12:00:00+00:00",) * 3)
+    db.commit()
+    assert db.execute("SELECT kind FROM outbox").fetchone()[0] == "cold"
+
+
+def test_messages_learn_the_attempt_counter(db):
+    """Входящее, на котором агент упал, иначе стало бы вечной пробкой."""
+    conversation_tables(db)
+    migrate.apply(db)
+    assert "handle_attempts" in columns(db, "messages")

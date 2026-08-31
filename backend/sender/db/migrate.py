@@ -32,7 +32,13 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 CREATE INDEX IF NOT EXISTS outbox_due ON outbox (status, send_after);
 CREATE INDEX IF NOT EXISTS outbox_by_number ON outbox (our_number, status, updated_at);
-CREATE UNIQUE INDEX IF NOT EXISTS outbox_one_per_message ON outbox (message_id);
+-- Одно сообщение — одна ЖИВАЯ строка очереди. Терминальные исходы из-под
+-- запрета выведены намеренно: строка, кончившаяся в failed (три неудачных
+-- попытки) или stuck (судьба неизвестна), иначе хоронила бы лида навсегда —
+-- поставить сообщение заново было бы нечем. Запрет двойной ОТПРАВКИ при этом
+-- цел: пока строка жива, второй быть не может.
+CREATE UNIQUE INDEX IF NOT EXISTS outbox_one_live_per_message
+  ON outbox (message_id) WHERE status NOT IN ('failed', 'stuck', 'cancelled');
 
 -- Пул наших номеров.
 CREATE TABLE IF NOT EXISTS numbers (
@@ -63,15 +69,23 @@ CONVERSATION_COLUMNS = (
     ("messages", "provider_id", "TEXT"),
     ("messages", "handled_at", "TEXT"),
     ("messages", "queued_text", "TEXT"),
+    ("messages", "handle_attempts", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
 def apply(db: sqlite3.Connection) -> None:
+    # Индекс, а не таблица: данных он не несёт, поэтому его замена запрета на
+    # DROP в невосстановимом слое не нарушает.
+    db.execute("DROP INDEX IF EXISTS outbox_one_per_message")
     db.executescript(SCHEMA)
     # Кому ушло прогревочное сообщение. У боевой строки получатель выводится из
     # треда, у прогревочной треда нет — а знать его надо: пассивная фаза требует
     # не «сколько отправлено», а «как давно этот номер что-то получал».
     ensure_column(db, "outbox", "recipient", "TEXT")
+    # Вид строки: cold | followup | reply | warmup. Нужен гейту (у ответа в
+    # диалоге своё окно) и дашборду, где холодное касание и ответ сейчас
+    # неразличимы. DEFAULT 'cold' — то, чем были все строки до этой части.
+    ensure_column(db, "outbox", "kind", "TEXT NOT NULL DEFAULT 'cold'")
     _conversation_state(db)
     db.commit()
 
