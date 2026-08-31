@@ -42,18 +42,38 @@ def free_room(db: sqlite3.Connection, now: datetime, config: dict) -> int:
     for row in numbers.all(db):
         if row["status"] != SENDING_STATUS:
             continue
-        room += capacity(db, row["number"], now, config) - outbox.live_count(
-            db, row["number"])
-    return max(0, room)
+        # Клампим на каждом номере, а не на сумме: номер, у которого стоящих
+        # строк больше остатка, иначе съедал бы своим минусом чужую живую
+        # ёмкость — и автопилот не ставил бы ничего, хотя второй номер свободен.
+        room += max(0, capacity(db, row["number"], now, config)
+                    - outbox.live_count(db, row["number"]))
+    return room
 
 
 def assign(db: sqlite3.Connection, now: datetime, config: dict) -> str:
-    free = [(capacity(db, row["number"], now, config), row["number"])
-            for row in numbers.all(db) if row["status"] == SENDING_STATUS]
-    usable = [(left, number) for left, number in free if left > 0]
-    if not usable:
+    return take(budget(db, now, config))
+
+
+def budget(db: sqlite3.Connection, now: datetime, config: dict) -> dict[str, int]:
+    """Сколько ещё тредов можно повесить на каждый активный номер сегодня."""
+    return {row["number"]: capacity(db, row["number"], now, config)
+            for row in numbers.all(db) if row["status"] == SENDING_STATUS}
+
+
+def take(budget: dict[str, int]) -> str:
+    """Номер с самым большим остатком; остаток уменьшается на месте.
+
+    Уменьшается — потому что раздача пачки тредов иначе сажает всю пачку на
+    один номер: ёмкость считается по `sent_today`, а присвоение номера треду
+    ничего не отправляет. Полсотни тредов забаненного номера уезжали бы на
+    один и тот же новый — то есть в следующий бан.
+    """
+    free = {number: left for number, left in budget.items() if left > 0}
+    if not free:
         raise NoNumberAvailableError("нет активного номера с непочатым дневным лимитом")
-    return max(usable)[1]
+    number = max(free, key=lambda candidate: (free[candidate], candidate))
+    budget[number] -= 1
+    return number
 
 
 def relocate(db: sqlite3.Connection, number: str, now: datetime, config: dict) -> dict:
@@ -66,6 +86,9 @@ def relocate(db: sqlite3.Connection, number: str, now: datetime, config: dict) -
     """
     moved = escalated = stranded = 0
     cold = {row["thread_id"] for row in conversation.cold_threads_of(db, number)}
+    # Бюджет считается один раз и тратится по треду: пересчёт на каждом витке
+    # дал бы один и тот же ответ — присвоение номера треду ничего не отправляет.
+    spare_room = budget(db, now, config)
     for thread in _threads_of(db, number):
         with db:
             if thread["thread_id"] not in cold:
@@ -74,7 +97,7 @@ def relocate(db: sqlite3.Connection, number: str, now: datetime, config: dict) -
                 continue
             conversation.set_status(db, thread["thread_id"], "blocked_channel")
         try:
-            spare = assign(db, now, config)
+            spare = take(spare_room)
         except NoNumberAvailableError:
             stranded += 1
             continue
@@ -107,9 +130,10 @@ def rescue_stranded(db: sqlite3.Connection, now: datetime, config: dict) -> int:
     часовым монитором — той же периодичности, что и вердикты о номерах.
     """
     rescued = 0
+    spare_room = budget(db, now, config)
     for thread in _stranded(db):
         try:
-            spare = assign(db, now, config)
+            spare = take(spare_room)
         except NoNumberAvailableError:
             break                     # свободных нет — остальным тем более
         with db:

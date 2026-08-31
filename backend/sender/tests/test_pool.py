@@ -83,3 +83,32 @@ def test_capacity_of_freshly_registered_number_is_zero(db):
     """Первые сутки — socket_delay: ёмкость ноль независимо от статуса."""
     add(db, "+7705", "active", started_at="2026-09-01T09:00:00+00:00")
     assert pool.capacity(db, "+7705", NOW, CONFIG) == 0
+
+
+def test_free_room_does_not_let_one_number_eat_another(db):
+    """Номер, у которого стоящих строк больше остатка, съедал бы своим минусом
+    чужую живую ёмкость — и автопилот не ставил бы ничего, хотя второй номер
+    свободен весь день."""
+    from sender.db import outbox
+
+    add(db, "+7700", "active")
+    add(db, "+7701", "active")
+    with db:
+        for message_id in range(CONFIG["warmup"]["ceiling"] + 5):
+            outbox.put(db, message_id + 1, f"+7702{message_id:04d}", "+7700", NOW)
+
+    assert pool.free_room(db, NOW, CONFIG) == CONFIG["warmup"]["ceiling"], \
+        "выбранный лимит одного номера закрыл собой весь пул"
+
+
+def test_take_spends_the_budget_so_a_batch_spreads():
+    """Ёмкость считается по отправленному, а присвоение номера треду ничего не
+    отправляет: без вычитания на месте вся пачка садится на один номер — то
+    есть едет в следующий бан."""
+    budget = {"+7700": 2, "+7701": 2}
+
+    landed = [pool.take(budget) for _ in range(4)]
+
+    assert sorted(landed) == ["+7700", "+7700", "+7701", "+7701"], landed
+    with pytest.raises(pool.NoNumberAvailableError):
+        pool.take(budget)

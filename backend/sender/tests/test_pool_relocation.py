@@ -123,3 +123,24 @@ def test_an_exhausted_thread_is_not_dumped_on_the_human_when_a_number_is_banned(
 
     assert result == {"moved": 0, "escalated": 0, "stranded": 0}
     assert conversation.get(db, "+77010000003")["status"] == "exhausted"
+
+
+def test_a_ban_spreads_the_threads_across_the_pool(db):
+    """Полсотни тредов забаненного номера, севшие на один и тот же новый, —
+    это следующий бан. Ёмкость считается по отправленному, а присвоение номера
+    треду ничего не отправляет, поэтому бюджет тратится на месте."""
+    banned = ban(db, active_number(db, "+77001112200"))
+    active_number(db, "+77001112233")
+    active_number(db, "+77001112244")
+    for index in range(6):
+        thread_id = f"+7701000{index:04d}"
+        open_thread(db, thread_id)
+        with db:
+            conversation.assign_number(db, thread_id, banned)
+
+    assert pool.relocate(db, banned, INSIDE, CONFIG)["moved"] == 6
+
+    landed = dict(db.execute(
+        "SELECT our_number, count(*) FROM threads WHERE our_number != ?"
+        " GROUP BY our_number", (banned,)).fetchall())
+    assert len(landed) == 2, f"вся пачка села на один номер: {landed}"
