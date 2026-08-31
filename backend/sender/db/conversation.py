@@ -10,7 +10,7 @@
 """
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 STATUSES = ("queued", "active", "exhausted", "escalated", "unreachable",
             "closed_refused", "closed_junk", "blocked_channel")
@@ -20,11 +20,15 @@ STATUSES = ("queued", "active", "exhausted", "escalated", "unreachable",
 AUTOMATON_STOPS = ("escalated", "unreachable", "exhausted",
                    "closed_refused", "closed_junk")
 
-FIELDS = "thread_id, company_id, status, our_number, touch_no"
+FIELDS = "thread_id, company_id, status, our_number, touch_no, auto_replies, next_touch_at"
 
 
 class UnknownThreadError(Exception):
     """Треда нет: почти всегда опечатка в номере, а не гонка."""
+
+
+class DuplicateIncomingError(Exception):
+    """Транспорт повторил событие: такое входящее уже записано."""
 
 
 def get(db: sqlite3.Connection, thread_id: str) -> dict | None:
@@ -78,14 +82,42 @@ def confirm_sent(db: sqlite3.Connection, message_id: int, provider_id: str | Non
         (now.isoformat(timespec="seconds"), provider_id, message_id))
 
 
-def bump_touch(db: sqlite3.Connection, thread_id: str, max_touches: int) -> None:
-    """Касание израсходовано. Последнее без ответа закрывает тред в exhausted:
-    автомату больше нечего сказать, а каденцию наполнит часть 3."""
+def bump_touch(db: sqlite3.Connection, thread_id: str, cadence: dict,
+               now: datetime) -> None:
+    """Касание израсходовано, срок следующего поставлен — одной транзакцией.
+
+    Последнее касание без ответа закрывает тред в exhausted: автомату больше
+    нечего сказать, и будить его тику больше нечем.
+    """
     db.execute("UPDATE threads SET touch_no = touch_no + 1 WHERE thread_id = ?",
                (thread_id,))
     thread = get(db, thread_id)
-    if thread["touch_no"] >= max_touches and not has_replies(db, thread_id):
-        set_status(db, thread_id, "exhausted")
+    days = cadence["follow_up_days"]
+    if thread["touch_no"] > len(days):
+        clear_schedule(db, thread_id)
+        if thread["touch_no"] >= cadence["max_touches"] and not has_replies(db, thread_id):
+            set_status(db, thread_id, "exhausted")
+        return
+    when = now + timedelta(days=days[thread["touch_no"] - 1])
+    db.execute("UPDATE threads SET next_touch_at = ? WHERE thread_id = ?",
+               (when.isoformat(timespec="seconds"), thread_id))
+
+
+def clear_schedule(db: sqlite3.Connection, thread_id: str) -> None:
+    """Расписание погашено: лид ответил, или касания кончились."""
+    db.execute("UPDATE threads SET next_touch_at = NULL WHERE thread_id = ?",
+               (thread_id,))
+
+
+def due_touch(db: sqlite3.Connection, now: datetime) -> dict | None:
+    """Один созревший тред. Один, а не пачка: генерация текста стоит денег и
+    секунд, а тик обязан оставаться коротким."""
+    row = db.execute(
+        f"SELECT {FIELDS} FROM threads WHERE status = 'active'"
+        " AND next_touch_at IS NOT NULL AND next_touch_at <= ?"
+        " ORDER BY next_touch_at LIMIT 1",
+        (now.isoformat(timespec="seconds"),)).fetchone()
+    return dict(row) if row else None
 
 
 def has_replies(db: sqlite3.Connection, thread_id: str) -> bool:
@@ -121,3 +153,69 @@ def cold_threads_of(db: sqlite3.Connection, our_number: str) -> list[dict]:
         "                       WHERE sent_text IS NOT NULL)",
         (our_number,)).fetchall()
     return [dict(row) for row in rows]
+
+
+def add_incoming(db: sqlite3.Connection, thread_id: str, text: str,
+                 provider_id: str | None) -> int:
+    """Ответ лида. Правкам не подлежит, поэтому draft_text пуст, а sent_text
+    заполнен сразу: лид его уже отправил.
+
+    Не коммитит намеренно — вебхук кладёт входящее и гасит расписание одной
+    транзакцией, иначе падение между коммитами оставило бы follow-up
+    запланированным после ответа.
+    """
+    stamp = now_stamp()
+    try:
+        cursor = db.execute(
+            "INSERT INTO messages (thread_id, role, sent_text, provider_id,"
+            " created_at, sent_at) VALUES (?, 'incoming', ?, ?, ?, ?)",
+            (thread_id, text, provider_id, stamp, stamp))
+    except sqlite3.IntegrityError as error:
+        raise DuplicateIncomingError(provider_id) from error
+    return cursor.lastrowid
+
+
+def add_draft(db: sqlite3.Connection, thread_id: str, text: str, angle: str) -> int:
+    """Черновик автомата. Копия thread_store.add_draft, отличающаяся ровно
+    отсутствием commit: черновик, счётчик auto_replies и отметка обработки
+    обязаны лечь одной транзакцией."""
+    cursor = db.execute(
+        "INSERT INTO messages (thread_id, role, draft_text, angle, created_at)"
+        " VALUES (?, 'outgoing', ?, ?, ?)",
+        (thread_id, text, angle, now_stamp()))
+    return cursor.lastrowid
+
+
+def unhandled_incoming(db: sqlite3.Connection) -> dict | None:
+    """Старшее входящее, которого ещё не касался агент."""
+    row = db.execute(
+        "SELECT message_id, thread_id, sent_text AS text, handle_attempts"
+        " FROM messages WHERE role = 'incoming' AND handled_at IS NULL"
+        " ORDER BY message_id LIMIT 1").fetchone()
+    return dict(row) if row else None
+
+
+def mark_handled(db: sqlite3.Connection, message_id: int, now: datetime) -> None:
+    db.execute("UPDATE messages SET handled_at = ? WHERE message_id = ?",
+               (now.isoformat(timespec="seconds"), message_id))
+
+
+def count_attempt(db: sqlite3.Connection, message_id: int) -> int:
+    """Заход на обработку. Растёт ДО вызова агента: процесс, убитый посреди
+    вызова, иначе не потратил бы попытку и остался бы вечной пробкой."""
+    db.execute("UPDATE messages SET handle_attempts = handle_attempts + 1"
+               " WHERE message_id = ?", (message_id,))
+    return db.execute("SELECT handle_attempts FROM messages WHERE message_id = ?",
+                      (message_id,)).fetchone()[0]
+
+
+def bump_auto_replies(db: sqlite3.Connection, thread_id: str) -> None:
+    """Сколько раз автомат отвечал своими словами. Предохранитель читает это."""
+    db.execute("UPDATE threads SET auto_replies = auto_replies + 1"
+               " WHERE thread_id = ?", (thread_id,))
+
+
+def now_stamp() -> str:
+    """Момент записи сообщения. Формат — тот же, что у thread_store: таблица
+    одна, и две формы штампа в ней сломали бы сортировку истории."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")

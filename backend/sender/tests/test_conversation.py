@@ -2,6 +2,8 @@
 
 from datetime import timedelta
 
+import pytest
+
 from sender.db import conversation
 from sender.tests.conftest import NOW
 
@@ -73,12 +75,12 @@ def test_third_touch_without_a_reply_exhausts_the_thread(db):
     """Молчит три касания — автомату больше нечего сказать."""
     open_thread(db, status="active")
     with db:
-        conversation.bump_touch(db, "+77010000001", max_touches=3)
-        conversation.bump_touch(db, "+77010000001", max_touches=3)
+        conversation.bump_touch(db, "+77010000001", CADENCE, NOW)
+        conversation.bump_touch(db, "+77010000001", CADENCE, NOW)
     assert conversation.get(db, "+77010000001")["status"] == "active"
 
     with db:
-        conversation.bump_touch(db, "+77010000001", max_touches=3)
+        conversation.bump_touch(db, "+77010000001", CADENCE, NOW)
 
     thread = conversation.get(db, "+77010000001")
     assert (thread["touch_no"], thread["status"]) == (3, "exhausted")
@@ -92,7 +94,7 @@ def test_a_thread_with_replies_is_never_exhausted(db):
     db.commit()
     with db:
         for _ in range(3):
-            conversation.bump_touch(db, "+77010000001", max_touches=3)
+            conversation.bump_touch(db, "+77010000001", CADENCE, NOW)
     assert conversation.get(db, "+77010000001")["status"] == "active"
     assert conversation.has_replies(db, "+77010000001") is True
 
@@ -131,3 +133,144 @@ def test_cold_threads_of_a_number_are_the_ones_without_history(db):
 
     assert [row["thread_id"] for row in cold] == ["+77010000001"]
     assert conversation.is_cold(db, "+77010000002") is False
+
+
+CADENCE = {"follow_up_days": [3, 7], "max_touches": 3}
+
+
+def test_bump_touch_schedules_the_next_one(db):
+    """Срок следующего касания ставится той же транзакцией, что расход
+    текущего: второй автор next_touch_at дал бы тред, у которого касание
+    израсходовано, а срок не сдвинут."""
+    open_thread(db)
+    with db:
+        conversation.bump_touch(db, "+77010000001", CADENCE, NOW)
+
+    thread = db.execute("SELECT touch_no, next_touch_at, status FROM threads").fetchone()
+    assert thread["touch_no"] == 1
+    assert thread["next_touch_at"] == (NOW + timedelta(days=3)).isoformat(timespec="seconds")
+    assert thread["status"] == "queued"
+
+
+def test_the_second_touch_uses_the_second_step_of_the_cadence(db):
+    open_thread(db)
+    with db:
+        conversation.bump_touch(db, "+77010000001", CADENCE, NOW)
+        conversation.bump_touch(db, "+77010000001", CADENCE, NOW)
+
+    expected = (NOW + timedelta(days=7)).isoformat(timespec="seconds")
+    assert db.execute("SELECT next_touch_at FROM threads").fetchone()[0] == expected
+
+
+def test_the_last_touch_exhausts_the_thread_and_clears_the_schedule(db):
+    """Автомату больше нечего сказать — и будить его тику больше нечем."""
+    open_thread(db)
+    with db:
+        for _ in range(3):
+            conversation.bump_touch(db, "+77010000001", CADENCE, NOW)
+
+    thread = db.execute("SELECT status, next_touch_at FROM threads").fetchone()
+    assert thread["status"] == "exhausted"
+    assert thread["next_touch_at"] is None
+
+
+def test_a_thread_with_replies_is_not_exhausted(db):
+    open_thread(db)
+    with db:
+        conversation.add_incoming(db, "+77010000001", "перезвоните", "3EB1")
+        for _ in range(3):
+            conversation.bump_touch(db, "+77010000001", CADENCE, NOW)
+
+    assert conversation.get(db, "+77010000001")["status"] == "queued"
+
+
+def test_due_touch_takes_only_active_threads_whose_time_has_come(db):
+    open_thread(db, "+77010000001", status="active")
+    open_thread(db, "+77010000002", status="escalated")
+    open_thread(db, "+77010000003", status="active")
+    soon = (NOW + timedelta(days=1)).isoformat(timespec="seconds")
+    past = (NOW - timedelta(days=1)).isoformat(timespec="seconds")
+    db.execute("UPDATE threads SET next_touch_at = ? WHERE thread_id = '+77010000001'", (past,))
+    db.execute("UPDATE threads SET next_touch_at = ? WHERE thread_id = '+77010000002'", (past,))
+    db.execute("UPDATE threads SET next_touch_at = ? WHERE thread_id = '+77010000003'", (soon,))
+    db.commit()
+
+    assert conversation.due_touch(db, NOW)["thread_id"] == "+77010000001"
+
+
+def test_due_touch_is_none_when_nothing_matured(db):
+    open_thread(db, status="active")
+    assert conversation.due_touch(db, NOW) is None
+
+
+def test_incoming_is_deduplicated_by_provider_id(db):
+    """Транспорт повторяет событие, пока не получит 2xx. Без этого агент видел
+    бы собеседника, дважды сказавшего одно и то же."""
+    open_thread(db)
+    with db:
+        conversation.add_incoming(db, "+77010000001", "сколько стоит?", "3EB0")
+
+    with pytest.raises(conversation.DuplicateIncomingError):
+        with db:
+            conversation.add_incoming(db, "+77010000001", "сколько стоит?", "3EB0")
+
+    assert db.execute("SELECT count(*) FROM messages").fetchone()[0] == 1
+
+
+def test_incoming_lands_in_history_immediately(db):
+    """Ответ лида правкам не подлежит: sent_text у него заполнен сразу."""
+    open_thread(db)
+    with db:
+        conversation.add_incoming(db, "+77010000001", "сколько стоит?", "3EB0")
+
+    row = db.execute("SELECT role, draft_text, sent_text, sent_at FROM messages").fetchone()
+    assert row["role"] == "incoming" and row["draft_text"] is None
+    assert row["sent_text"] == "сколько стоит?" and row["sent_at"] is not None
+
+
+def test_unhandled_incoming_returns_the_oldest_and_skips_the_handled(db):
+    open_thread(db)
+    with db:
+        first = conversation.add_incoming(db, "+77010000001", "первое", "3EB0")
+        conversation.add_incoming(db, "+77010000001", "второе", "3EB1")
+
+    assert conversation.unhandled_incoming(db)["message_id"] == first
+    with db:
+        conversation.mark_handled(db, first, NOW)
+    assert conversation.unhandled_incoming(db)["text"] == "второе"
+
+
+def test_count_attempt_returns_the_new_value(db):
+    """Счётчик растёт ДО вызова агента: процесс, убитый посреди вызова, иначе
+    не потратил бы попытку и оставил бы ту же вечную пробку."""
+    open_thread(db)
+    with db:
+        message_id = conversation.add_incoming(db, "+77010000001", "первое", "3EB0")
+    with db:
+        assert conversation.count_attempt(db, message_id) == 1
+        assert conversation.count_attempt(db, message_id) == 2
+
+
+def test_clear_schedule_stops_the_cadence(db):
+    open_thread(db, status="active")
+    with db:
+        conversation.bump_touch(db, "+77010000001", CADENCE, NOW)
+        conversation.clear_schedule(db, "+77010000001")
+    assert db.execute("SELECT next_touch_at FROM threads").fetchone()[0] is None
+
+
+def test_auto_replies_counts_only_what_the_automaton_said_itself(db):
+    open_thread(db)
+    with db:
+        conversation.bump_auto_replies(db, "+77010000001")
+    assert db.execute("SELECT auto_replies FROM threads").fetchone()[0] == 1
+
+
+def test_add_draft_does_not_commit(db):
+    """Черновик и статус треда ложатся одной транзакцией: иначе падение между
+    коммитами даёт тред, которому автомат «уже ответил», а лид ничего не видел."""
+    open_thread(db)
+    message_id = conversation.add_draft(db, "+77010000001", "Ответ агента", "answer")
+    db.rollback()
+    assert db.execute("SELECT count(*) FROM messages WHERE message_id = ?",
+                      (message_id,)).fetchone()[0] == 0

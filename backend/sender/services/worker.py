@@ -159,7 +159,7 @@ async def _send(db, transport, row: dict, now: datetime, config: dict) -> str:
     with db:
         outbox.mark_sent(db, row["outbox_id"], result.provider_id, now)
         conversation.confirm_sent(db, row["message_id"], result.provider_id, now)
-        conversation.bump_touch(db, row["thread_id"], config["cadence"]["max_touches"])
+        conversation.bump_touch(db, row["thread_id"], config["cadence"], now)
     log.info("ушло: тред %s, сообщение %s, provider %s",
              row["thread_id"], row["message_id"], result.provider_id)
     return "sent"
