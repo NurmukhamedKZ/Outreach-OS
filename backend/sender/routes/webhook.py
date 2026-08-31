@@ -10,9 +10,10 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
+from config import settings
 from sender.db import conversation, migrate, outbox
 from sender.services import config
 
@@ -46,7 +47,9 @@ def now() -> datetime:
 
 
 @router.post("/webhook")
-def receive(event: Event) -> dict:
+def receive(event: Event,
+            x_sender_secret: str | None = Header(default=None)) -> dict:
+    require_secret(x_sender_secret)
     if event.kind != "status" or event.provider_id is None:
         log.info("событие %s пока не обрабатывается (часть 3): %s",
                  event.kind, event.provider_id)
@@ -55,9 +58,27 @@ def receive(event: Event) -> dict:
         return {"handled": _record_status(db, event, now())}
 
 
+def require_secret(given: str | None) -> None:
+    """Пустой секрет означает выключенную проверку: локальная разработка на
+    пустом .env не должна ломаться. Подделка получает 401, а не 200 — Node
+    ретраит только то, на что не пришло 2xx, и чужой запрос не превращается в
+    бесконечный цикл."""
+    expected = settings.sender_webhook_secret
+    if expected and given != expected:
+        raise HTTPException(401, "вебхук не подписан")
+
+
 def _record_status(db: sqlite3.Connection, event: Event, moment: datetime) -> bool:
-    """False — строки с таким provider_id нет: событие о прогревочной отправке
-    или о чужом сообщении. Это норма, а не ошибка."""
+    """False — событие не про доставку или строки с таким provider_id нет:
+    прогревочная отправка, чужое сообщение. Это норма, а не ошибка.
+
+    Node форвардит каждый `messages.update`, а не только доставку: ack сервера,
+    PENDING, ошибку, правку без статуса вовсе. Принять их за доставку — значит
+    записать, что лид получил сообщение, которого он может не видеть, и заодно
+    ослепить `min_delivered_rate`: у всех номеров доставка стала бы стопроцентной.
+    """
+    if event.status not in (DELIVERED, READ):
+        return False
     with db:
         known = outbox.delivered(db, event.provider_id, moment,
                                  read=event.status == READ)

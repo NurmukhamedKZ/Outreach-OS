@@ -99,3 +99,60 @@ def test_incoming_is_accepted_and_parked_until_part_3(db, http, caplog):
 
     assert response.status_code == 200
     assert response.json()["handled"] is False
+
+
+def test_a_server_ack_is_not_a_delivery(db, http):
+    """Node шлёт каждый messages.update: ack сервера (2), PENDING (1), ошибку (0)
+    и правки без статуса вовсе. Считать их доставкой значит утверждать, что лид
+    получил сообщение, которого он может не увидеть, — и заодно навсегда
+    ослепить детектор min_delivered_rate: у всех номеров была бы стопроцентная
+    доставка."""
+    sent_row(db)
+
+    for status in (0, 1, 2, None):
+        response = http.post("/api/sender/webhook", json={
+            "kind": "status", "number": "+77001112233",
+            "provider_id": "3EB0", "status": status})
+        assert response.status_code == 200, status
+
+    assert db.execute("SELECT delivered_at FROM outbox").fetchone()[0] is None
+    assert conversation.get(db, "+77010000001")["status"] == "queued"
+
+
+def test_a_forged_event_is_rejected(db, http, monkeypatch):
+    """До части 3 поддельное событие не стоило ничего; с ней оно пишет в
+    переписку и тратит деньги на модель."""
+    monkeypatch.setattr(webhook.settings, "sender_webhook_secret", "s3cret")
+    sent_row(db)
+
+    response = http.post("/api/sender/webhook", json={
+        "kind": "status", "number": "+77001112233",
+        "provider_id": "3EB0", "status": webhook.DELIVERED})
+
+    assert response.status_code == 401
+    assert db.execute("SELECT delivered_at FROM outbox").fetchone()[0] is None
+
+
+def test_the_right_secret_passes(db, http, monkeypatch):
+    monkeypatch.setattr(webhook.settings, "sender_webhook_secret", "s3cret")
+    sent_row(db)
+
+    response = http.post(
+        "/api/sender/webhook", headers={"X-Sender-Secret": "s3cret"},
+        json={"kind": "status", "number": "+77001112233",
+              "provider_id": "3EB0", "status": webhook.DELIVERED})
+
+    assert response.status_code == 200
+    assert db.execute("SELECT delivered_at FROM outbox").fetchone()[0] is not None
+
+
+def test_an_empty_secret_turns_the_check_off(db, http, monkeypatch):
+    """Локальная разработка на пустом .env не должна ломаться."""
+    monkeypatch.setattr(webhook.settings, "sender_webhook_secret", None)
+    sent_row(db)
+
+    response = http.post("/api/sender/webhook", json={
+        "kind": "status", "number": "+77001112233",
+        "provider_id": "3EB0", "status": webhook.DELIVERED})
+
+    assert response.status_code == 200
