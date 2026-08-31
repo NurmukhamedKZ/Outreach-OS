@@ -11,7 +11,6 @@ draft -> правка оператора -> отправка требует, ч�
 
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 import httpx
 from langchain_core.exceptions import OutputParserException
@@ -42,9 +41,6 @@ REASONING = {"enabled": False}
 # Без явного timeout зависшее соединение блокирует draft() навсегда — см.
 # collector/services/pipeline/llm.py::REQUEST_TIMEOUT_MS.
 REQUEST_TIMEOUT_MS = 60_000
-# httpx-таймауту нельзя доверять целиком при стриминге с keep-alive — см.
-# collector/services/pipeline/llm.py::HARD_TIMEOUT_S.
-HARD_TIMEOUT_S = REQUEST_TIMEOUT_MS / 1000 + 15
 
 SYSTEM = """Ты пишешь исходящие сообщения в WhatsApp от лица команды, которая предлагает:
 {offer}
@@ -66,11 +62,11 @@ SYSTEM = """Ты пишешь исходящие сообщения в WhatsApp 
   поводом не является."""
 
 
-def model(config):
-    """Клиент модели. Ключ приходит из settings (backend/.env), а не из окружения процесса.
+def client(config):
+    """Сырой клиент модели: без structured output, для агента с инструментами.
 
     require_parameters ограничивает роутинг OpenRouter провайдерами, реально
-    поддерживающими strict json_schema — см. collector/services/pipeline/llm.py::structured_model.
+    поддерживающими strict json_schema — см. collector/services/pipeline/llm.py.
     """
     return ChatOpenRouter(
         model=config["llm"]["model"],
@@ -80,7 +76,12 @@ def model(config):
         timeout=REQUEST_TIMEOUT_MS,
         model_kwargs={"retries": NO_SDK_RETRY},
         openrouter_provider={"require_parameters": True},
-    ).with_structured_output(Draft, method="json_schema", strict=True)
+    )
+
+
+def model(config):
+    """Клиент для одного хода со structured output: ответ обязан лечь в Draft."""
+    return client(config).with_structured_output(Draft, method="json_schema", strict=True)
 
 
 def _log_trace_background(handler):
@@ -110,19 +111,15 @@ def draft(llm, seed, history, task, *, session_id, name, offer=""):
         "callbacks": [handler] if handler else [],
     }
     for attempt in range(1, TRANSPORT_RETRIES + 1):
-        pool = ThreadPoolExecutor(max_workers=1)
         try:
-            future = pool.submit(llm.invoke, messages, config=config)
-            result = future.result(timeout=HARD_TIMEOUT_S)
+            result = llm.invoke(messages, config=config)
             if handler:
                 _log_trace_background(handler)
             return result
-        except (httpx.TransportError, OutputParserException, ResponseValidationError, FutureTimeoutError):
+        except (httpx.TransportError, OutputParserException, ResponseValidationError):
             if attempt == TRANSPORT_RETRIES:
                 raise
             time.sleep(attempt)
-        finally:
-            pool.shutdown(wait=False)
 
 
 FIRST = (
