@@ -210,8 +210,12 @@ def _settle(db, thread: dict, message_id: int, moment: datetime,
         conversation.set_status(db, thread_id, "escalated")
         conversation.mark_handled(db, message_id, moment)
         return
-    if thread["status"] == HUMAN_LEADS:
-        conversation.mark_handled(db, message_id, moment)
-        return
     if thread["status"] == REVIVED_BY_A_REPLY:
         conversation.set_status(db, thread_id, "active")
+        return
+    if thread["status"] in conversation.AUTOMATON_STOPS:
+        # Тред, куда автомату писать нельзя, не имеет права будить агента.
+        # Иначе лид, уже оформивший отказ, написав ещё раз, возвращался бы
+        # классификацией `interested` в escalated — то есть в инбокс живым
+        # лидом, — и мы бы за это ещё и заплатили модели.
+        conversation.mark_handled(db, message_id, moment)

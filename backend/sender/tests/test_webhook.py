@@ -332,3 +332,15 @@ def test_a_stop_word_beats_the_escalated_thread(db, http, refusals):
     http.post("/api/sender/webhook", json=incoming(text="удалите мой номер"))
 
     assert refusals and conversation.get(db, "+77010000001")["status"] == "closed_refused"
+
+
+@pytest.mark.parametrize("status", ["closed_refused", "closed_junk", "unreachable"])
+def test_a_thread_the_automaton_may_not_write_to_never_wakes_the_agent(db, http, status):
+    """Лид, уже оформивший отказ, написав снова, вернулся бы классификацией
+    `interested` в инбокс живым лидом — и мы бы за это ещё и заплатили."""
+    open_thread(db, "+77010000001", status=status)
+
+    http.post("/api/sender/webhook", json=incoming(text="а если подумать?"))
+
+    assert db.execute("SELECT handled_at FROM messages").fetchone()[0] is not None
+    assert conversation.get(db, "+77010000001")["status"] == status
