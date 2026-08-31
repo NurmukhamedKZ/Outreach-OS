@@ -6,8 +6,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from sender.db import migrate, numbers
+from sender.db import migrate, numbers, outbox
 from sender.routes import sender as routes
+from sender.routes.sender import RECENT_SENDS
 from sender.tests.conftest import FakeTransport
 from sender.tests.test_config import switch  # noqa: F401  — фикстура, а не имя
 from sender.tests.test_conversation import add_draft, open_thread
@@ -209,3 +210,39 @@ def test_status_carries_the_queue_and_the_heartbeat(client):
     body = http.get("/api/sender").json()
     assert set(body["queue"]) == {"queued", "sent_today", "overdue"}
     assert "heartbeat" in body
+
+
+def test_a_rejected_edit_does_not_reach_the_queued_message(client_with_thread):
+    """Оператор жмёт второй раз с правленым текстом, получает 409 «уже в
+    очереди» — и уверен, что правка не применилась. Если текст успел лечь в
+    базу, стоящая строка отправит именно его: воркер читает
+    coalesce(queued_text, draft_text)."""
+    http, db = client_with_thread
+    http.post("/api/sender/queue", json={"thread_id": "+77010000001",
+                                         "text": "Первый вариант"})
+
+    response = http.post("/api/sender/queue", json={"thread_id": "+77010000001",
+                                                    "text": "Второй вариант"})
+
+    assert response.status_code == 409
+    assert db.execute("SELECT queued_text FROM messages").fetchone()[0] == "Первый вариант"
+
+
+def test_the_queue_of_a_thread_is_not_crowded_out_by_other_threads(client_with_thread):
+    """Карточка треда выводит «в очереди» из этого ответа. Отбор десяти
+    последних по всей очереди с фильтром уже в питоне означает, что после десяти
+    чужих отправок бейдж пропадает, кнопка разблокируется — и нажатие приводит
+    к 409."""
+    http, db = client_with_thread
+    http.post("/api/sender/queue", json={"thread_id": "+77010000001"})
+    later = NOW + timedelta(minutes=5)
+    with db:
+        for index in range(RECENT_SENDS + 5):
+            other = outbox.put(db, 500 + index, f"+7702000{index}", "+77001112233", later)
+            outbox.claim(db, other, later)
+            outbox.mark_sent(db, other, f"id{index}", later)
+
+    # `+` в query-string декодируется пробелом — ручка канонизирует номер сама.
+    body = http.get("/api/sender/queue?thread_id=+77010000001").json()
+
+    assert [row["thread_id"] for row in body["queue"]] == ["+77010000001"]

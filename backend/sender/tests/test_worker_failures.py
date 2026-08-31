@@ -110,3 +110,50 @@ async def test_a_stuck_row_is_never_resent(db, telegram):
 
     assert transport.sent_calls == [], "застрявшую строку переотправили"
     assert db.execute("SELECT status FROM outbox").fetchone()[0] == "stuck"
+
+
+async def test_a_broken_config_does_not_kill_the_worker(db, monkeypatch, telegram):
+    """Чтение конфига стояло снаружи try — то есть ровно та смерть задачи, ради
+    предотвращения которой try и написан. Битый или на секунду нечитаемый
+    config.toml убивал бы воркер молча, и ноль отправок обнаружился бы к утру."""
+    import asyncio
+
+    calls = []
+
+    def broken():
+        calls.append(1)
+        raise ValueError("config.toml не читается")
+
+    async def stop_after_two(_seconds):
+        if len(calls) >= 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(worker.sender_config, "load", broken)
+    monkeypatch.setattr(worker.asyncio, "sleep", stop_after_two)
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker.loop(lambda: db, lambda: None)
+
+    assert len(calls) == 2, "цикл умер на битом конфиге"
+    assert worker.heartbeat() is not None
+
+
+async def test_a_poisoned_head_row_does_not_block_the_whole_queue(db, telegram):
+    """`outbox.due` детерминированно отдаёт одну и ту же старшую строку. Любое
+    исключение на ней — вечная пробка: цикл глотает, логирует, overdue растёт, а
+    heartbeat бодрый. Строка обязана уйти в failed, чтобы очередь двинулась."""
+    from sender.db import outbox as queue_rows
+    from sender.tests.test_worker import INSIDE, ready
+
+    with db:
+        poisoned = queue_rows.put(db, 999, "+77010000009", "номера-нет-в-пуле", INSIDE)
+    good, _ = ready(db)
+
+    assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "failed"
+
+    assert db.execute("SELECT status FROM outbox WHERE outbox_id = ?",
+                      (poisoned,)).fetchone()[0] == "failed"
+
+    transport = FakeTransport()
+    assert await worker.tick(db, transport, CONFIG, INSIDE) == "sent"
+    assert len(transport.sent_calls) == 1

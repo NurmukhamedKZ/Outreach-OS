@@ -227,11 +227,16 @@ def site_ai_signals(db, run_id, pages, weights):
         html = rebuild.html_of(page)
         observed_at = page["fetched_at"]
         analysis = answer.get("analysis") or {}
-        if analysis.get("hiring"):
-            for hiring in analysis["hiring"]:
-                quote = hiring.get("quote") or ""
-                if quote and quote in html:
-                    emit(db, run_id, company_id, "site_hiring_sales", observed_at, weights, quote, "")
+        # Один сигнал на тип на компанию (тот же принцип, что у newest_review_match):
+        # вакансий на странице может быть несколько, но observed_at/url у всех
+        # совпадают (одна страница), и вторая emit() столкнулась бы по PRIMARY
+        # KEY signals_all. Берём первую подтверждённую цитату, не все.
+        quote = next(
+            (h.get("quote") or "" for h in analysis.get("hiring") or [] if h.get("quote") and h["quote"] in html),
+            None,
+        )
+        if quote:
+            emit(db, run_id, company_id, "site_hiring_sales", observed_at, weights, quote, "")
         if analysis.get("pricing_visible") is False:
             emit(db, run_id, company_id, "site_no_pricing", observed_at, weights,
                  "цены не выложены — продают через звонок", "")
@@ -281,13 +286,20 @@ def instagram_ai_signals(db, run_id, pages, weights):
         if not company_id:
             continue
         analysis = answer.get("analysis") or {}
+        # Один сигнал на пост: наблюдения PK signals_all (company_id, type,
+        # observed_at, url) для этого типа совпадают с (post, media_url) —
+        # несколько подтверждённых вопросов под одним постом столкнулись бы
+        # на второй emit(). Тот же принцип, что у site_hiring_sales и
+        # newest_review_match: берём первый подтверждённый вопрос на пост.
+        seen_pk = set()
         for q in analysis.get("unanswered_questions") or []:
             quote = q.get("quote") or ""
             url = q.get("media_url") or ""
             shortcode = url.rstrip("/").rsplit("/p/", 1)[-1] if "/p/" in url else ""
             post = post_by_shortcode.get(shortcode)
             pk = post["pk"] if post else None
-            if pk and any(quote and quote in c["text"] for c in comments.get(pk, [])):
+            if pk and pk not in seen_pk and any(quote and quote in c["text"] for c in comments.get(pk, [])):
+                seen_pk.add(pk)
                 emit(db, run_id, company_id, "ig_unanswered_question", post["taken_at"],
                      weights, quote, url)
 

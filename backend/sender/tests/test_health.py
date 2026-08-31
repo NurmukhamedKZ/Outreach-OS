@@ -51,13 +51,17 @@ def warmed(db, number):
     return number
 
 
-def record_send(db, number, delivered, days_ago=0, replied=False):
-    """Боевая отправка задним числом: строка outbox со `sent` и нужной датой."""
+def record_send(db, number, delivered, days_ago=0, replied=False, thread_id=None):
+    """Боевая отправка задним числом: строка outbox со `sent` и нужной датой.
+
+    `thread_id` передаётся, когда нужно второе и третье касание того же лида:
+    отправок у него три, а ответ — максимум один."""
     moment = INSIDE - timedelta(days=days_ago)
     message_id = next(_next_message_id)
-    thread_id = f"+7701000{message_id}"
-    db.execute("INSERT INTO threads (thread_id, company_id, seed, created_at)"
-               " VALUES (?, ?, '{}', ?)", (thread_id, thread_id, outbox.stamp(moment)))
+    if thread_id is None:
+        thread_id = f"+7701000{message_id}"
+        db.execute("INSERT INTO threads (thread_id, company_id, seed, created_at)"
+                   " VALUES (?, ?, '{}', ?)", (thread_id, thread_id, outbox.stamp(moment)))
     with db:
         outbox_id = outbox.put(db, message_id, thread_id, number, moment)
         outbox.claim(db, outbox_id, moment)
@@ -69,6 +73,7 @@ def record_send(db, number, delivered, days_ago=0, replied=False):
                    " VALUES (?, 'incoming', 'ок', ?, ?)",
                    (thread_id, outbox.stamp(moment), outbox.stamp(moment)))
         db.commit()
+    return thread_id
 
 
 def await_check(db, report):
@@ -182,3 +187,69 @@ def test_sends_older_than_the_window_do_not_count(db, sent_messages):
         record_send(db, number, delivered=False, days_ago=30)
 
     assert await_check(db, report={number: {"state": "open", "reconnects": 0}}) == []
+
+
+def test_a_silent_delivery_feed_does_not_quarantine_the_pool(db, sent_messages):
+    """Подтверждения доставки пишет только вебхук. Лежащий Node, перепутанный
+    URL или перезапуск бэкенда во время серии — это ноль подтверждений по всему
+    пулу, и вердикт по доставке отправил бы в карантин все номера подряд по
+    причине, к мнению WhatsApp отношения не имеющей."""
+    first = warmed(db, "+77001112233")
+    second = warmed(db, "+77009998877")
+    for number in (first, second):
+        for _ in range(20):
+            record_send(db, number, delivered=False, replied=True)
+
+    events = await_check(db, report={first: {"state": "open", "reconnects": 0},
+                                     second: {"state": "open", "reconnects": 0}})
+
+    assert events == [], "монитор погасил пул, потому что молчал вебхук"
+
+
+def test_one_bad_number_is_still_judged_while_the_feed_is_alive(db, sent_messages):
+    """Обратная сторона: пока подтверждения по пулу идут, молчание одного номера
+    — это его молчание, а не наша авария."""
+    bad = warmed(db, "+77001112233")
+    good = warmed(db, "+77009998877")
+    for _ in range(20):
+        record_send(db, bad, delivered=False, replied=True)
+        record_send(db, good, delivered=True, replied=True)
+
+    events = await_check(db, report={bad: {"state": "open", "reconnects": 0},
+                                     good: {"state": "open", "reconnects": 0}})
+
+    assert [event.number for event in events] == [bad]
+
+
+def test_the_same_verdict_is_not_repeated_every_hour(db, sent_messages):
+    """У ветки реконнектов защита от повтора есть, у вердиктов по rate её не
+    было: номер в карантине ежечасно переставлялся бы в тот же статус и слал бы
+    в телеграм то же самое. Это и есть шум, из-за которого через неделю
+    перестают читать настоящие аварии."""
+    number = warmed(db, "+77001112233")
+    for index in range(20):
+        record_send(db, number, delivered=index < 10, replied=True)
+
+    report = {number: {"state": "open", "reconnects": 0}}
+    assert len(await_check(db, report)) == 1
+    assert len(sent_messages) == 1
+
+    assert await_check(db, report) == []
+    assert len(sent_messages) == 1, "второе уведомление о том же самом"
+
+
+def test_reply_rate_counts_leads_not_touches(db, sent_messages):
+    """`sent` считает строки очереди, а ответ бывает один на тред. При трёх
+    касаниях на лида деление ответов на отправки делает порог из config.toml
+    втрое строже написанного — и номер уезжает в карантин за reply rate 25%,
+    когда в конфиге стоит 5%."""
+    number = warmed(db, "+77001112233")
+    for index in range(20):
+        thread_id = record_send(db, number, delivered=True, replied=index < 2)
+        record_send(db, number, delivered=True, thread_id=thread_id)   # 2-е касание
+        record_send(db, number, delivered=True, thread_id=thread_id)   # 3-е касание
+
+    # Ответили 2 лида из 20 — это 10% при пороге 5%. Делением на 60 отправок
+    # получилось бы 3.3%, то есть карантин за результат вдвое выше порога.
+    assert await_check(db, report={number: {"state": "open", "reconnects": 0}}) == [], \
+        "порог reply rate оказался втрое строже написанного в config.toml"

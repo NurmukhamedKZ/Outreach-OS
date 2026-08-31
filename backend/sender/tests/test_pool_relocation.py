@@ -75,3 +75,51 @@ def test_without_a_spare_number_threads_wait_in_blocked_channel(db):
 
     assert result["stranded"] == 1
     assert conversation.get(db, "+77010000001")["status"] == "blocked_channel"
+
+
+def test_a_stranded_thread_moves_as_soon_as_a_number_frees_up(db):
+    """`blocked_channel` обязан быть ожиданием, а не могилой. Забаньте номер,
+    когда пул выбрал дневной лимит, — и без этого прохода холодные треды
+    выпадали бы из продукта навсегда: `first_touch_candidates` смотрит только на
+    `queued`, а переезд заново никто не запускал."""
+    banned = ban(db, active_number(db, "+77001112233"))
+    open_thread(db, "+77010000001", status="queued")
+    with db:
+        conversation.assign_number(db, "+77010000001", banned)
+    assert pool.relocate(db, banned, INSIDE, CONFIG)["stranded"] == 1
+
+    active_number(db, "+77009998877")          # утром появился свободный номер
+
+    assert pool.rescue_stranded(db, INSIDE, CONFIG) == 1
+
+    thread = conversation.get(db, "+77010000001")
+    assert thread["status"] == "queued" and thread["our_number"] == "+77009998877"
+
+
+def test_rescue_is_quiet_when_there_is_still_nowhere_to_go(db):
+    banned = ban(db, active_number(db, "+77001112233"))
+    open_thread(db, "+77010000001", status="queued")
+    with db:
+        conversation.assign_number(db, "+77010000001", banned)
+    pool.relocate(db, banned, INSIDE, CONFIG)
+
+    assert pool.rescue_stranded(db, INSIDE, CONFIG) == 0
+    assert conversation.get(db, "+77010000001")["status"] == "blocked_channel"
+
+
+def test_an_exhausted_thread_is_not_dumped_on_the_human_when_a_number_is_banned(db):
+    """Выдохшийся тред — молчащий лид, с которым автомат закончил. Отправлять
+    его человеку при бане значит засорять инбокс мёртвыми лидами."""
+    banned = ban(db, active_number(db, "+77001112233"))
+    active_number(db, "+77009998877")
+    open_thread(db, "+77010000003", status="exhausted")
+    message_id = add_draft(db, "+77010000003")
+    db.execute("UPDATE messages SET sent_text = 'ушло' WHERE message_id = ?", (message_id,))
+    db.commit()
+    with db:
+        conversation.assign_number(db, "+77010000003", banned)
+
+    result = pool.relocate(db, banned, INSIDE, CONFIG)
+
+    assert result == {"moved": 0, "escalated": 0, "stranded": 0}
+    assert conversation.get(db, "+77010000003")["status"] == "exhausted"

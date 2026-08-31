@@ -28,6 +28,25 @@ def capacity(db: sqlite3.Connection, number: str, now: datetime, config: dict) -
     return max(0, limit - numbers.sent_today(db, number, now))
 
 
+def free_room(db: sqlite3.Connection, now: datetime, config: dict) -> int:
+    """Сколько сообщений пул ещё может ПОСТАВИТЬ в очередь сегодня.
+
+    `capacity` считает по отправленному, и этого хватает гейту на отправке: он
+    смотрит на строку, которая уходит прямо сейчас. Автопилоту нужно другое —
+    уже стоящие строки тоже займут сегодняшний лимит, и без их вычета он
+    поставил бы хоть сотню черновиков поверх дневной ёмкости.
+    """
+    from sender.db import outbox
+
+    room = 0
+    for row in numbers.all(db):
+        if row["status"] != SENDING_STATUS:
+            continue
+        room += capacity(db, row["number"], now, config) - outbox.live_count(
+            db, row["number"])
+    return max(0, room)
+
+
 def assign(db: sqlite3.Connection, now: datetime, config: dict) -> str:
     free = [(capacity(db, row["number"], now, config), row["number"])
             for row in numbers.all(db) if row["status"] == SENDING_STATUS]
@@ -69,8 +88,41 @@ def relocate(db: sqlite3.Connection, number: str, now: datetime, config: dict) -
 
 
 def _threads_of(db: sqlite3.Connection, number: str) -> list[dict]:
+    """Только те, кому переезд вообще нужен. Список исключений — весь
+    AUTOMATON_STOPS, а не три статуса из него: выдохшийся тред, отправленный при
+    бане человеку, — это мёртвый лид в инбоксе живого оператора."""
+    stops = ", ".join("?" * len(conversation.AUTOMATON_STOPS))
     rows = db.execute(
         f"SELECT {conversation.FIELDS} FROM threads WHERE our_number = ?"
-        " AND status NOT IN ('escalated', 'closed_refused', 'closed_junk')",
-        (number,)).fetchall()
+        f" AND status NOT IN ({stops})",
+        (number, *conversation.AUTOMATON_STOPS)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def rescue_stranded(db: sqlite3.Connection, now: datetime, config: dict) -> int:
+    """Треды, которым при бане не нашлось номера, — сколько удалось увести.
+
+    Без этого прохода `blocked_channel` был бы могилой: отбор первых касаний
+    смотрит только на `queued`, а переезд заново никто не запускает. Зовётся
+    часовым монитором — той же периодичности, что и вердикты о номерах.
+    """
+    rescued = 0
+    for thread in _stranded(db):
+        try:
+            spare = assign(db, now, config)
+        except NoNumberAvailableError:
+            break                     # свободных нет — остальным тем более
+        with db:
+            conversation.assign_number(db, thread["thread_id"], spare)
+            conversation.set_status(db, thread["thread_id"], "queued")
+        rescued += 1
+    if rescued:
+        log.info("из blocked_channel уведено тредов: %s", rescued)
+    return rescued
+
+
+def _stranded(db: sqlite3.Connection) -> list[dict]:
+    rows = db.execute(
+        f"SELECT {conversation.FIELDS} FROM threads WHERE status = 'blocked_channel'"
+        " ORDER BY thread_id").fetchall()
     return [dict(row) for row in rows]

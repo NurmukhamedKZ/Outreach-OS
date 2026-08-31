@@ -8,7 +8,7 @@
 import json
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
 from langchain_core.exceptions import OutputParserException
@@ -32,10 +32,17 @@ from observability import langfuse_handler, log_trace
 NO_SDK_RETRY = RetryConfig("none", BackoffStrategy(0, 0, 1, 0), False)
 REASONING = {"enabled": False}
 # Без явного timeout клиент не ограничен ничем: зависшее соединение блокирует
-# invoke() навсегда, а вместе с ним и весь последовательный цикл analyze —
-# ни ошибки, ни прогресса, ни возможности отменить джобу (cancel кооперативный,
-# проверяется между итерациями). Засечено на живом прогоне: один вызов встал
-# без движения дольше 10 минут. 60с достаточно для structured-ответа в пару КБ.
+# invoke() навсегда. 60с достаточно для structured-ответа в пару КБ. Пробовали
+# оборачивать invoke() ещё и в свой ThreadPoolExecutor(max_workers=1) поверх
+# httpx-таймаута (защита от редкого случая, когда keep-alive байты сбрасывают
+# read-timeout и соединение висит по-настоящему долго) — но с run_concurrent
+# ниже это создаёт новый пул НА КАЖДЫЙ вызов внутри восьми воркер-потоков
+# одновременно; при частых ретраях потоки не успевают закрыться (shutdown(wait=False)
+# — иначе смысла в обёртке нет) и копятся, пока GIL не начинает голодать —
+# на живом прогоне это заморозило прогресс на десятки минут без единой ошибки
+# в логе. Хуже самого редкого зависания. С восемью параллельными воркерами
+# зависание одного больше не блокирует остальных семерых, так что цена этой
+# редкой ситуации сама по себе упала — обёртка того не стоит.
 REQUEST_TIMEOUT_MS = 60_000
 # retry_config провайдера ловит отказ соединения, но не обрыв тела ответа
 # посреди чтения (RemoteProtocolError на протухшем keep-alive) — эта ошибка
@@ -81,14 +88,6 @@ def run_concurrent(ctx, targets, worker, label):
             results.append(future.result())
             ctx.progress(number, len(targets), label)
     return results
-# httpx timeout=REQUEST_TIMEOUT_MS доверять нельзя целиком: если провайдер
-# стримит редкие keep-alive байты, каждый такой байт сбрасывает read-timeout,
-# и запрос технически "не простаивает", просто генерирует ответ очень долго
-# — на живом прогоне одно и то же TCP-соединение (тот же локальный порт)
-# держалось открытым 30+ минут. HARD_TIMEOUT_S — независимый от HTTP-семантики
-# потолок по настенным часам: invoke() уходит в отдельный поток, и мы просто
-# перестаём его ждать по истечении срока, что бы внутри него ни происходило.
-HARD_TIMEOUT_S = REQUEST_TIMEOUT_MS / 1000 + 15
 
 
 def structured_model(model, schema):
@@ -120,23 +119,15 @@ def invoke(llm_model, messages, *, session_id, name, subject):
         "callbacks": [handler] if handler else [],
     }
     for attempt in range(1, TRANSPORT_RETRIES + 1):
-        pool = ThreadPoolExecutor(max_workers=1)
         try:
-            future = pool.submit(llm_model.invoke, messages, config=config)
-            result = future.result(timeout=HARD_TIMEOUT_S)
+            result = llm_model.invoke(messages, config=config)
             if handler:
                 _log_trace_background(handler)
             return result
-        except (httpx.TransportError, OutputParserException, ResponseValidationError, FutureTimeoutError):
+        except (httpx.TransportError, OutputParserException, ResponseValidationError):
             if attempt == TRANSPORT_RETRIES:
                 raise
             time.sleep(attempt)
-        finally:
-            # wait=False: если invoke() всё ещё висит, не ждём его здесь —
-            # поток-задание доработает в фоне сам и будет отброшен вместе
-            # с пулом; блокировать на shutdown() значило бы свести на нет
-            # весь смысл HARD_TIMEOUT_S выше.
-            pool.shutdown(wait=False)
 
 
 def _log_trace_background(handler):

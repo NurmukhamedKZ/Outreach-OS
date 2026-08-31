@@ -38,22 +38,27 @@ def load_llm_answers(db, kind):
     признаку «таблица пуста» нельзя: первый же новый ответ сделал бы таблицу
     непустой и спрятал бы все ответы, оставшиеся файлами.
 
-    Ключ дедупа — (model, prompt): промпт уникален по компании/аккаунту и им же
-    ключуется файловый кэш. Совпало — выигрывает таблица. Порядок фиксирован:
-    пересборка обязана быть функцией снимка, а не порядка строк на диске.
+    Ключ дедупа — subject (компания/аккаунт), не (model, prompt): исходники на
+    диске меняются между прогонами analyze (дособраны отзывы, перезабран сайт
+    после починки gzip), и один и тот же subject копит несколько строк в
+    llm_answers с разным prompt. Дедуп по (model, prompt) отдавал их все —
+    enrich.site_ai_signals/instagram_ai_signals/reviews_signals эмитили один и
+    тот же сигнал (type, observed_at, url) по разным ответам и падали на
+    PRIMARY KEY signals_all. Строки читаются по id по возрастанию, поэтому
+    внутри одного subject выигрывает самый свежий оплаченный ответ — таблица
+    целиком выигрывает у файла тем же порядком (файлы читаются первыми).
     """
     answers = {}
     for answer in storage.llm_answers():
         if answer.get("kind", "company_profile") == kind:
-            answers[(answer["model"], answer["prompt"])] = {
-                "subject": subject_of(kind, answer["prompt"]), **answer,
-            }
+            subject = subject_of(kind, answer["prompt"])
+            answers[subject] = {"subject": subject, **answer}
     for row in db.execute(
         "SELECT subject, model, prompt, answer FROM state.llm_answers WHERE kind = ?"
         " ORDER BY subject, id",
         (kind,),
     ):
-        answers[(row["model"], row["prompt"])] = {
+        answers[row["subject"]] = {
             "kind": kind, "subject": row["subject"], "model": row["model"],
             "prompt": row["prompt"], **json.loads(row["answer"]),
         }

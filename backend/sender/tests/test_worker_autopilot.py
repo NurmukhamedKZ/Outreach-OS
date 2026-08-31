@@ -54,15 +54,19 @@ async def test_replies_does_not_start_cold_outreach(db, drafted, mode):
     assert db.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
 
 
-async def test_full_queues_one_cold_touch_per_tick(db, drafted, mode):
+async def test_full_takes_one_cold_touch_per_tick(db, drafted, mode):
+    """Одна строка за тик: автопилот, выгребающий пачку, отличается от живого
+    отправителя ровно тем, из-за чего номера и банят."""
+    from sender.tests.test_conversation import add_draft, open_thread
     mode("full")
+    open_thread(db, "+77010000002")
+    add_draft(db, "+77010000002")
     transport = FakeTransport()
 
-    assert await worker.tick(db, transport, CONFIG, INSIDE) == "queued"
+    assert await worker.tick(db, transport, CONFIG, INSIDE) == "sent"
 
-    row = outbox.due(db, INSIDE)
-    assert row["message_id"] == drafted and row["our_number"] == "+77001112233"
-    assert transport.sent_calls == [], "постановка и отправка — разные тики"
+    assert len(transport.sent_calls) == 1, "за один тик ушло больше одного"
+    assert db.execute("SELECT count(*) FROM outbox").fetchone()[0] == 1
 
 
 async def test_the_operator_button_works_in_any_mode(db, drafted, mode):
@@ -107,3 +111,44 @@ async def test_the_loop_survives_an_exception_and_keeps_the_heartbeat_moving(db,
 
     assert len(ticks) == 2, "цикл умер на первом же исключении"
     assert worker.heartbeat() is not None
+
+
+async def test_a_tick_that_queues_also_sends(db, drafted, mode):
+    """Постановка и отправка в разных тиках означали при такте 20 секунд, что
+    сотня черновиков — это полчаса нулевых отправок с растущим overdue. Одна
+    строка за тик — про отправку, а не про то, чтобы тик простаивал."""
+    mode("full")
+    transport = FakeTransport()
+
+    assert await worker.tick(db, transport, CONFIG, INSIDE) == "sent"
+
+    assert [call["to"] for call in transport.sent_calls] == ["+77010000001"]
+
+
+async def test_autopilot_does_not_queue_past_what_the_pool_can_send_today(db, mode):
+    """`pool.assign` считает ёмкость по ОТПРАВЛЕННОМУ за сутки, поэтому автопилот
+    ставил в очередь хоть сотню черновиков поверх дневного лимита. Гейты потом
+    удерживали лимит на отправке, но очередь пухла, а холодные треды гоняло по
+    номерам переездом."""
+    from datetime import timedelta
+
+    from sender.db import outbox
+    from sender.tests.test_conversation import add_draft, open_thread
+
+    # День 11 прогрева: первый шаг cold_ramp — пять касаний в сутки.
+    numbers.register(db, "+77001112233", "sessions/x", INSIDE - timedelta(days=10))
+    numbers.set_status(db, "+77001112233", "active")
+    mode("full")
+
+    for index in range(6):
+        thread_id = f"+7701000000{index}"
+        open_thread(db, thread_id)
+        add_draft(db, thread_id)
+
+    queued = 0
+    for _ in range(6):
+        if await worker.tick(db, FakeTransport(sent=False), CONFIG, INSIDE) == "queued":
+            queued += 1
+
+    assert outbox.counters(db, INSIDE)["queued"] == 5, \
+        "в очередь поставлено больше, чем номер сможет отправить за сутки"
