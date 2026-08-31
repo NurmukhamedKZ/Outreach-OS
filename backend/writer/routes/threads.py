@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 import logctx
 from config import settings
-from writer.services import agent, config
+from writer.services import agent, config, followup
 from writer.db import leads_source, thread_store
 
 router = APIRouter(prefix="/api/threads")
@@ -131,12 +131,7 @@ def channel_of(leads, company_id):
 def task_of(kind, threads, thread):
     if kind == "first":
         return agent.FIRST
-    if kind == "reply":
-        return agent.REPLY
-    days = thread_store.silent_days(threads, thread["thread_id"], thread_store.now()) or 0
-    unused = agent.unused_angles(thread["seed"],
-                                 thread_store.used_angles(threads, thread["thread_id"]))
-    return agent.followup_task(days, unused)
+    return followup.task(threads, thread)
 
 
 def state(leads, threads, company_id):
