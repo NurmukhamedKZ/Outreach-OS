@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from sender import notify
 from sender.db import conversation, migrate, outbox
 from sender.routes import webhook
 from sender.tests.conftest import NOW
@@ -156,3 +157,85 @@ def test_an_empty_secret_turns_the_check_off(db, http, monkeypatch):
         "provider_id": "3EB0", "status": webhook.DELIVERED})
 
     assert response.status_code == 200
+
+
+def incoming(text="сколько это стоит?", provider_id="IN1", jid="77010000001@s.whatsapp.net"):
+    return {"kind": "incoming", "number": "+77001112233", "from": jid,
+            "provider_id": provider_id, "text": text}
+
+
+def test_a_reply_lands_in_the_thread(db, http):
+    open_thread(db, "+77010000001", status="active")
+
+    assert http.post("/api/sender/webhook", json=incoming()).status_code == 200
+
+    row = db.execute("SELECT thread_id, role, sent_text, provider_id, handled_at"
+                     " FROM messages").fetchone()
+    assert row["thread_id"] == "+77010000001" and row["role"] == "incoming"
+    assert row["sent_text"] == "сколько это стоит?" and row["provider_id"] == "IN1"
+    assert row["handled_at"] is None, "агента зовёт тик, а не ручка"
+
+
+def test_a_repeated_incoming_does_not_double_the_reply(db, http):
+    """Транспорт повторяет событие, пока не получит 2xx."""
+    open_thread(db, "+77010000001", status="active")
+    http.post("/api/sender/webhook", json=incoming())
+
+    assert http.post("/api/sender/webhook", json=incoming()).status_code == 200
+
+    assert db.execute("SELECT count(*) FROM messages").fetchone()[0] == 1
+
+
+def test_an_incoming_cancels_the_scheduled_followups(db, http):
+    """«Напоминаю о своём сообщении» через три дня после ответа — издевательство.
+    Забыть эту строку легко, и именно она превращает систему в ту, на которую
+    жалуются."""
+    open_thread(db, "+77010000001", status="active")
+    message_id = add_draft(db, "+77010000001")
+    with db:
+        outbox_id = outbox.put(db, message_id, "+77010000001", "+77001112233",
+                               NOW, kind="followup")
+        db.execute("UPDATE threads SET next_touch_at = ? WHERE thread_id = ?",
+                   ("2026-09-05T12:00:00+00:00", "+77010000001"))
+
+    http.post("/api/sender/webhook", json=incoming())
+
+    assert db.execute("SELECT status FROM outbox WHERE outbox_id = ?",
+                      (outbox_id,)).fetchone()[0] == "cancelled"
+    assert db.execute("SELECT next_touch_at FROM threads").fetchone()[0] is None
+
+
+def test_a_message_from_a_stranger_goes_to_telegram_and_not_to_the_base(db, http, sent_to_telegram):
+    """Написал тот, кому мы не писали. Автомат такое не трогает."""
+    assert http.post("/api/sender/webhook", json=incoming()).status_code == 200
+
+    assert db.execute("SELECT count(*) FROM messages").fetchone()[0] == 0
+    assert any("+77010000001" in text for text in sent_to_telegram), sent_to_telegram
+
+
+def test_a_group_chat_is_out_of_scope(db, http):
+    """Групповые чаты вне области v1. Молчаливое падение здесь выглядело бы
+    как потерянный ответ лида."""
+    response = http.post("/api/sender/webhook",
+                         json=incoming(jid="12036300@g.us"))
+
+    assert response.status_code == 200
+    assert db.execute("SELECT count(*) FROM messages").fetchone()[0] == 0
+
+
+def test_a_jid_that_is_not_a_number_is_not_a_crash(db, http):
+    response = http.post("/api/sender/webhook", json=incoming(jid="204521@lid"))
+    assert response.status_code == 200
+
+
+@pytest.fixture
+def sent_to_telegram(monkeypatch):
+    """Telegram без сети: собираем тексты, которые ушли бы человеку."""
+    sent = []
+
+    async def fake(text, client=None):
+        sent.append(text)
+        return True
+
+    monkeypatch.setattr(notify, "send", fake)
+    return sent

@@ -11,10 +11,11 @@ from contextlib import closing
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Header, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from config import settings
-from sender.db import conversation, migrate, outbox
+from sender import notify
+from sender.db import conversation, migrate, numbers, outbox
 from sender.services import config
 
 router = APIRouter(prefix="/api/sender")
@@ -36,6 +37,28 @@ class Event(BaseModel):
     provider_id: str | None = None
     status: int | None = None
     text: str | None = None
+    sender: str | None = Field(default=None, alias="from")
+
+
+class Config:
+    populate_by_name = True
+
+
+INCOMING = "incoming"
+
+# Чат лида в WhatsApp — это JID (`77010000001@s.whatsapp.net`), а тред живёт
+# как `+77010000001`. Групповые чаты (`@g.us`) и `@lid`-формат вне области v1.
+PERSONAL_JID = "@s.whatsapp.net"
+
+
+def thread_of(jid: str | None) -> str | None:
+    """Тред по адресу отправителя. None — адрес не личного чата или не номер."""
+    if not jid or not jid.endswith(PERSONAL_JID):
+        return None
+    try:
+        return numbers.normalize(jid.removesuffix(PERSONAL_JID))
+    except numbers.InvalidNumberError:
+        return None
 
 
 def connect() -> sqlite3.Connection:
@@ -47,12 +70,13 @@ def now() -> datetime:
 
 
 @router.post("/webhook")
-def receive(event: Event,
-            x_sender_secret: str | None = Header(default=None)) -> dict:
+async def receive(event: Event,
+                  x_sender_secret: str | None = Header(default=None)) -> dict:
     require_secret(x_sender_secret)
+    if event.kind == INCOMING:
+        return {"handled": await _record_incoming(event, now())}
     if event.kind != "status" or event.provider_id is None:
-        log.info("событие %s пока не обрабатывается (часть 3): %s",
-                 event.kind, event.provider_id)
+        log.info("событие %s не обрабатывается: %s", event.kind, event.provider_id)
         return {"handled": False}
     with closing(connect()) as db:
         return {"handled": _record_status(db, event, now())}
@@ -99,3 +123,28 @@ def _wake_the_thread(db: sqlite3.Connection, provider_id: str) -> None:
     if thread and thread["status"] == STARTS_THE_CHAT:
         conversation.set_status(db, row["thread_id"], "active")
         log.info("тред %s -> active: доставлено", row["thread_id"])
+
+
+async def _record_incoming(event: Event, moment: datetime) -> bool:
+    """Только быстрое и детерминированное. Всё медленное и вероятностное —
+    вызов агента — подхватит тик воркера по `handled_at IS NULL`."""
+    thread_id = thread_of(event.sender)
+    if thread_id is None:
+        log.info("входящее не из личного чата, пропускаем: %s", event.sender)
+        return False
+    with closing(connect()) as db:
+        if conversation.get(db, thread_id) is None:
+            # Написал тот, кому мы не писали. Автомат такое не трогает.
+            await notify.send(f"Пишет {thread_id}, треда с ним нет: {event.text!r}")
+            return False
+        try:
+            with db:
+                conversation.add_incoming(db, thread_id, event.text or "",
+                                          event.provider_id)
+                outbox.cancel_scheduled(db, thread_id, "лид ответил", moment)
+                conversation.clear_schedule(db, thread_id)
+        except conversation.DuplicateIncomingError:
+            log.info("повтор события %s — уже записано", event.provider_id)
+            return False
+    log.info("входящее в тред %s записано, ждёт тика", thread_id)
+    return True
