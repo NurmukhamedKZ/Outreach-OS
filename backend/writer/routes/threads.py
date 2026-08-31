@@ -12,12 +12,15 @@ sys.modules.
 Проверка: uv run -m writer.routes.threads
 """
 
+from dataclasses import dataclass
+from functools import lru_cache
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 import logctx
 from config import settings
-from writer.services import agent, config, followup
+from writer.services import agent, config, followup, seller
 from writer.db import leads_source, thread_store
 
 router = APIRouter(prefix="/api/threads")
@@ -25,6 +28,14 @@ router = APIRouter(prefix="/api/threads")
 CONFIG = config.load()
 
 KINDS = ("first", "reply", "followup")
+
+
+@dataclass(frozen=True)
+class Move:
+    """Ход агента глазами ручки: что писать, чем цепляем, писать ли вообще."""
+    text: str
+    angle: str
+    stop: bool
 
 
 class DraftRequest(BaseModel):
@@ -80,10 +91,11 @@ def make_draft(company_id: str, request: DraftRequest):
                 thread = thread_store.thread(threads, channel[1])
 
             history = thread_store.history(threads, channel[1])
-            task = task_of(request.kind, threads, thread)
-            proposal = agent.draft(agent.model(CONFIG), thread["seed"], history, task,
-                                   session_id=channel[1], name=f"writer.{request.kind}",
-                                   offer=CONFIG["offer"]["text"])
+            proposal = (_seller_move(threads, thread, history)
+                        if request.kind == "reply"
+                        else _writer_move(request.kind, threads, thread, history))
+            if proposal is None:
+                raise HTTPException(409, "агент закрыл тред — ответа не будет")
             if not proposal.stop:
                 thread_store.add_draft(threads, channel[1], proposal.text, proposal.angle)
             return {**state(leads, threads, company_id), "stop": proposal.stop}
@@ -128,10 +140,29 @@ def channel_of(leads, company_id):
     return channel
 
 
-def task_of(kind, threads, thread):
-    if kind == "first":
-        return agent.FIRST
-    return followup.task(threads, thread)
+@lru_cache
+def seller_agent():
+    """Агент собирается один раз на процесс — как и клиент модели."""
+    return seller.build(CONFIG)
+
+
+def _writer_move(kind, threads, thread, history):
+    """Холодное касание и follow-up: один вызов со structured output."""
+    task = agent.FIRST if kind == "first" else followup.task(threads, thread)
+    return agent.draft(agent.model(CONFIG), thread["seed"], history, task,
+                       session_id=thread["thread_id"], name=f"writer.{kind}",
+                       offer=CONFIG["offer"]["text"])
+
+
+def _seller_move(threads, thread, history):
+    """Ответ в диалоге — тот же агент, что отвечает автоматически. None, если
+    он решил закрыть тред: черновика в этом ходе нет, и это правильно."""
+    reply = seller.respond(seller_agent(), thread["seed"], history,
+                           CONFIG["offer"]["text"],
+                           session_id=thread["thread_id"])
+    if reply.status is not None:
+        return None
+    return Move(text=reply.text, angle="answer", stop=False)
 
 
 def state(leads, threads, company_id):

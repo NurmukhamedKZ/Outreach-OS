@@ -17,7 +17,7 @@ def test_make_draft_tags_logs_with_company_id(monkeypatch):
     monkeypatch.setattr(routes.thread_store, "thread", lambda db, thread_id: {"seed": {}})
     monkeypatch.setattr(routes.thread_store, "history", lambda db, thread_id: [])
     monkeypatch.setattr(routes.thread_store, "add_draft", lambda *a: None)
-    monkeypatch.setattr(routes, "task_of", lambda kind, threads, thread: "task")
+    monkeypatch.setattr(routes, "_writer_move", lambda kind, threads, thread, history: None)
     monkeypatch.setattr(routes.agent, "model", lambda config: "llm-stub")
     monkeypatch.setattr(routes, "state", lambda leads, threads, company_id: {"thread_id": "t7"})
 
@@ -28,6 +28,7 @@ def test_make_draft_tags_logs_with_company_id(monkeypatch):
         return SimpleNamespace(stop=False, text="hi", angle="pain")
 
     monkeypatch.setattr(routes.agent, "draft", fake_draft)
+    monkeypatch.setattr(routes, "_writer_move", fake_draft)
 
     routes.make_draft("c7", routes.DraftRequest(kind="first"))
 

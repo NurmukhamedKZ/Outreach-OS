@@ -68,3 +68,41 @@ def test_incoming_remembers_the_provider_id():
 
     rows = db.execute("SELECT provider_id FROM messages ORDER BY message_id").fetchall()
     assert [row[0] for row in rows] == ["3EB0", None]
+
+
+def test_the_reply_move_goes_through_the_seller(monkeypatch):
+    """У ответа лиду один автор. Второй промпт на ту же ситуацию дал бы вторую
+    калибровку и вопрос «а что именно мы правим»."""
+    from writer.routes import threads as route
+    from writer.services import agent, seller
+
+    assert not hasattr(agent, "REPLY"), "старый одноходовый ответ остался в коде"
+
+    asked = []
+    monkeypatch.setattr(route, "seller_agent", lambda: object())
+    monkeypatch.setattr(
+        seller, "respond",
+        lambda agent_, seed, history, offer, *, session_id:
+            asked.append(session_id) or seller.Reply(
+                text="Ответ продавца", status=None, reason=None))
+
+    thread = {"thread_id": "+77010000001", "seed": {"name": "Ромашка", "signals": []}}
+    move = route._seller_move(None, thread, [])
+
+    assert move.text == "Ответ продавца" and move.angle == "answer" and not move.stop
+    assert asked == ["+77010000001"], "сессия Langfuse не равна треду"
+
+
+def test_a_verdict_leaves_no_draft(monkeypatch):
+    """Агент решил закрыть тред — черновика в этом ходе нет, и это правильно."""
+    from writer.routes import threads as route
+    from writer.services import seller
+
+    monkeypatch.setattr(route, "seller_agent", lambda: object())
+    monkeypatch.setattr(
+        seller, "respond",
+        lambda agent_, seed, history, offer, *, session_id:
+            seller.Reply(text=None, status="refusal", reason="не интересно"))
+
+    thread = {"thread_id": "+77010000001", "seed": {"name": "Ромашка", "signals": []}}
+    assert route._seller_move(None, thread, []) is None

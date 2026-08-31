@@ -8,6 +8,10 @@ from writer.schemas.outreach import Draft
 
 CONFIG = config.load()
 
+# Задача хода перестала быть свойством `agent`: у ответа в диалоге свой автор —
+# seller, и его промпт живёт в seller.py.
+TASK = "Задача: ответить на последнюю реплику лида."
+
 
 def test_prompt_carries_context_history_and_task():
     seed = {
@@ -22,11 +26,11 @@ def test_prompt_carries_context_history_and_task():
         {"role": "incoming", "text": "а сколько это стоит?", "angle": None},
     ]
 
-    text = agent.prompt(seed, history, agent.REPLY)
+    text = agent.prompt(seed, history, TASK)
     assert "Ромашка" in text and "бухгалтерия" in text, "контекст лида не попал в промпт"
     assert "виджет Bitrix24" in text, "цитата сигнала потеряна"
     assert "а сколько это стоит?" in text, "ответ лида не попал в промпт"
-    assert agent.REPLY in text, "задача хода не попала в промпт"
+    assert TASK in text, "задача хода не попала в промпт"
 
     # Углы follow-up: использованный не предлагается второй раз, иначе «новый
     # повод» окажется тем же самым, только другими словами.
@@ -48,13 +52,13 @@ def test_system_role_carries_offer(monkeypatch):
                         "approach": "заходить через рост", "sources": []},
             "signals": []}
     fake = FakeModel(Draft(text="Здравствуйте!", angle="ads_platform"))
-    result = agent.draft(fake, seed, [], agent.REPLY,
-                          session_id="thread-1", name="writer.reply",
+    result = agent.draft(fake, seed, [], TASK,
+                          session_id="thread-1", name="sender.followup",
                           offer=CONFIG["offer"]["text"])
     assert result.angle == "ads_platform", result
     assert fake.seen[0][0] == "system", fake.seen[0]
     assert CONFIG["offer"]["text"].strip()[:40] in fake.seen[0][1], "оффер не дошёл до модели"
-    assert fake.seen_config["run_name"] == "writer.reply"
+    assert fake.seen_config["run_name"] == "sender.followup"
     assert fake.seen_config["metadata"]["langfuse_session_id"] == "thread-1"
     assert fake.seen_config["callbacks"] == []
 
