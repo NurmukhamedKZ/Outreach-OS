@@ -10,6 +10,7 @@ from sender.db import conversation, numbers
 from sender.services import config as sender_config, incoming, refusal
 from sender.tests.conftest import NOW, FakeTransport
 from sender.tests.test_conversation import open_thread
+from writer.services import seller
 from writer.services.seller import Reply
 
 CONFIG = sender_config.load()
@@ -35,6 +36,30 @@ def говорит(monkeypatch, reply):
     """Агент отвечает заранее заданным исходом, в сеть не ходит."""
     monkeypatch.setattr(incoming, "_seller", lambda: object())
     monkeypatch.setattr(incoming, "_ask", lambda agent, *args, **kwargs: reply)
+
+
+async def test_the_agent_is_actually_reached_with_a_live_connection(answered, monkeypatch):
+    """Подменяется только поход в сеть — всё остальное работает как в проде.
+
+    Регрессия: соединение sqlite создано потоком цикла, и чтение из to_thread
+    бросает ProgrammingError. Пока тесты подменяли `_ask` целиком, агент не
+    вызывался ни разу ни на одном живом входящем, а каждый ответ лида сгорал
+    тремя попытками в эскалацию — и суита этого не видела.
+    """
+    seen = {}
+
+    def respond(agent, seed, history, offer, *, session_id):
+        seen["seed"], seen["history"], seen["session"] = seed, history, session_id
+        return Reply(text="Цену назовём после разговора.", status=None, reason=None)
+
+    monkeypatch.setattr(incoming, "_seller", lambda: object())
+    monkeypatch.setattr(seller, "respond", respond)
+
+    assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "answered"
+
+    assert seen["seed"]["name"] == "Ромашка"
+    assert seen["history"][-1]["text"] == "а сколько стоит?"
+    assert seen["session"] == "+77010000001"
 
 
 async def test_free_text_becomes_a_draft_and_a_queued_row(answered, monkeypatch):

@@ -13,6 +13,7 @@ import logging
 from datetime import datetime
 from functools import lru_cache
 
+import logctx
 from sender.db import conversation
 from sender.services import config as sender_config, pool, queue
 from writer.db import thread_store
@@ -34,8 +35,16 @@ async def touch_one(db, transport, config: dict, now: datetime) -> str | None:
     if thread is None:
         return None
     try:
-        draft = await asyncio.to_thread(_write, _llm(), db, thread,
-                                        writer_config.load()["offer"]["text"])
+        # База читается ЗДЕСЬ, в своём потоке: соединение создано потоком цикла
+        # и из чужого бросает ProgrammingError. Уехало бы в to_thread — ни одно
+        # касание не было бы написано, а тик логировал бы трассировку каждые
+        # двадцать секунд, потому что срок при неудаче остаётся на месте.
+        card = thread_store.thread(db, thread["thread_id"])
+        history = thread_store.history(db, thread["thread_id"])
+        task = writer_followup.task(db, card)
+        draft = await asyncio.to_thread(
+            _write, _llm(), card, history, task,
+            writer_config.load()["offer"]["text"])
     except Exception:
         # Срок остаётся на месте: следующий тик попробует снова, и лид не
         # теряет касание из-за одного таймаута.
@@ -70,8 +79,10 @@ def _llm():
     return agent.model(writer_config.load())
 
 
-def _write(llm, db, thread: dict, offer: str):
-    """Синхронный вызов модели — его и уносит to_thread. Отдельной функцией,
-    чтобы тест подменял ровно поход в сеть."""
-    return writer_followup.make(llm, db, thread_store.thread(db, thread["thread_id"]),
-                                offer)
+def _write(llm, card: dict, history: list[dict], task: str, offer: str):
+    """Ровно поход в сеть — его и уносит to_thread. Базы здесь нет и быть не
+    может: соединение принадлежит потоку цикла."""
+    with logctx.entity(card["thread_id"]):
+        return agent.draft(llm, card["seed"], history, task,
+                           session_id=card["thread_id"],
+                           name="sender.followup", offer=offer)

@@ -42,22 +42,3 @@ def test_without_a_new_angle_the_task_asks_for_stop():
     db.commit()
 
     assert "stop=true" in followup.task(db, thread_store.thread(db, "+77010000001"))
-
-
-def test_make_passes_the_task_and_the_history_to_the_model():
-    db = store()
-
-    class FakeLLM:
-        def __init__(self):
-            self.seen = None
-
-        def invoke(self, messages, config=None):
-            self.seen = messages
-            return type("Draft", (), {"text": "новый повод", "angle": "ads_platform",
-                                      "stop": False})()
-
-    llm = FakeLLM()
-    draft = followup.make(llm, db, thread_store.thread(db, "+77010000001"), "оффер")
-
-    assert draft.angle == "ads_platform"
-    assert "оффер" in llm.seen[0][1], "оффер не доехал до системного промпта"

@@ -62,7 +62,14 @@ async def handle_one(db, transport, config: dict, now: datetime) -> str | None:
     with db:
         conversation.count_attempt(db, row["message_id"])
     try:
-        reply = await asyncio.to_thread(_ask, _seller(), db, thread["thread_id"])
+        # База читается ЗДЕСЬ, в своём потоке, и в to_thread уезжают уже готовые
+        # данные. sqlite3-соединение создано в потоке цикла и из чужого потока
+        # бросает ProgrammingError — то есть агент не был бы вызван ни разу, а
+        # каждое входящее сгорало бы тремя попытками в эскалацию.
+        seed = thread_store.thread(db, thread["thread_id"])["seed"]
+        history = thread_store.history(db, thread["thread_id"])
+        reply = await asyncio.to_thread(_ask, _seller(), seed, history,
+                                        thread["thread_id"])
     except Exception:
         # Попытка потрачена, `handled_at` пуст: следующий тик попробует снова,
         # а четвёртый отдаст тред человеку.
@@ -133,11 +140,9 @@ def _seller():
     return seller.build(writer_config.load())
 
 
-def _ask(agent, db, thread_id: str):
-    """Синхронный вызов модели — его и уносит to_thread. Отдельной функцией,
-    чтобы тест подменял ровно поход в сеть, а не всю обработку."""
-    settings = writer_config.load()
-    thread = thread_store.thread(db, thread_id)
-    return seller.respond(agent, thread["seed"],
-                          thread_store.history(db, thread_id),
-                          settings["offer"]["text"], session_id=thread_id)
+def _ask(agent, seed: dict, history: list[dict], thread_id: str):
+    """Ровно поход в сеть — его и уносит to_thread. Базы здесь нет и быть не
+    может: соединение принадлежит потоку цикла."""
+    return seller.respond(agent, seed, history,
+                          writer_config.load()["offer"]["text"],
+                          session_id=thread_id)

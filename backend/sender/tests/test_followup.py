@@ -12,6 +12,7 @@ from sender.db import conversation, numbers
 from sender.services import config as sender_config, followup
 from sender.tests.conftest import NOW, FakeTransport
 from sender.tests.test_conversation import open_thread
+from writer.services import agent
 
 CONFIG = sender_config.load()
 SEED = '{"name": "Ромашка", "city": "Алматы", "signals": [{"type": "ads_platform", "quote": "Директ"}]}'
@@ -38,7 +39,29 @@ def matured(db, monkeypatch):
 
 def пишет(monkeypatch, draft):
     monkeypatch.setattr(followup, "_llm", lambda: object())
-    monkeypatch.setattr(followup, "_write", lambda llm, db, thread, offer: draft)
+    monkeypatch.setattr(followup, "_write",
+                        lambda llm, card, history, task, offer: draft)
+
+
+async def test_the_model_is_actually_reached_with_a_live_connection(matured, monkeypatch):
+    """Подменяется только поход в сеть. Регрессия та же, что у входящих:
+    чтение базы из to_thread бросает ProgrammingError, и ни одно касание не
+    было бы написано — а срок при неудаче остаётся, поэтому тик логировал бы
+    трассировку каждые двадцать секунд до конца времён."""
+    seen = {}
+
+    def draft(llm, seed, history, task, *, session_id, name, offer=""):
+        seen["seed"], seen["task"], seen["name"] = seed, task, name
+        return FakeDraft()
+
+    monkeypatch.setattr(followup, "_llm", lambda: object())
+    monkeypatch.setattr(agent, "draft", draft)
+
+    assert await followup.touch_one(matured, FakeTransport(), CONFIG, NOW) == "touched"
+
+    assert seen["seed"]["name"] == "Ромашка"
+    assert "ads_platform" in seen["task"], seen["task"]
+    assert seen["name"] == "sender.followup"
 
 
 async def test_a_matured_thread_gets_a_draft_and_a_queued_row(matured, monkeypatch):
