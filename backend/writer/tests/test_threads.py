@@ -11,6 +11,7 @@ from writer.db import thread_store
 
 def test_draft_stays_out_of_history_until_confirmed():
     db = thread_store.connect(":memory:")
+    db.execute("ALTER TABLE messages ADD COLUMN provider_id TEXT")
     seed = {"name": "Ромашка", "signals": [{"type": "crm_widget", "quote": "виджет Bitrix24"}]}
 
     assert thread_store.open_thread(db, "+77010000001", "c_ok", seed), "тред не открылся"
@@ -53,3 +54,17 @@ def test_writer_never_writes_sent_text_itself():
     assert not hasattr(thread_store, "confirm")
     source = (Path(thread_store.__file__).parent.parent / "routes" / "threads.py").read_text()
     assert "sent_text" not in source, "writer снова пишет sent_text сам"
+
+
+def test_incoming_remembers_the_provider_id():
+    """Ручной ввод оператора ложится той же формой, что вебхук: два формата
+    строки в одной таблице — это вопрос «почему у половины входящих пусто»."""
+    db = thread_store.connect(":memory:")
+    db.execute("ALTER TABLE messages ADD COLUMN provider_id TEXT")
+    thread_store.open_thread(db, "+77010000001", "c1", {"name": "Ромашка", "signals": []})
+
+    thread_store.add_incoming(db, "+77010000001", "перезвоните", provider_id="3EB0")
+    thread_store.add_incoming(db, "+77010000001", "введено руками")
+
+    rows = db.execute("SELECT provider_id FROM messages ORDER BY message_id").fetchall()
+    assert [row[0] for row in rows] == ["3EB0", None]

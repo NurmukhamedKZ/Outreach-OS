@@ -138,13 +138,17 @@ def add_draft(db, thread_id, text, angle):
     return cursor.lastrowid
 
 
-def add_incoming(db, thread_id, text):
-    """Ответ лида. Правкам не подлежит, поэтому draft_text у него пуст."""
+def add_incoming(db, thread_id, text, provider_id=None):
+    """Ответ лида. Правкам не подлежит, поэтому draft_text у него пуст.
+
+    provider_id пуст у того, что оператор ввёл руками, и заполнен у того, что
+    принёс вебхук: по нему транспорт узнаёт уже записанное событие.
+    """
     stamp = now()
     db.execute(
-        "INSERT INTO messages (thread_id, role, sent_text, created_at, sent_at)"
-        " VALUES (?, 'incoming', ?, ?, ?)",
-        (thread_id, text, stamp, stamp),
+        "INSERT INTO messages (thread_id, role, sent_text, provider_id, created_at, sent_at)"
+        " VALUES (?, 'incoming', ?, ?, ?, ?)",
+        (thread_id, text, provider_id, stamp, stamp),
     )
     db.commit()
 
