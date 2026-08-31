@@ -31,6 +31,11 @@ JITTER = "jitter"
 
 SENDING_NUMBER_STATUS = "active"
 
+# Виды строк, у которых своё окно. Ответ в диалоге — единственный, у кого на
+# том конце кто-то ждёт прямо сейчас; холодное касание и follow-up будят
+# человека сами и ночью этого не делают.
+REPLY_KINDS = ("reply",)
+
 
 @dataclass(frozen=True)
 class Attempt:
@@ -42,6 +47,7 @@ class Attempt:
     capacity: int
     last_sent_at: str | None
     jitter_minutes: float
+    kind: str
 
 
 @dataclass(frozen=True)
@@ -52,17 +58,28 @@ class Decision:
     blame: str = ""
 
 
+def window_of(kind: str, config: dict) -> dict:
+    """Окно, по которому живёт строка этого вида. Секция [window.reply]
+    переопределяет часы и дни, но не часовой пояс: он свойство человека на том
+    конце, а не вида сообщения."""
+    window = config["window"]
+    if kind not in REPLY_KINDS:
+        return window
+    return {**window, **window["reply"]}
+
+
 def check(attempt: Attempt, now: datetime, config: dict) -> Decision:
     if attempt.suppressed:
         return Decision(CANCEL, "стоит отказ (F21)", blame=SUPPRESSION)
     if attempt.thread_status in conversation.AUTOMATON_STOPS:
         return Decision(CANCEL, f"тред в состоянии {attempt.thread_status}", blame=THREAD)
 
-    window_opens = next_window_start(now, config["window"])
+    window = window_of(attempt.kind, config)
+    window_opens = next_window_start(now, window)
     if window_opens > now:
         return Decision(RESCHEDULE, "вне окна отправки", window_opens, WINDOW)
 
-    tomorrow = next_window_start(_tomorrow(now, config["window"]), config["window"])
+    tomorrow = next_window_start(_tomorrow(now, window), window)
     if attempt.number_status != SENDING_NUMBER_STATUS:
         return Decision(RESCHEDULE, f"номер в статусе {attempt.number_status}",
                         tomorrow, NUMBER)

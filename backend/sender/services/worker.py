@@ -29,6 +29,11 @@ COLD_PER_TICK = 1
 # приносит она, а холодные касания и follow-up остаются на кнопке.
 COLD_MODES = ("full",)
 
+# Такт, когда конфиг прочитать не удалось. Чтение стоит внутри try вместе со
+# всем остальным: битый config.toml обязан стоить одного пропущенного тика, а
+# не молча умершей задачи.
+FALLBACK_TICK_SECONDS = 20
+
 _last_tick: datetime | None = None
 
 
@@ -38,13 +43,27 @@ async def tick(db, transport, config: dict, now: datetime) -> str | None:
         await notify.send(f"Отправка {outbox_id} висит в sending дольше "
                           f"{config['retry']['stuck_after_minutes']} минут. "
                           "Проверь в телефоне, ушло или нет")
-    if sender_config.autopilot() in COLD_MODES:
-        if await _queue_cold_touch(db, transport, config, now):
-            return "queued"
+    queued = (sender_config.autopilot() in COLD_MODES
+              and await _queue_cold_touch(db, transport, config, now))
     row = outbox.due(db, now)
     if row is None:
-        return None
+        # Поставили, но отправлять нечего (гейты, чужой захват): тик не пустой.
+        return "queued" if queued else None
+    try:
+        return await _process(db, transport, row, now, config)
+    except Exception:
+        # `due` детерминированно отдаёт одну и ту же старшую строку, поэтому
+        # исключение на ней — вечная пробка: цикл его проглотит, overdue будет
+        # расти, а heartbeat останется бодрым. Гасим строку, чтобы очередь
+        # двинулась, и разбираемся по логу.
+        log.exception("строка %s не обрабатывается — гасим, чтобы очередь шла",
+                      row["outbox_id"])
+        with db:
+            outbox.fail(db, row["outbox_id"], "необрабатываемая строка, см. лог", now)
+        return "failed"
 
+
+async def _process(db, transport, row: dict, now: datetime, config: dict) -> str | None:
     decision = _decide(db, row, now, config)
     if decision.action == gates.CANCEL:
         with db:
@@ -73,6 +92,7 @@ def _decide(db, row: dict, now: datetime, config: dict) -> gates.Decision:
         capacity=pool.capacity(db, row["our_number"], now, config),
         last_sent_at=outbox.last_sent_at(db, row["our_number"]),
         jitter_minutes=random.uniform(*config["pace"]["jitter_minutes"]),
+        kind=row["kind"],
     )
     return gates.check(attempt, now, config)
 
@@ -185,8 +205,10 @@ def sweep_stuck(db, config: dict, now: datetime) -> list[int]:
 
 
 async def _queue_cold_touch(db, transport, config: dict, now: datetime) -> bool:
-    """Одно холодное касание за тик. False — ставить нечего или номер лида
-    оказался мёртвым: и то и другое не повод ронять тик."""
+    """Одно холодное касание за тик. False — ставить нечего, некуда или номер
+    лида оказался мёртвым: ни то, ни другое не повод ронять тик."""
+    if pool.free_room(db, now, config) <= 0:
+        return False
     for candidate in conversation.first_touch_candidates(db, COLD_PER_TICK):
         try:
             await queue.enqueue(db, transport, candidate["thread_id"], now, config)
@@ -220,8 +242,10 @@ async def loop(db_factory, transport_factory, publish=None) -> None:
     """
     global _last_tick
     while True:
-        settings = sender_config.load()
+        interval = FALLBACK_TICK_SECONDS
         try:
+            settings = sender_config.load()
+            interval = settings["pace"]["tick_seconds"]
             db = db_factory()
             try:
                 outcome = await tick(db, transport_factory(), settings, _now())
@@ -232,7 +256,7 @@ async def loop(db_factory, transport_factory, publish=None) -> None:
         except Exception:
             log.exception("воркер outbox упал на тике")
         _last_tick = _now()
-        await asyncio.sleep(settings["pace"]["tick_seconds"])
+        await asyncio.sleep(interval)
 
 
 def _now() -> datetime:

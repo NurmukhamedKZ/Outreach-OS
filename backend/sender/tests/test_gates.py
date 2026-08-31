@@ -15,10 +15,12 @@ CONFIG = config.load()
 INSIDE = datetime(2026, 9, 2, 7, 0, tzinfo=timezone.utc)
 
 
-def attempt(**overrides):
-    base = {"thread_status": "queued", "suppressed": False, "number_status": "active",
-            "capacity": 5, "last_sent_at": None, "jitter_minutes": 2.0}
-    return gates.Attempt(**{**base, **overrides})
+def attempt(*, thread_status="active", suppressed=False, number_status="active",
+            capacity=5, last_sent_at=None, jitter_minutes=0.0, kind="cold"):
+    return gates.Attempt(thread_status=thread_status, suppressed=suppressed,
+                         number_status=number_status, capacity=capacity,
+                         last_sent_at=last_sent_at, jitter_minutes=jitter_minutes,
+                         kind=kind)
 
 
 def test_everything_open_lets_the_message_through():
@@ -101,3 +103,40 @@ def test_the_legal_gate_wins_over_the_technical_one():
         attempt(suppressed=True, capacity=0, number_status="banned"),
         datetime(2026, 9, 5, 22, 0, tzinfo=timezone.utc), CONFIG)
     assert decision.action == "cancel"
+
+
+def test_a_reply_goes_out_at_night():
+    """Лид ответил в 21:00 — ответ уходит сейчас, а не завтра в десять.
+    Молчание пятнадцать часов убивает диалог."""
+    night = datetime(2026, 9, 2, 20, 0, tzinfo=timezone.utc)   # 02:00 в Алматы
+    decision = gates.check(attempt(kind="reply"), night, CONFIG)
+    assert decision.action == gates.SEND, decision
+
+
+def test_a_cold_touch_at_the_same_moment_is_postponed():
+    """Тот же момент, другой вид строки — и решение обязано быть другим."""
+    night = datetime(2026, 9, 2, 20, 0, tzinfo=timezone.utc)
+    decision = gates.check(attempt(kind="cold"), night, CONFIG)
+    assert decision.action == gates.RESCHEDULE
+    assert decision.blame == gates.WINDOW
+
+
+def test_a_followup_obeys_the_cold_window():
+    """Follow-up будит молчащего лида — он ничего не ждёт, и ночью его не трогают."""
+    night = datetime(2026, 9, 2, 20, 0, tzinfo=timezone.utc)
+    assert gates.check(attempt(kind="followup"), night, CONFIG).blame == gates.WINDOW
+
+
+def test_reply_window_inherits_the_timezone():
+    """Своего часового пояса у окна ответа нет: он свойство человека на том конце."""
+    window = gates.window_of("reply", CONFIG)
+    assert window["timezone"] == CONFIG["window"]["timezone"]
+    assert window["hours"] == [0, 24]
+
+
+def test_a_reply_still_obeys_the_daily_limit_of_the_number():
+    """Окно защищает покой лида, лимит — номер. Второе не отменяется первым."""
+    night = datetime(2026, 9, 2, 20, 0, tzinfo=timezone.utc)
+    decision = gates.check(attempt(kind="reply", capacity=0), night, CONFIG)
+    assert decision.action == gates.RESCHEDULE
+    assert decision.blame == gates.NUMBER

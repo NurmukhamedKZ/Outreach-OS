@@ -13,7 +13,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 FIELDS = ("outbox_id, message_id, thread_id, our_number, send_after, status,"
-          " attempts, provider_id, error, created_at, updated_at")
+          " attempts, provider_id, error, kind, created_at, updated_at")
 
 
 class AlreadyQueuedError(Exception):
@@ -138,6 +138,12 @@ def counters(db: sqlite3.Connection, now: datetime) -> dict:
     }
 
 
+def live_count(db: sqlite3.Connection, our_number: str) -> int:
+    """Строки номера, которые сегодня ещё займут его лимит."""
+    return _count(db, "our_number = ? AND status IN ('pending', 'sending')",
+                  (our_number,))
+
+
 def rates(db: sqlite3.Connection, our_number: str, now: datetime,
           window_days: int) -> dict:
     """Боевые отправки номера за окно: сколько ушло, дошло и получило ответ.
@@ -148,7 +154,7 @@ def rates(db: sqlite3.Connection, our_number: str, now: datetime,
     """
     border = stamp(now - timedelta(days=window_days))
     row = db.execute(
-        "SELECT count(*), count(delivered_at),"
+        "SELECT count(*), count(delivered_at), count(DISTINCT thread_id),"
         " (SELECT count(DISTINCT m.thread_id) FROM messages m"
         "  WHERE m.role = 'incoming' AND m.thread_id IN"
         "        (SELECT thread_id FROM outbox WHERE our_number = ?"
@@ -156,13 +162,32 @@ def rates(db: sqlite3.Connection, our_number: str, now: datetime,
         " FROM outbox WHERE our_number = ? AND status = 'sent'"
         "   AND message_id IS NOT NULL AND updated_at >= ?",
         (our_number, border, our_number, border)).fetchone()
-    return {"sent": row[0], "delivered": row[1], "replies": row[2]}
+    return {"sent": row[0], "delivered": row[1], "threads": row[2], "replies": row[3]}
 
 
-def recent(db: sqlite3.Connection, limit: int) -> list[dict]:
+def delivery_feed_alive(db: sqlite3.Connection, now: datetime,
+                        window_days: int) -> bool:
+    """Приходят ли вообще подтверждения доставки — хоть по одному номеру.
+
+    `delivered_at` пишет только вебхук. Лежащий Node или перепутанный URL дают
+    ноль подтверждений по всему пулу, и вердикт по доставке отправил бы в
+    карантин каждый номер по очереди — по причине, к мнению WhatsApp отношения
+    не имеющей. Тот же инстинкт, что `state is None` в health: о чём транспорт
+    молчит, то не диагностируется.
+    """
+    border = stamp(now - timedelta(days=window_days))
+    return db.execute(
+        "SELECT 1 FROM outbox WHERE delivered_at IS NOT NULL AND updated_at >= ?"
+        " LIMIT 1", (border,)).fetchone() is not None
+
+
+def recent(db: sqlite3.Connection, limit: int,
+           thread_id: str | None = None) -> list[dict]:
+    narrowing = " AND thread_id = ?" if thread_id else ""
+    arguments = (thread_id, limit) if thread_id else (limit,)
     rows = db.execute(
-        f"SELECT {FIELDS} FROM outbox WHERE message_id IS NOT NULL"
-        " ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+        f"SELECT {FIELDS} FROM outbox WHERE message_id IS NOT NULL" + narrowing +
+        " ORDER BY updated_at DESC LIMIT ?", arguments).fetchall()
     return [dict(row) for row in rows]
 
 
