@@ -288,3 +288,47 @@ def test_an_ordinary_question_is_not_a_stop_word(db, http, refusals):
 
     assert refusals == []
     assert db.execute("SELECT handled_at FROM messages").fetchone()[0] is None
+
+
+def test_a_voice_message_escalates_without_the_model(db, http, sent_to_telegram):
+    """Модель, которой дали пустую реплику, сочинит содержание голосового —
+    ровно тот класс ошибки, против которого стоят предохранители."""
+    open_thread(db, "+77010000001", status="active")
+
+    http.post("/api/sender/webhook", json=incoming(text=""))
+
+    assert conversation.get(db, "+77010000001")["status"] == "escalated"
+    row = db.execute("SELECT sent_text, handled_at FROM messages").fetchone()
+    assert row["sent_text"] == webhook.MEDIA_MARKER
+    assert row["handled_at"] is not None, "тик не должен звать модель на пустоту"
+    assert sent_to_telegram
+
+
+def test_a_reply_after_three_silent_touches_revives_the_thread(db, http):
+    """exhausted означает «нам больше нечего сказать», а не «лид закрыт»."""
+    open_thread(db, "+77010000001", status="exhausted")
+
+    http.post("/api/sender/webhook", json=incoming())
+
+    assert conversation.get(db, "+77010000001")["status"] == "active"
+    assert db.execute("SELECT handled_at FROM messages").fetchone()[0] is None
+
+
+def test_a_reply_in_a_thread_the_human_took_only_notifies(db, http, sent_to_telegram):
+    """Из escalated автоматического выхода нет — даже по ответу лида."""
+    open_thread(db, "+77010000001", status="escalated")
+
+    http.post("/api/sender/webhook", json=incoming(text="давайте в четверг"))
+
+    assert conversation.get(db, "+77010000001")["status"] == "escalated"
+    assert db.execute("SELECT handled_at FROM messages").fetchone()[0] is not None
+    assert any("давайте в четверг" in text for text in sent_to_telegram), sent_to_telegram
+
+
+def test_a_stop_word_beats_the_escalated_thread(db, http, refusals):
+    """Отказ — юридический контур: он сильнее любого состояния треда."""
+    open_thread(db, "+77010000001", status="escalated")
+
+    http.post("/api/sender/webhook", json=incoming(text="удалите мой номер"))
+
+    assert refusals and conversation.get(db, "+77010000001")["status"] == "closed_refused"

@@ -52,6 +52,19 @@ INCOMING = "incoming"
 # как `+77010000001`. Групповые чаты (`@g.us`) и `@lid`-формат вне области v1.
 PERSONAL_JID = "@s.whatsapp.net"
 
+# Метка вместо текста, которого не было. Голосовое, фото и стикер приезжают от
+# Node с пустым `text`, и в истории треда обязана остаться строка: «лид ответил
+# и мы не поняли чем» — это событие, а не его отсутствие.
+MEDIA_MARKER = "[медиа]"
+
+# Тред, который автомат бросил, доживает до ответа: exhausted означает «нам
+# больше нечего сказать», а не «лид закрыт».
+REVIVED_BY_A_REPLY = "exhausted"
+
+# Тред, который ведёт человек. Автомат в него не пишет (правило 1 зонтичной
+# спеки), но реплика, замеченная через сутки, стоит сделки.
+HUMAN_LEADS = "escalated"
+
 
 def thread_of(jid: str | None) -> str | None:
     """Тред по адресу отправителя. None — адрес не личного чата или не номер."""
@@ -143,36 +156,62 @@ def _wake_the_thread(db: sqlite3.Connection, provider_id: str) -> None:
 
 async def _record_incoming(event: Event, moment: datetime) -> bool:
     """Только быстрое и детерминированное. Всё медленное и вероятностное —
-    вызов агента — подхватит тик воркера по `handled_at IS NULL`."""
+    вызов агента — подхватит тик воркера по `handled_at IS NULL`.
+
+    Порядок ветвления не косметический: стоп-слово сильнее любого состояния
+    треда (юридический контур F21), медиа сильнее обычной обработки (модели
+    нечего читать), и только потом решается, будить агента или нет.
+    """
     thread_id = thread_of(event.sender)
     if thread_id is None:
         log.info("входящее не из личного чата, пропускаем: %s", event.sender)
         return False
     settings = config.load()
-    refused = stopword(event.text or "", settings)
+    text = event.text or ""
+    refused = stopword(text, settings)
     with closing(connect()) as db:
-        if conversation.get(db, thread_id) is None:
-            # Написал тот, кому мы не писали. Автомат такое не трогает.
-            await notify.send(f"Пишет {thread_id}, треда с ним нет: {event.text!r}")
+        thread = conversation.get(db, thread_id)
+        if thread is None:
+            await notify.send(f"Пишет {thread_id}, треда с ним нет: {text!r}")
             return False
         try:
             with db:
-                message_id = conversation.add_incoming(db, thread_id, event.text or "",
-                                                       event.provider_id)
+                message_id = conversation.add_incoming(
+                    db, thread_id, text or MEDIA_MARKER, event.provider_id)
                 outbox.cancel_scheduled(db, thread_id, "лид ответил", moment)
                 conversation.clear_schedule(db, thread_id)
-                if refused:
-                    conversation.set_status(db, thread_id, "closed_refused")
-                    conversation.mark_handled(db, message_id, moment)
+                _settle(db, thread, message_id, moment, refused, bool(text))
         except conversation.DuplicateIncomingError:
             log.info("повтор события %s — уже записано", event.provider_id)
             return False
     if refused:
-        # Отказ пишется ПОСЛЕ коммита треда: шов ходит в чужую базу, и держать
-        # на нём открытую транзакцию state.db значило бы блокировать очередь.
-        # Подтверждения лиду нет: гейт треда всё равно отменил бы строку, а
-        # человек, попросивший не писать, получает ровно то, что попросил.
+        # Отказ пишется ПОСЛЕ коммита: шов ходит в чужую базу, и держать на нём
+        # открытую транзакцию state.db значило бы блокировать очередь.
         refusal.refuse(thread_id, f"стоп-слово: {refused}")
         log.warning("тред %s закрыт по стоп-слову %r", thread_id, refused)
-    log.info("входящее в тред %s записано, ждёт тика", thread_id)
+        return True
+    if not text:
+        await notify.send(f"{thread_id} прислал медиа — текста нет, разбирай руками")
+    elif thread["status"] == HUMAN_LEADS:
+        await notify.send(f"{thread_id} (тред ведёшь ты): {text}")
     return True
+
+
+def _settle(db, thread: dict, message_id: int, moment: datetime,
+            refused: str | None, has_text: bool) -> None:
+    """Состояние треда сразу после записи входящего — той же транзакцией.
+    `handled_at` здесь означает «тику тут делать нечего»: агента не позовут."""
+    thread_id = thread["thread_id"]
+    if refused:
+        conversation.set_status(db, thread_id, "closed_refused")
+        conversation.mark_handled(db, message_id, moment)
+        return
+    if not has_text:
+        conversation.set_status(db, thread_id, "escalated")
+        conversation.mark_handled(db, message_id, moment)
+        return
+    if thread["status"] == HUMAN_LEADS:
+        conversation.mark_handled(db, message_id, moment)
+        return
+    if thread["status"] == REVIVED_BY_A_REPLY:
+        conversation.set_status(db, thread_id, "active")
