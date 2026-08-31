@@ -13,13 +13,15 @@ from datetime import datetime, timedelta, timezone
 
 from sender import notify
 from sender.db import conversation, numbers, outbox
-from sender.services import config as sender_config, gates, pool, queue
+from sender.services import (config as sender_config, followup, gates, incoming,
+                             pool, queue)
 from sender.transport import TransportError
 
 log = logging.getLogger(__name__)
 
 TICK_OUTCOMES = ("sent", "cancelled", "rescheduled", "taken", "retry",
-                 "failed", "stuck", "queued")
+                 "failed", "stuck", "queued", "answered", "escalated",
+                 "closed", "touched", "exhausted")
 
 # Один вход в очередь на тик. Автопилот, ставящий пачку, отличается от живого
 # отправителя ровно тем, из-за чего номера и банят.
@@ -38,19 +40,27 @@ _last_tick: datetime | None = None
 
 
 async def tick(db, transport, config: dict, now: datetime) -> str | None:
-    """Исход тика или None, если делать было нечего."""
+    """Исход тика или None, если делать было нечего.
+
+    Порядок шагов не косметический: ответ лида — единственное событие, у
+    которого есть собеседник, ждущий сейчас. Каждый шаг в своём try: агент,
+    легший на одном треде, не имеет права остановить очередь.
+    """
     for outbox_id in sweep_stuck(db, config, now):
         await notify.send(f"Отправка {outbox_id} висит в sending дольше "
                           f"{config['retry']['stuck_after_minutes']} минут. "
                           "Проверь в телефоне, ушло или нет")
+    handled = await _guarded(incoming.handle_one(db, transport, config, now),
+                             "входящее")
+    matured = await _guarded(followup.touch_one(db, transport, config, now),
+                             "касание")
     queued = (sender_config.autopilot() in COLD_MODES
               and await _queue_cold_touch(db, transport, config, now))
     row = outbox.due(db, now)
     if row is None:
-        # Поставили, но отправлять нечего (гейты, чужой захват): тик не пустой.
-        return "queued" if queued else None
+        return handled or matured or ("queued" if queued else None)
     try:
-        return await _process(db, transport, row, now, config)
+        return await _process(db, transport, row, now, config) or handled or matured
     except Exception:
         # `due` детерминированно отдаёт одну и ту же старшую строку, поэтому
         # исключение на ней — вечная пробка: цикл его проглотит, overdue будет
@@ -61,6 +71,16 @@ async def tick(db, transport, config: dict, now: datetime) -> str | None:
         with db:
             outbox.fail(db, row["outbox_id"], "необрабатываемая строка, см. лог", now)
         return "failed"
+
+
+async def _guarded(work, what: str) -> str | None:
+    """Шаг тика, который ходит в модель. Своё try у каждого: агент, легший на
+    одном треде, не имеет права остановить отправки."""
+    try:
+        return await work
+    except Exception:
+        log.exception("шаг тика «%s» упал", what)
+        return None
 
 
 async def _process(db, transport, row: dict, now: datetime, config: dict) -> str | None:

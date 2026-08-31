@@ -166,3 +166,60 @@ async def test_the_last_allowed_touch_exhausts_the_thread(db):
     await worker.tick(db, FakeTransport(), CONFIG, INSIDE)
 
     assert conversation.get(db, "+77010000001")["status"] == "exhausted"
+
+
+async def test_the_tick_handles_an_incoming_before_it_sends(db, monkeypatch):
+    """Ответ лида — единственное событие, у которого есть собеседник, ждущий
+    сейчас."""
+    order = []
+
+    async def fake_incoming(db_, transport_, config_, now_):
+        order.append("incoming")
+        return "answered"
+
+    async def fake_followup(db_, transport_, config_, now_):
+        order.append("followup")
+        return None
+
+    monkeypatch.setattr(worker.incoming, "handle_one", fake_incoming)
+    monkeypatch.setattr(worker.followup, "touch_one", fake_followup)
+
+    assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "answered"
+    assert order == ["incoming", "followup"]
+
+
+async def test_a_send_still_wins_the_outcome(db, monkeypatch):
+    """Отправка — самое значимое, что случилось за тик: по ней обновляется экран."""
+    ready(db)
+
+    async def nothing(db_, transport_, config_, now_):
+        return None
+
+    monkeypatch.setattr(worker.incoming, "handle_one", nothing)
+    monkeypatch.setattr(worker.followup, "touch_one", nothing)
+
+    assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "sent"
+
+
+async def test_an_exploding_incoming_does_not_kill_the_tick(db, monkeypatch):
+    """Упавшая asyncio-задача исчезает без строки в логе, и ноль отправок
+    обнаружился бы через сутки."""
+    ready(db)
+
+    async def взрывается(db_, transport_, config_, now_):
+        raise RuntimeError("агент лёг")
+
+    async def nothing(db_, transport_, config_, now_):
+        return None
+
+    monkeypatch.setattr(worker.incoming, "handle_one", взрывается)
+    monkeypatch.setattr(worker.followup, "touch_one", nothing)
+
+    assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "sent"
+
+
+def test_every_outcome_is_declared():
+    """TICK_OUTCOMES читает фронтенд: исход, которого нет в списке, приедет на
+    экран строкой, которую никто не ждал."""
+    assert {"answered", "escalated", "closed", "touched", "exhausted"} \
+        <= set(worker.TICK_OUTCOMES)
