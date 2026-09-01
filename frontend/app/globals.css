@@ -1181,6 +1181,25 @@ a.nav-item:hover {
   font-size: 12px;
 }
 
+/* --- досье в карточке лида ------------------------------------------------------ */
+
+.dossier p {
+  margin: 4px 0;
+  font-size: 14px;
+}
+
+.dossier .signals {
+  margin: 10px 0 0;
+}
+
+.dossier .table + h3 {
+  margin-top: 22px;
+}
+
+.card .prompt-details {
+  margin-bottom: 8px;
+}
+
 /* --- композер черновика (MessageComposer) ------------------------------------------ */
 
 .composer {

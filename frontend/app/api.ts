@@ -34,10 +34,43 @@ export type BreakdownPart = {
   observed_at?: string;
 };
 
+export type Hook = {
+  angle: string;
+  quote: string;
+  url: string | null;
+  source: string | null;
+  observed_at: string | null;
+};
+
+export type Dossier = {
+  summary: string | null;
+  approach: string | null;
+  decision_maker: string | null;
+  hooks: Hook[];
+  confidence: number | null;
+};
+
+export type Fetch = {
+  url: string;
+  final_url: string | null;
+  status: number | null;
+  fetched_at: string | null;
+};
+
+export type ModelAnswer = {
+  kind: string;
+  model: string;
+  prompt: string;
+  answer: string;
+};
+
 export type LeadDetail = Lead & {
   channels: Channel[];
   signals: Signal[];
   breakdown: BreakdownPart[];
+  dossier: Dossier | null;
+  fetches: Fetch[];
+  llm_answers: ModelAnswer[];
 };
 
 export type Stats = {

@@ -16,7 +16,7 @@ import { useLive } from "./live";
 
 const NAV = [
   { href: "/", label: "Обзор", icon: SquaresFourIcon },
-  { href: "/sourcing", label: "Сбор лидов", icon: TargetIcon },
+  { href: "/leads", label: "Лиды", icon: TargetIcon },
   { href: "/cold", label: "Холодные", icon: PaperPlaneTiltIcon },
   { href: "/writer", label: "Персонализация", icon: PenNibIcon },
   { href: "/sender", label: "Отправка", icon: BroadcastIcon },
@@ -65,7 +65,7 @@ export default function Sidebar() {
 }
 
 function kindOf(href: string) {
-  if (href === "/sourcing") return "sourcing";
+  if (href === "/leads") return "sourcing";
   if (href === "/writer") return "writer";
   return "";
 }
