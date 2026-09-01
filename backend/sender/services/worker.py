@@ -11,6 +11,7 @@ import logging
 import random
 from datetime import datetime, timedelta, timezone
 
+import activity
 from sender import notify
 from sender.db import conversation, numbers, outbox
 from sender.services import (config as sender_config, followup, gates, incoming,
@@ -36,12 +37,29 @@ OUTREACH_KINDS = ("cold", "followup")
 # приносит она, а холодные касания и follow-up остаются на кнопке.
 COLD_MODES = ("full",)
 
+# Kill switch. Как readme и обещает: выключенный автопилот держит очередь
+# стоящей, а не только перестаёт её наполнять.
+OFF_MODE = "off"
+
 # Такт, когда конфиг прочитать не удалось. Чтение стоит внутри try вместе со
 # всем остальным: битый config.toml обязан стоить одного пропущенного тика, а
 # не молча умершей задачи.
 FALLBACK_TICK_SECONDS = 20
 
-_last_tick: datetime | None = None
+
+async def loop_once(db, transport, settings: dict, now: datetime, publish=None) -> str | None:
+    """Один проход цикла: тик плюс след в журнале. Вынесен из loop(), чтобы
+    тест проверял след, не заводя бесконечный цикл и не подменяя sleep.
+
+    `publish` — тот же шов, что у loop(): шина событий принадлежит системе 1,
+    и знать о ней sender не обязан.
+    """
+    outcome = await tick(db, transport, settings, now)
+    if outcome is None:
+        event = activity.record("sender.tick", "idle")
+        if publish is not None:
+            publish({"type": "activity", "event": event})
+    return outcome
 
 
 async def tick(db, transport, config: dict, now: datetime) -> str | None:
@@ -61,6 +79,10 @@ async def tick(db, transport, config: dict, now: datetime) -> str | None:
                              "касание")
     queued = (sender_config.autopilot() in COLD_MODES
               and await _queue_cold_touch(db, transport, config, now))
+    if sender_config.autopilot() == OFF_MODE:
+        # Kill switch: строки, уже стоящие в outbox (хоть от автопилота, хоть от
+        # кнопки оператора), ждут, а не уходят по инерции старого режима.
+        return handled or matured
     row = outbox.due(db, now)
     if row is None:
         return handled or matured or ("queued" if queued else None)
@@ -112,9 +134,13 @@ async def _process(db, transport, row: dict, now: datetime, config: dict) -> str
         with db:
             outbox.cancel(db, row["outbox_id"], decision.reason, now)
         log.info("отменено (%s): тред %s", decision.reason, row["thread_id"])
+        activity.record("sender.tick", "cancelled", subject=row["thread_id"],
+                        detail=decision.reason)
         return "cancelled"
     if decision.action == gates.RESCHEDULE:
         _postpone(db, row, decision, now, config)
+        activity.record("sender.tick", "rescheduled", subject=row["thread_id"],
+                        detail=decision.reason)
         return "rescheduled"
 
     with db:
@@ -207,6 +233,8 @@ async def _send(db, transport, row: dict, now: datetime, config: dict) -> str:
             conversation.bump_touch(db, row["thread_id"], config["cadence"], now)
     log.info("ушло: тред %s, сообщение %s, provider %s",
              row["thread_id"], row["message_id"], result.provider_id)
+    activity.record("sender.tick", "sent", subject=row["our_number"],
+                    detail=f"тред {row['thread_id']}")
     return "sent"
 
 
@@ -222,12 +250,15 @@ async def _retry(db, row: dict, error: str | None, now: datetime, config: dict) 
                   row["thread_id"], len(backoff))
         await notify.send(f"Не смогли отправить в {row['thread_id']} "
                           f"{len(backoff)} раза подряд: {error}")
+        activity.record("sender.tick", "failed", subject=row["thread_id"],
+                        detail=error or "транспорт отказал")
         return "failed"
     with db:
         outbox.retry(db, row["outbox_id"],
                      now + timedelta(minutes=backoff[attempt - 1]), now)
     log.warning("не ушло (%s), попытка %s из %s: тред %s",
                 error, attempt, len(backoff), row["thread_id"])
+    activity.record("sender.tick", "retry", subject=row["thread_id"], detail=error)
     return "retry"
 
 
@@ -244,8 +275,11 @@ def sweep_stuck(db, config: dict, now: datetime) -> list[int]:
     with db:
         for row in stale:
             outbox.mark_stuck(db, row["outbox_id"], now)
-            log.error("строка %s зависла в sending: ушло или нет — знает телефон",
-                      row["outbox_id"])
+    for row in stale:
+        log.error("строка %s зависла в sending: ушло или нет — знает телефон",
+                  row["outbox_id"])
+        activity.record("sender.tick", "stuck", subject=str(row["outbox_id"]),
+                        detail="судьба отправки неизвестна")
     return [row["outbox_id"] for row in stale]
 
 
@@ -267,25 +301,19 @@ async def _queue_cold_touch(db, transport, config: dict, now: datetime) -> bool:
     return False
 
 
-def heartbeat() -> str | None:
-    """Время последнего тика. Живёт в памяти процесса, а не в базе: воркер
-    поднимается вместе с процессом, а симптом, который heartbeat ловит (задача
-    умерла, процесс жив), виден изнутри того же процесса — им же и отдаётся
-    в /api/stats."""
-    return _last_tick.isoformat(timespec="seconds") if _last_tick else None
-
-
 async def loop(db_factory, transport_factory, publish=None) -> None:
     """Тело целиком в try/except: упавшая asyncio-задача исчезает без строки в
-    логе, и ноль отправок обнаружился бы через сутки. Heartbeat двигается даже
-    на исключении — иначе «воркер умер» и «воркеру нечего делать» выглядели бы
+    логе, и ноль отправок обнаружился бы через сутки. Упавший тик обязан
+    оставить след — иначе «воркер умер» и «воркеру нечего делать» выглядели бы
     одинаково.
+
+    Пульс больше не живёт в памяти процесса: его отдаёт журнал (activity.workers),
+    и в отличие от глобальной переменной он переживает перезапуск.
 
     `publish` приходит снаружи, а не импортом шины collector'а: система 3 не
     знает о существовании системы 1, и шов, где она узнаёт, — тот же
     collector/api.py, что монтирует её роутеры.
     """
-    global _last_tick
     while True:
         interval = FALLBACK_TICK_SECONDS
         try:
@@ -293,14 +321,15 @@ async def loop(db_factory, transport_factory, publish=None) -> None:
             interval = settings["pace"]["tick_seconds"]
             db = db_factory()
             try:
-                outcome = await tick(db, transport_factory(), settings, _now())
+                outcome = await loop_once(db, transport_factory(), settings, _now(),
+                                          publish)
             finally:
                 db.close()
             if outcome is not None and publish is not None:
                 publish({"type": "refresh", "reason": f"sender.{outcome}"})
         except Exception:
             log.exception("воркер outbox упал на тике")
-        _last_tick = _now()
+            activity.record("sender.tick", "crashed", detail="см. логи процесса")
         await asyncio.sleep(interval)
 
 

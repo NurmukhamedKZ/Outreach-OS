@@ -15,6 +15,7 @@ from functools import lru_cache
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
+import activity
 from config import settings
 from sender import notify
 from sender.db import conversation, migrate, numbers, outbox
@@ -179,12 +180,16 @@ async def _record_incoming(event: Event, moment: datetime) -> bool:
                 _settle(db, thread, message_id, moment, refused, bool(text))
         except conversation.DuplicateIncomingError:
             log.info("повтор события %s — уже записано", event.provider_id)
+            activity.record("webhook", "duplicate", subject=thread_id,
+                            detail=event.provider_id)
             return False
+    activity.record("webhook", "incoming", subject=thread_id)
     if refused:
         # Отказ пишется ПОСЛЕ коммита: шов ходит в чужую базу, и держать на нём
         # открытую транзакцию state.db значило бы блокировать очередь.
         refusal.refuse(thread_id, f"стоп-слово: {refused}")
         log.warning("тред %s закрыт по стоп-слову %r", thread_id, refused)
+        activity.record("webhook", "refused", subject=thread_id, detail=refused)
         return True
     if not text:
         await notify.send(f"{thread_id} прислал медиа — текста нет, разбирай руками")

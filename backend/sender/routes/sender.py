@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+import activity
 from sender.db import conversation, migrate, numbers, outbox
 from sender.services import config, health, pool, queue, warmup, worker
 from sender.transport import build as build_transport
@@ -26,6 +27,7 @@ RECENT_SENDS = 10
 
 class NewNumber(BaseModel):
     number: str
+    skip_warmup: bool = False
 
 
 class NewStatus(BaseModel):
@@ -50,6 +52,15 @@ def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _heartbeat() -> str | None:
+    """Пульс воркера — из журнала: он переживает перезапуск процесса, а
+    глобальная переменная в памяти после него врала «пульса не было»."""
+    for row in activity.workers():
+        if row["actor"] == "sender.tick":
+            return row["last_at"]
+    return None
+
+
 @router.get("")
 def status() -> dict:
     settings = config.load()
@@ -60,7 +71,9 @@ def status() -> dict:
             "numbers": [card(db, row, settings) for row in numbers.all(db)],
             "queue": outbox.counters(db, now()),
             "threads": conversation.counters(db),
-            "heartbeat": worker.heartbeat(),
+            "heartbeat": _heartbeat(),
+            "warmup_calendar": warmup.calendar(settings["warmup"]),
+            "warmup_log": outbox.warmup_log(db, RECENT_SENDS),
         }
 
 
@@ -72,7 +85,8 @@ def register(body: NewNumber) -> dict:
         try:
             numbers.get(db, number)
         except numbers.UnknownNumberError:
-            numbers.register(db, number, f"sessions/{number}", now())
+            numbers.register(db, number, f"sessions/{number}", now(),
+                             skip_warmup=body.skip_warmup)
             return card(db, numbers.get(db, number), settings)
         raise HTTPException(409, f"номер {number} уже в пуле")
 
@@ -86,6 +100,33 @@ async def pair(number: str) -> dict:
         except numbers.UnknownNumberError:
             raise HTTPException(404, f"номера {number} нет в пуле") from None
     return {"code": await build_transport().pair(number)}
+
+
+@router.post("/numbers/{number}/qr")
+async def qr(number: str) -> dict:
+    """Альтернатива /pair: QR-код вместо кода привязки. Тот же неавторизованный
+    сокет — Baileys шлёт `qr`, пока ни один код для него не запрошен."""
+    number = canonical(number)
+    with closing(connect()) as db:
+        try:
+            numbers.get(db, number)
+        except numbers.UnknownNumberError:
+            raise HTTPException(404, f"номера {number} нет в пуле") from None
+    return {"qr": await build_transport().qr(number)}
+
+
+@router.post("/numbers/{number}/warmed")
+def warmed(number: str) -> dict:
+    """Постфактум: номер уже прогрет вне нашей системы — та же отметка, что
+    чекбокс `skip_warmup` при регистрации, только для уже существующего."""
+    settings = config.load()
+    number = canonical(number)
+    with closing(connect()) as db:
+        try:
+            numbers.mark_warmed(db, number)
+        except numbers.UnknownNumberError:
+            raise HTTPException(404, f"номера {number} нет в пуле") from None
+        return card(db, numbers.get(db, number), settings)
 
 
 @router.post("/numbers/{number}/status")
@@ -180,7 +221,7 @@ def card(db: sqlite3.Connection, row: dict, settings: dict) -> dict:
     """Строка пула для дашборда: статус плюс то, что из него не видно, —
     день прогрева, фаза и остаток дневного лимита."""
     moment = now()
-    plan = warmup.plan(row["started_at"], moment, settings["warmup"])
+    plan = warmup.plan_for(row, moment, settings["warmup"])
     return {
         **row,
         "day": plan.day,
@@ -199,13 +240,21 @@ async def monitor_numbers() -> None:
             settings = config.load()
             with closing(connect()) as db:
                 moment = now()
-                await health.check(db, build_transport(), settings, moment)
+                events = await health.check(db, build_transport(), settings, moment)
                 # Треды, которым при прошлом бане не нашлось номера, ждут в
                 # blocked_channel. Освободившийся номер — единственное событие,
                 # которое их оттуда выпускает, и заметить его больше некому.
                 pool.rescue_stranded(db, moment, settings)
+            for event in events:
+                activity.record("sender.monitor", event.status, subject=event.number,
+                                detail=event.reason)
+            if not events:
+                activity.record("sender.monitor", "healthy")
+            # Ретенция журнала едет на часовом тике монитора, своего таймера не заводим.
+            activity.prune()
         except Exception:
             log.exception("монитор здоровья номеров упал на тике")
+            activity.record("sender.monitor", "crashed", detail="см. логи процесса")
         await asyncio.sleep(MONITOR_INTERVAL_SECONDS)
 
 

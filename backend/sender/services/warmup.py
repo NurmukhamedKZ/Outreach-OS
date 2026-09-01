@@ -15,6 +15,7 @@ import logging
 import random
 import sqlite3
 
+import activity
 from sender.db import numbers
 
 log = logging.getLogger(__name__)
@@ -61,6 +62,15 @@ def plan(started_at: str, now: datetime, warmup_config: dict) -> Plan:
     return Plan(day=day, phase=phase, daily_limit=limit, cold_allowed=phase is Phase.cold)
 
 
+def plan_for(row: dict, now: datetime, warmup_config: dict) -> Plan:
+    """`plan()` для строки пула: номер с `skip_warmup` считается уже прогретым
+    вне нашей системы и получает боевую фазу с первого дня, минуя календарь."""
+    if row.get("skip_warmup"):
+        return Plan(day=day_of(row["started_at"], now), phase=Phase.cold,
+                    daily_limit=warmup_config["ceiling"], cold_allowed=True)
+    return plan(row["started_at"], now, warmup_config)
+
+
 def _phase(day: int, warmup_config: dict, delay_passed: bool = False) -> Phase:
     if not delay_passed:
         return Phase.socket_delay
@@ -89,6 +99,24 @@ def _from_ramp(step: int, ramp: list[int]) -> int:
     """Шаг за пределами рампы — её последнее значение: рампа кончилась, объём
     вышел на полку."""
     return ramp[min(step, len(ramp)) - 1]
+
+
+def calendar(warmup_config: dict) -> list[dict]:
+    """Справка по фазам для веба: те же пороги, что `plan()`, но готовыми
+    строками — страница их не считает и не форматирует, только выводит."""
+    passive_last = 1 + warmup_config["passive_days"]
+    cold_start = warmup_config["cold_start_day"]
+    internal_ramp = warmup_config["internal_ramp"]
+    cold_ramp = warmup_config["cold_ramp"]
+    return [
+        {"phase": Phase.socket_delay, "days": "1", "daily_limit": "0"},
+        {"phase": Phase.passive, "days": f"2–{passive_last}",
+         "daily_limit": f"0 (входящие раз в {warmup_config['passive_interval_hours']} ч)"},
+        {"phase": Phase.internal, "days": f"{passive_last + 1}–{cold_start - 1}",
+         "daily_limit": f"{internal_ramp[0]} → {internal_ramp[-1]} (рампа)"},
+        {"phase": Phase.cold, "days": f"{cold_start}+",
+         "daily_limit": f"{cold_ramp[0]} → {cold_ramp[-1]}, потолок {warmup_config['ceiling']}"},
+    ]
 
 
 # --- Прогревочный тик: номера пишут друг другу -------------------------
@@ -205,11 +233,16 @@ async def loop(db_factory, transport_factory, interval_seconds: int) -> None:
         try:
             db = db_factory()
             try:
-                await tick(db, transport_factory(), _config(), _now())
+                sender_number = await tick(db, transport_factory(), _config(), _now())
             finally:
                 db.close()
+            if sender_number is None:
+                activity.record("sender.warmup", "idle")
+            else:
+                activity.record("sender.warmup", "sent", subject=sender_number)
         except Exception:
             log.exception("прогрев упал на тике")
+            activity.record("sender.warmup", "crashed", detail="см. логи процесса")
         await asyncio.sleep(interval_seconds + _jitter_seconds())
 
 

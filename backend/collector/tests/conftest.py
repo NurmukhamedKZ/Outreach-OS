@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import activity
 import collector.services.store as engine
 import collector.services.storage as storage
 
@@ -18,9 +19,11 @@ def stores(tmp_path, monkeypatch):
     """Две временные базы + соединение, подменяющие боевые data/."""
     monkeypatch.setattr(engine, "DERIVED", tmp_path / "derived.db")
     monkeypatch.setattr(engine, "STATE", tmp_path / "state.db")
+    activity.use(tmp_path / "state.db")          # журнал пишет в ту же state.db
     db = engine.connect()
     yield db
     db.close()
+    activity.use(None)
 
 
 @pytest.fixture

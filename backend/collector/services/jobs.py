@@ -28,6 +28,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import activity
 import logctx
 from collector.services import events, store as engine
 from collector.services.pipeline import OPERATIONS, PIPELINES
@@ -161,7 +162,9 @@ async def run_pending():
     job_id = _claim()
     if job_id is None:
         return None
+    activity.record("jobs", "started", subject=str(job_id))
     await _execute(job_id)
+    activity.record("jobs", "finished", subject=str(job_id))
     return job_id
 
 

@@ -16,6 +16,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
+import activity
 from collector.db import lead as store
 from collector.services import jobs
 from collector.services import leads as leads_service
@@ -62,7 +63,6 @@ def sender_stats():
     версии главного симптома аварии.
     """
     from sender.db import conversation, outbox
-    from sender.services import worker
     db_path = threads_db_path()
     if not db_path.exists():
         return {"status": "live", "numbers": {}, "queue": {},
@@ -78,7 +78,20 @@ def sender_stats():
             return {"status": "live", "numbers": {}, "queue": {},
                     "threads": {"waiting": 0, "escalated": 0}, "heartbeat": None}
     return {"status": "live", "numbers": dict(rows), "queue": queue,
-            "threads": threads, "heartbeat": worker.heartbeat()}
+            "threads": threads, "heartbeat": _worker_heartbeat()}
+
+
+def _worker_heartbeat() -> str | None:
+    """Пульс воркера — из журнала: он переживает перезапуск процесса, а
+    переменная в памяти после него врала «пульса не было». Журнал — модуль
+    верхнего уровня, и без шва use() он молча не отвечает: тестам это и нужно."""
+    try:
+        for row in activity.workers():
+            if row["actor"] == "sender.tick":
+                return row["last_at"]
+    except activity.NotConfiguredError:
+        return None
+    return None
 
 
 def counted(db, condition):

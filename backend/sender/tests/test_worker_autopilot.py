@@ -8,6 +8,7 @@ import asyncio
 
 import pytest
 
+import activity
 from sender.db import numbers, outbox
 from sender.services import config, worker
 from sender.tests.conftest import FakeTransport
@@ -69,14 +70,37 @@ async def test_full_takes_one_cold_touch_per_tick(db, drafted, mode):
     assert db.execute("SELECT count(*) FROM outbox").fetchone()[0] == 1
 
 
-async def test_the_operator_button_works_in_any_mode(db, drafted, mode):
-    """Кнопка ставит в очередь при любом режиме — режим ограничивает автомат,
-    а не человека."""
+async def test_the_operator_button_queues_in_any_mode_but_off_holds_the_send(db, drafted, mode):
+    """Кнопка ставит в очередь при любом режиме, но kill switch держит и её:
+    off паузит всё, что стоит в outbox, независимо от того, кто это поставил."""
     from sender.services import queue
     mode("off")
 
     outbox_id = await queue.enqueue(db, FakeTransport(), "+77010000001", INSIDE, CONFIG)
+    assert outbox.due(db, INSIDE)["outbox_id"] == outbox_id
 
+    transport = FakeTransport()
+    assert await worker.tick(db, transport, CONFIG, INSIDE) is None
+    assert transport.sent_calls == []
+
+
+async def test_off_holds_a_row_queued_earlier_under_full(db, drafted, mode):
+    """Баг-репорт: строка, вставшая в очередь при full, не должна доехать после
+    переключения на off — kill switch обязан держать уже стоящие строки, а не
+    только глушить постановку новых."""
+    mode("full")
+    assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "sent"
+
+    from sender.tests.test_conversation import add_draft, open_thread
+    open_thread(db, "+77010000002")
+    add_draft(db, "+77010000002")
+    from sender.services import queue
+    outbox_id = await queue.enqueue(db, FakeTransport(), "+77010000002", INSIDE, CONFIG)
+
+    mode("off")
+    transport = FakeTransport()
+    assert await worker.tick(db, transport, CONFIG, INSIDE) is None
+    assert transport.sent_calls == []
     assert outbox.due(db, INSIDE)["outbox_id"] == outbox_id
 
 
@@ -110,7 +134,8 @@ async def test_the_loop_survives_an_exception_and_keeps_the_heartbeat_moving(db,
         await worker.loop(lambda: db, FakeTransport)
 
     assert len(ticks) == 2, "цикл умер на первом же исключении"
-    assert worker.heartbeat() is not None
+    assert any(row["actor"] == "sender.tick" for row in activity.workers()), \
+        "упавший тик обязан оставить след в журнале"
 
 
 async def test_a_tick_that_queues_also_sends(db, drafted, mode):

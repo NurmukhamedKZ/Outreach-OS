@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+import activity
 from sender.db import migrate
 from writer.db import thread_store
 
@@ -23,9 +24,11 @@ def db(tmp_path):
                   " handle TEXT PRIMARY KEY, added_at TEXT NOT NULL, reason TEXT)")
     owner.commit()
     owner.close()
+    activity.use(path)                          # журнал пишет в ту же state.db
     connection = migrate.connect(path)          # numbers, outbox, колонки состояния
     yield connection
     connection.close()
+    activity.use(None)
 
 
 class FakeTransport:

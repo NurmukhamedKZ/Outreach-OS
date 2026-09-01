@@ -10,12 +10,20 @@ from datetime import timedelta
 
 import pytest
 
+import activity
 from sender.db import outbox
 from sender.services import config, worker
 from sender.tests.conftest import FakeTransport
 from sender.tests.test_worker import INSIDE, ready
 
 CONFIG = config.load()
+
+
+@pytest.fixture(autouse=True)
+def _autopilot_on(monkeypatch):
+    """Про политику автопилота — test_worker_autopilot.py; этот файл держится
+    включённым, чтобы kill switch (off) не глушил тесты про ретраи."""
+    monkeypatch.setattr(worker.sender_config, "autopilot", lambda: "full")
 
 
 class DeadTransport:
@@ -135,7 +143,8 @@ async def test_a_broken_config_does_not_kill_the_worker(db, monkeypatch, telegra
         await worker.loop(lambda: db, lambda: None)
 
     assert len(calls) == 2, "цикл умер на битом конфиге"
-    assert worker.heartbeat() is not None
+    assert any(row["actor"] == "sender.tick" for row in activity.workers()), \
+        "упавший тик обязан оставить след в журнале"
 
 
 async def test_a_poisoned_head_row_does_not_block_the_whole_queue(db, telegram):

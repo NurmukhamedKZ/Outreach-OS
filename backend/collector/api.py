@@ -20,10 +20,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import activity
 from collector.routes import events, jobs, leads, operations, pipeline, runs, stats, suppression
 from collector.services import events as bus
 from collector.services import jobs as queue
 from collector.services import suppression as suppression_service
+from collector.services import store
 from collector.db import lead as lead_store
 from collector.services.pipeline import OPERATIONS, PIPELINES
 from sender.routes import sender, webhook as sender_webhook
@@ -52,6 +54,10 @@ def _write_refusal(handle: str, reason: str) -> bool:
 
 
 sender_refusal.use(_write_refusal)
+
+# Тот же шов, что подключает отказ: где лежит state.db, знает сборщик
+# приложения, а журнал — модуль верхнего уровня — не знает ни одной из систем.
+activity.use(store.STATE)
 
 # next dev занимает следующий свободный порт, если 3000 занят чем-то другим
 # (в докере, например) — фиксированный список origins тогда молча ломает SSE

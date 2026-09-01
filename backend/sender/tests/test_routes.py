@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import activity
 from sender.db import migrate, numbers, outbox
 from sender.routes import sender as routes
 from sender.routes.sender import RECENT_SENDS
@@ -20,6 +21,7 @@ NOW = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
 def client(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
     db = migrate.connect(path)
+    activity.use(path)                       # статус берёт пульс из журнала
     # Роутер закрывает своё соединение после каждого запроса — как в проде, где
     # каждый запрос открывает своё. Шарить одну связь на все запросы нельзя:
     # второй вызов register попал бы в закрытое соединение и дал 500 вместо 409.
@@ -29,6 +31,7 @@ def client(tmp_path, monkeypatch):
     app.include_router(routes.router)
     yield TestClient(app), db
     db.close()
+    activity.use(None)
 
 
 def test_status_lists_the_pool_with_warmup_day(client):
@@ -51,6 +54,36 @@ def test_register_number_creates_it_in_new(client):
 
     assert created["status"] == "new"
     assert numbers.get(db, "+77001112233")["status"] == "new"
+
+
+def test_register_with_skip_warmup_is_immediately_active(client):
+    http, _ = client
+
+    created = http.post("/api/sender/numbers",
+                        json={"number": "+77001112233", "skip_warmup": True}).json()
+
+    assert created["status"] == "active"
+    assert created["phase"] == "cold"
+    assert created["daily_limit"] == 30
+
+
+def test_mark_warmed_flips_an_existing_number_to_active(client):
+    http, db = client
+    numbers.register(db, "+77001112233", "sessions/x", NOW)
+
+    body = http.post("/api/sender/numbers/+77001112233/warmed").json()
+
+    assert body["status"] == "active"
+    assert body["phase"] == "cold"
+    assert body["daily_limit"] == 30
+
+
+def test_mark_warmed_on_unknown_number_is_404(client):
+    http, _ = client
+
+    response = http.post("/api/sender/numbers/+77001112233/warmed")
+
+    assert response.status_code == 404
 
 
 def test_register_rejects_duplicate(client):
@@ -134,6 +167,7 @@ def _client_with(monkeypatch, tmp_path, transport):
                   " handle TEXT PRIMARY KEY, added_at TEXT NOT NULL, reason TEXT)")
     owner.commit()
     owner.close()
+    activity.use(path)                      # статус берёт пульс из журнала
     db = migrate.connect(path)
     monkeypatch.setattr(routes, "connect", lambda: migrate.connect(path))
     monkeypatch.setattr(routes, "now", lambda: NOW)
