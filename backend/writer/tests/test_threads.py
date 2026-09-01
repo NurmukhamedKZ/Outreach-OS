@@ -182,3 +182,68 @@ def test_prompt_of_a_draft_that_has_one():
         prompt=[("system", "правила"), ("human", "факты")], model="модель")
     assert thread_store.draft_prompt(db, message_id)["prompt"][0][0] == "system"
     db.close()
+
+
+def _talked(db, thread_id, company_id, texts):
+    """Тред с отправленной историей. sent_text пишет система 3, поэтому тест
+    подтверждает отправку UPDATE'ом — как соседние тесты файла."""
+    thread_store.open_thread(db, thread_id, company_id, SEED)
+    for role, text in texts:
+        if role == "incoming":
+            thread_store.add_incoming(db, thread_id, text)
+            continue
+        message_id = thread_store.add_draft(db, thread_id, text, "crm_widget")
+        db.execute("UPDATE messages SET sent_text = ?, sent_at = ? WHERE message_id = ?",
+                   (text, thread_store.now(), message_id))
+    db.commit()
+
+
+def test_inbox_puts_the_urgent_first():
+    """Эскалированный тред ждёт человека прямо сейчас, ответивший — почти;
+    молчащий не ждёт никого. Порядок задаёт бэкенд, страница его не считает."""
+    db = thread_store.connect(":memory:")
+    db.execute("ALTER TABLE threads ADD COLUMN status TEXT NOT NULL DEFAULT 'queued'")
+    db.execute("ALTER TABLE messages ADD COLUMN provider_id TEXT")
+
+    _talked(db, "+77010000003", "c3", [("outgoing", "молчит")])
+    _talked(db, "+77010000002", "c2", [("outgoing", "привет"), ("incoming", "сколько стоит?")])
+    _talked(db, "+77010000001", "c1", [("outgoing", "привет")])
+    db.execute("UPDATE threads SET status = 'escalated' WHERE thread_id = '+77010000001'")
+    db.commit()
+
+    order = [row["thread_id"] for row in thread_store.inbox(db)]
+    assert order == ["+77010000001", "+77010000002", "+77010000003"]
+    db.close()
+
+
+def test_a_thread_we_already_answered_is_not_urgent():
+    """Лид ответил, мы ответили — ждать нечего. Считать «когда-либо отвечал»
+    значило бы держать наверху каждый живой диалог."""
+    db = thread_store.connect(":memory:")
+    db.execute("ALTER TABLE threads ADD COLUMN status TEXT NOT NULL DEFAULT 'queued'")
+    db.execute("ALTER TABLE messages ADD COLUMN provider_id TEXT")
+
+    _talked(db, "+77010000001", "c1",
+            [("outgoing", "привет"), ("incoming", "сколько?"), ("outgoing", "назовём на созвоне")])
+    _talked(db, "+77010000002", "c2", [("outgoing", "привет"), ("incoming", "перезвоните")])
+
+    order = [row["thread_id"] for row in thread_store.inbox(db)]
+    assert order[0] == "+77010000002", "ждёт ответа тот, чьё сообщение последнее"
+    db.close()
+
+
+def test_history_carries_the_kind_of_touch():
+    """reply и followup ставит только автомат — по ним и подписывается
+    «отправлено автоматом». Вид касания живёт в outbox: он собственность
+    системы 3, а не переписки."""
+    db = thread_store.connect(":memory:")
+    db.execute("CREATE TABLE outbox (outbox_id INTEGER PRIMARY KEY, message_id INTEGER,"
+               " kind TEXT NOT NULL DEFAULT 'cold')")
+    _talked(db, "+77010000001", "c1", [("outgoing", "привет")])
+    db.execute("INSERT INTO outbox (message_id, kind) VALUES (1, 'cold')")
+    db.commit()
+
+    history = thread_store.history(db, "+77010000001")
+    assert history[0]["kind"] == "cold"
+    assert history[0]["message_id"] == 1
+    db.close()

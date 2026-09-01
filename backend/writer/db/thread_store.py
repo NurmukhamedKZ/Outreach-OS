@@ -92,9 +92,14 @@ def inbox(db):
 
     Черновик в last_message не попадает: до отправки лид ничего не получил, и
     очередь «кому ответить» из несостоявшихся сообщений не собирается.
+
+    Порядок — срочность: эскалированный тред ждёт человека здесь и сейчас,
+    тред с последним словом лида — почти, остальные — по последней реплике.
+    «Когда-либо отвечал» наверх не поднимает: на каждый живой диалог, на
+    который мы уже ответили, смотреть незачем.
     """
     rows = db.execute(
-        "SELECT t.thread_id, t.company_id, t.created_at,"
+        "SELECT t.thread_id, t.company_id, t.created_at, t.status,"
         " (SELECT count(*) FROM messages m WHERE m.thread_id = t.thread_id"
         "  AND m.sent_text IS NOT NULL AND m.role = 'outgoing'),"
         " (SELECT count(*) FROM messages m WHERE m.thread_id = t.thread_id"
@@ -105,10 +110,14 @@ def inbox(db):
         "  AND m.sent_text IS NOT NULL ORDER BY m.message_id DESC LIMIT 1),"
         " (SELECT sent_text FROM messages m WHERE m.thread_id = t.thread_id"
         "  AND m.sent_text IS NOT NULL ORDER BY m.message_id DESC LIMIT 1)"
-        " FROM threads t ORDER BY 7 DESC NULLS LAST, t.created_at DESC"
+        " FROM threads t ORDER BY CASE t.status WHEN 'escalated' THEN 0 ELSE 1 END,"
+        "   CASE (SELECT m.role FROM messages m WHERE m.thread_id = t.thread_id"
+        "         AND m.sent_text IS NOT NULL ORDER BY m.message_id DESC LIMIT 1)"
+        "     WHEN 'incoming' THEN 0 ELSE 1 END,"
+        "   8 DESC NULLS LAST, t.created_at DESC"
     ).fetchall()
     return [dict(zip(
-        ("thread_id", "company_id", "created_at", "sent", "replies",
+        ("thread_id", "company_id", "created_at", "status", "sent", "replies",
          "drafts", "last_at", "last_message"), row,
     )) for row in rows]
 
@@ -121,14 +130,30 @@ def thread_of_company(db, company_id):
 
 
 def history(db, thread_id):
-    """Состоявшееся: отправленное оператором и пришедшее от лида. Больше ничего."""
+    """Состоявшееся: отправленное оператором и пришедшее от лида. Больше ничего.
+
+    kind живёт в outbox — он собственность системы 3, а не переписки, — и
+    таблицы может не быть вовсе: её создаёт миграция системы 3, а writer
+    открывает базу и без неё. Тот же приём, которым migrate.py страхуется от
+    отсутствия чужих таблиц; импортировать его сюда нельзя — граница систем.
+    """
+    join = ""
+    columns = "m.role, m.sent_text, m.angle, m.sent_at, m.message_id, NULL AS kind"
+    if _has_table(db, "outbox"):
+        join = " LEFT JOIN outbox o ON o.message_id = m.message_id"
+        columns = "m.role, m.sent_text, m.angle, m.sent_at, m.message_id, o.kind"
     rows = db.execute(
-        "SELECT role, sent_text, angle, sent_at FROM messages"
-        " WHERE thread_id = ? AND sent_text IS NOT NULL ORDER BY message_id",
-        (thread_id,),
-    )
-    return [{"role": role, "text": text, "angle": angle, "sent_at": sent_at}
-            for role, text, angle, sent_at in rows]
+        f"SELECT {columns} FROM messages m{join}"
+        " WHERE m.thread_id = ? AND m.sent_text IS NOT NULL ORDER BY m.message_id",
+        (thread_id,))
+    return [{"role": role, "text": text, "angle": angle, "sent_at": sent_at,
+             "message_id": message_id, "kind": kind}
+            for role, text, angle, sent_at, message_id, kind in rows]
+
+
+def _has_table(db, name):
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                      (name,)).fetchone() is not None
 
 
 def pending_draft(db, thread_id):
