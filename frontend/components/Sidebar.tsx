@@ -18,7 +18,7 @@ const NAV = [
   { href: "/", label: "Обзор", icon: SquaresFourIcon },
   { href: "/leads", label: "Лиды", icon: TargetIcon },
   { href: "/cold", label: "Холодные", icon: PaperPlaneTiltIcon },
-  { href: "/writer", label: "Персонализация", icon: PenNibIcon },
+  { href: "/threads", label: "Диалоги", icon: PenNibIcon },
   { href: "/sender", label: "Отправка", icon: BroadcastIcon },
   { href: "/activity", label: "Процессы", icon: PulseIcon },
 ];
@@ -66,12 +66,13 @@ export default function Sidebar() {
 
 function kindOf(href: string) {
   if (href === "/leads") return "sourcing";
-  if (href === "/writer") return "writer";
+  if (href === "/cold") return "cold";
+  if (href === "/threads") return "writer";
   return "";
 }
 
 function systemOf(kind: string) {
-  if (kind === "write") return "writer";
+  if (kind === "write") return "cold";
   if (kind === "discover" || kind === "classify" || kind === "rebuild") return "sourcing";
   return "";
 }

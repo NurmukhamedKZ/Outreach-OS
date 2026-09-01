@@ -34,9 +34,9 @@ export default function MessageComposer({
   angle: string | null;
   model: string | null;
   hasPrompt: boolean;
-  /** Первое касание и follow-up строятся разными задачами; ответ продавца сюда
-   *  не приходит — у него промпт собирает агентом (см. langgraph). */
-  draftKind?: "first" | "followup";
+  /** Первое касание и follow-up строятся разными задачами; ответ лида пишет
+   *  агент-продавец, и его промпт здесь не сохраняется. */
+  draftKind?: "first" | "followup" | "reply";
   onQueued: () => void;
   onRegenerate: () => void;
 }) {
@@ -103,9 +103,9 @@ export default function MessageComposer({
         <summary>Полный запрос в модель</summary>
         {!hasPrompt ? (
           <p className="note">
-            {draftKind === "first" || draftKind === "followup"
-              ? "черновик написан до того, как промпт начали сохранять"
-              : "собран агентом, см. Langfuse"}
+            {draftKind === "reply"
+              ? "собран агентом, см. Langfuse"
+              : "черновик написан до того, как промпт начали сохранять"}
           </p>
         ) : prompt ? (
           <div className="prompt-block mono">

@@ -10,7 +10,9 @@ import { useCallback, useEffect, useState } from "react";
 import {
   fetchQueue,
   fetchSender,
-  pairNumber,
+  liftQuarantine,
+  markWarmed,
+  qrNumber,
   registerNumber,
   setAutopilot,
   type QueueRow,
@@ -42,8 +44,9 @@ export default function Sender() {
   const { refreshTick } = useLive();
   const [status, setStatus] = useState<SenderStatus | null>(null);
   const [recent, setRecent] = useState<QueueRow[]>([]);
-  const [code, setCode] = useState<string | null>(null);
+  const [qr, setQr] = useState<string | null>(null);
   const [number, setNumber] = useState("");
+  const [skipWarmup, setSkipWarmup] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(() => {
@@ -135,7 +138,7 @@ export default function Sender() {
           <thead>
             <tr>
               <th>Номер</th><th>Статус</th><th>День</th><th>Фаза</th>
-              <th>Сегодня</th><th>Осталось</th>
+              <th>Сегодня</th><th>Осталось</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -147,10 +150,82 @@ export default function Sender() {
                 <td>{PHASE_LABEL[row.phase] ?? row.phase}</td>
                 <td>{row.sent_today} / {row.daily_limit}</td>
                 <td>{row.capacity}</td>
+                <td>
+                  {row.status === "quarantined" && (
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        setError(null);
+                        liftQuarantine(row.number).then(reload).catch(report);
+                      }}
+                    >
+                      Снять карантин
+                    </button>
+                  )}
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setError(null);
+                      setNumber(row.number);
+                      qrNumber(row.number).then((body) => setQr(body.qr)).catch(report);
+                    }}
+                  >
+                    QR
+                  </button>
+                  {!row.skip_warmup && (
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        setError(null);
+                        markWarmed(row.number).then(reload).catch(report);
+                      }}
+                    >
+                      Уже прогрет
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
+      </section>
+
+      <section className="card">
+        <h2>Прогрев</h2>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Фаза</th><th>Дни</th><th>Лимит в день</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(status?.warmup_calendar ?? []).map((row) => (
+              <tr key={row.phase}>
+                <td>{PHASE_LABEL[row.phase] ?? row.phase}</td>
+                <td>{row.days}</td>
+                <td>{row.daily_limit}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {status && status.warmup_log.length > 0 && (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Когда</th><th>Кто → кому</th><th>Статус</th>
+              </tr>
+            </thead>
+            <tbody>
+              {status.warmup_log.map((row) => (
+                <tr key={row.outbox_id}>
+                  <td>{WHEN.format(new Date(row.updated_at))}</td>
+                  <td className="mono">{row.our_number} → {row.recipient}</td>
+                  <td>{row.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
 
       <section className="card">
@@ -161,11 +236,19 @@ export default function Sender() {
           value={number}
           onChange={(event) => setNumber(event.target.value)}
         />
+        <label>
+          <input
+            type="checkbox"
+            checked={skipWarmup}
+            onChange={(event) => setSkipWarmup(event.target.checked)}
+          />
+          {" "}уже прогрет — сразу боевой, без рампы
+        </label>
         <button
           className="btn"
           onClick={() => {
             setError(null);
-            registerNumber(number).then(reload).catch(report);
+            registerNumber(number, skipWarmup).then(reload).catch(report);
           }}
           disabled={!number}
         >
@@ -175,16 +258,18 @@ export default function Sender() {
           className="btn"
           onClick={() => {
             setError(null);
-            pairNumber(number).then((body) => setCode(body.code)).catch(report);
+            qrNumber(number).then((body) => setQr(body.qr)).catch(report);
           }}
           disabled={!number}
         >
-          Получить код привязки
+          Показать QR
         </button>
         {error && <p className="error-line">{error}</p>}
-        {code && (
-          <p className="mono">
-            Введите на телефоне: WhatsApp → Связанные устройства → Привязка по коду → {code}
+        {qr && (
+          <p>
+            WhatsApp → Связанные устройства → Привязать устройство → отсканировать:
+            <br />
+            <img src={qr} alt="QR-код привязки WhatsApp" width={264} height={264} />
           </p>
         )}
       </section>

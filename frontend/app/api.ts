@@ -251,6 +251,9 @@ export type ThreadMessage = {
   text: string;
   angle: string | null;
   sent_at: string | null;
+  message_id: number | null;
+  /** Вид касания из outbox: cold | followup | reply. У входящих пуст. */
+  kind: string | null;
 };
 
 export type Conversation = {
