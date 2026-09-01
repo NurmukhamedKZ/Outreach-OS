@@ -87,6 +87,21 @@ def site_signals(db, run_id, pages, weights):
             )
 
 
+MISSED_LEAD_TYPES = ("не дозвонились", "не ответили на заявку")
+
+
+def missed_lead_complaints(complaints):
+    return [c for c in complaints if c["type"] in MISSED_LEAD_TYPES]
+
+
+def other_complaints(complaints):
+    """Жалобы вне missed_lead — единственные, что годятся в
+    reviews_unanswered_complaint. Без этого исключения одна и та же жалоба
+    (например, «не дозвонились» в отзыве без ответа компании — обычное дело)
+    проходила бы оба фильтра и весила бы вдвое под двумя именами сигнала."""
+    return [c for c in complaints if c["type"] not in MISSED_LEAD_TYPES]
+
+
 def reviews_signals(db, run_id, pages, weights):
     """Сигналы отзывов от модели. Сети нет — ответы оплачены и лежат в llm_answers.
 
@@ -118,11 +133,9 @@ def reviews_signals(db, run_id, pages, weights):
             continue
         analysis = answer.get("analysis") or {}
         reviews = reviews_by_company.get(company_id, [])
+        complaints = analysis.get("complaints") or []
 
-        missed = newest_review_match(reviews, [
-            c for c in (analysis.get("complaints") or [])
-            if c["type"] in ("не дозвонились", "не ответили на заявку")
-        ])
+        missed = newest_review_match(reviews, missed_lead_complaints(complaints))
         if missed:
             review, quote = missed
             emit(db, run_id, company_id, "reviews_missed_lead",
@@ -131,7 +144,7 @@ def reviews_signals(db, run_id, pages, weights):
         if analysis.get("unanswered_complaints"):
             unanswered = newest_review_match(
                 [r for r in reviews if not r.get("official_answer")],
-                analysis.get("complaints") or [],
+                other_complaints(complaints),
             )
             if unanswered:
                 review, quote = unanswered

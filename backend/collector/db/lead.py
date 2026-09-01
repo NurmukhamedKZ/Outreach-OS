@@ -5,6 +5,8 @@
 """
 from collector.services import store as engine
 
+import json
+
 
 def connect():
     return engine.connect()
@@ -48,3 +50,44 @@ def stats(db):
         "suppressed": db.execute("SELECT count(*) FROM state.suppression").fetchone()[0],
         "cities": [row[0] for row in db.execute("SELECT DISTINCT city FROM companies ORDER BY city")],
     }
+
+
+def dossier_of(db, company_id):
+    """Досье текущего прогона: то же, что уходит в промпт через seed."""
+    row = db.execute(
+        "SELECT summary, approach, decision_maker, hooks, confidence"
+        " FROM dossiers WHERE company_id = ?", (company_id,)).fetchone()
+    if not row:
+        return None
+    return {"summary": row[0], "approach": row[1], "decision_maker": row[2],
+            "hooks": json.loads(row[3] or "[]"), "confidence": row[4]}
+
+
+def fetches_of(db, urls):
+    """Свежесть сырья: когда скачано и не подменил ли источник страницу.
+
+    Ключ — сами url, а не company_id: `company_links` связывает компанию с
+    филиалом 2ГИС, а не со страницей, и единственный честный список страниц
+    компании — тот, что уже собрал скоринг (export.sources_of по breakdown).
+    """
+    if not urls:
+        return []
+    marks = ",".join("?" * len(urls))
+    rows = db.execute(
+        f"SELECT url, final_url, status, fetched_at FROM fetches"
+        f" WHERE url IN ({marks}) ORDER BY fetched_at DESC", tuple(urls)).fetchall()
+    return [{"url": url, "final_url": final_url, "status": status, "fetched_at": fetched_at}
+            for url, final_url, status, fetched_at in rows]
+
+
+def llm_answers_of(db, subject, username=None):
+    """Оплаченные ответы модели по компании. Ключ собирается так же, как при
+    записи (analyze.py): «название | город» для reviews/site/dossier и логин
+    инстаграма для ig_signals — второго способа собрать его быть не должно."""
+    subjects = [subject] + ([username] if username else [])
+    marks = ",".join("?" * len(subjects))
+    rows = db.execute(
+        f"SELECT kind, model, prompt, answer FROM state.llm_answers"
+        f" WHERE subject IN ({marks}) ORDER BY id DESC", subjects).fetchall()
+    return [{"kind": kind, "model": model, "prompt": prompt, "answer": answer}
+            for kind, model, prompt, answer in rows]

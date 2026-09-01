@@ -116,6 +116,24 @@ def test_reviews_missed_lead_picks_newest_one():
     assert quote == "не дозвонились сегодня", "должна выбираться самая свежая жалоба"
 
 
+def test_missed_lead_and_other_complaints_do_not_overlap():
+    """Регрессия: одна жалоба не должна давать reviews_missed_lead и
+    reviews_unanswered_complaint одновременно — иначе один отрицательный
+    отзыв весит вдвое под двумя именами сигнала."""
+    from collector.services.enrich import missed_lead_complaints, other_complaints
+
+    complaints = [
+        {"type": "не дозвонились", "quote": "не дозвонились, деньги не вернули"},
+        {"type": "качество работы", "quote": "сделали плохо"},
+    ]
+
+    missed = missed_lead_complaints(complaints)
+    other = other_complaints(complaints)
+
+    assert [c["quote"] for c in missed] == ["не дозвонились, деньги не вернули"]
+    assert [c["quote"] for c in other] == ["сделали плохо"]
+
+
 def test_reviews_missed_lead_no_match_is_none():
     from collector.services.enrich import newest_review_match
     assert newest_review_match([], [{"type": "не дозвонились", "quote": "нет такого отзыва"}]) is None

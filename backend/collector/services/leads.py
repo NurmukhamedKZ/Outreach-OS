@@ -30,11 +30,13 @@ def stats(db):
 
 
 def card(db, company_id):
-    """Карточка: все каналы, все сигналы с датами, разбивка скоринга."""
+    """Карточка: каналы, сигналы, разбор скора, досье, сырьё и ответы модели.
+    Одна карточка — один запрос: клиенту незачем собирать её из пяти ручек."""
     row = next(report.candidates(db, company_id), None)
     if not row:
         return None
     suppressed = store.suppression_handles(db)
+    username = instagram_login(row["channels"])
     return {
         **as_lead(row, report.best_channel(row["channels"], suppressed)),
         "channels": [
@@ -43,7 +45,20 @@ def card(db, company_id):
         ],
         "signals": store.signals_of(db, company_id),
         "breakdown": row["breakdown"],
+        "dossier": store.dossier_of(db, company_id),
+        "fetches": store.fetches_of(db, report.sources_of(row["breakdown"]).split()),
+        "llm_answers": store.llm_answers_of(db, f"{row['name']} | {row['city']}", username),
     }
+
+
+def instagram_login(channels):
+    """Логин из канала вида instagram — ключ ответов модели для ig_signals.
+    Формат тот же, что у 2GIS: https://instagram.com/<логин> (см. sources.ig_username).
+    Нет инстаграм-канала — нет и его ответов."""
+    for kind, handle in channels:
+        if kind == "instagram":
+            return handle.rstrip("/").rsplit("/", 1)[-1]
+    return None
 
 
 def as_lead(row, channel):

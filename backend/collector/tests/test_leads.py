@@ -92,3 +92,49 @@ def test_export_filters_refusals(stores, tmp_path, monkeypatch):
     db.commit()
     leads = export_op.build_leads(db, limit=10)
     assert leads == [], "отказ обязан убрать лида из выдачи (F21)"
+
+def _evidence(db):
+    """Сырьё, ответ модели и breakdown со ссылкой: карточке нужно показать,
+    откуда взяты факты и когда они скачаны."""
+    db.execute("UPDATE scores_all SET breakdown = ?",
+               ('[{"rule": "crm_widget", "contribution": 2.0,'
+                ' "url": "https://romashka.kz/", "quote": "виджет Bitrix24"}]',))
+    db.execute("INSERT INTO fetches_all (run_id, url, sha, final_url, status, fetched_at)"
+               " VALUES (1, 'https://romashka.kz/', 'abc', 'https://romashka.kz/uslugi',"
+               "         200, '2026-08-12T09:14:03Z')")
+    db.execute("INSERT INTO state.llm_answers (kind, subject, model, prompt, answer)"
+               " VALUES ('site', 'Ромашка | almaty', 'm', 'что делает сайт?', '{}')")
+    db.commit()
+
+
+def test_card_carries_the_dossier_the_prompt_uses(stores):
+    """Досье уходит в промпт через seed — значит оператор обязан видеть его
+    там же, где решает, писать ли этой компании."""
+    from collector.services import leads as service
+    db = stores
+    _published_run(db)
+    card = service.card(db, "c1")
+    assert card["dossier"]["summary"] == "бухгалтерия"
+    assert card["dossier"]["hooks"][0]["quote"] == "оставьте заявку"
+
+
+def test_card_carries_the_freshness_of_the_raw(stores):
+    """final_url показывается всегда, а не только при расхождении с url:
+    подмена страницы источником — единственное, что о ней вообще сообщает."""
+    from collector.services import leads as service
+    db = stores
+    _published_run(db)
+    _evidence(db)
+    fetches = service.card(db, "c1")["fetches"]
+    assert fetches[0]["fetched_at"] == "2026-08-12T09:14:03Z"
+    assert fetches[0]["final_url"] == "https://romashka.kz/uslugi"
+
+
+def test_card_carries_the_paid_model_answers(stores):
+    """Ключ собирается так же, как при записи в analyze.py: «название | город»."""
+    from collector.services import leads as service
+    db = stores
+    _published_run(db)
+    _evidence(db)
+    answers = service.card(db, "c1")["llm_answers"]
+    assert [answer["kind"] for answer in answers] == ["site"]
