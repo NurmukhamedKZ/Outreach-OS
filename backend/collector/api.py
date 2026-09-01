@@ -21,7 +21,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import activity
-from collector.routes import events, jobs, leads, operations, pipeline, runs, stats, suppression
+from collector.routes import (activity as activity_routes, events, jobs, leads,
+                              operations, pipeline, runs, stats, suppression)
 from collector.services import events as bus
 from collector.services import jobs as queue
 from collector.services import suppression as suppression_service
@@ -96,6 +97,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(leads.router)
+app.include_router(activity_routes.router)
 app.include_router(pipeline.router)
 app.include_router(operations.router)
 app.include_router(runs.router)

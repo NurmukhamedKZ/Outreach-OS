@@ -4,6 +4,7 @@
 разъехалась с правилами выдачи. F19/F21 не про формат, а про закон.
 """
 
+import activity
 import collector.services.store as engine
 
 
@@ -61,3 +62,26 @@ def test_stats_report_what_waits_for_a_human():
 
     sender = metrics.sender_stats()
     assert set(sender["threads"]) == {"waiting", "escalated"}
+
+
+def test_activity_endpoint_returns_events_and_workers(tmp_path):
+    from collector.routes import activity as web_activity
+
+    activity.use(tmp_path / "state.db")
+    activity.record("sender.tick", "sent", subject="+77001112233")
+    body = web_activity.journal()
+    assert body["events"][0]["outcome"] == "sent"
+    assert body["workers"][0]["actor"] == "sender.tick"
+    assert body["workers"][0]["silent_after_seconds"] > 0
+    activity.use(None)
+
+
+def test_activity_endpoint_filters_by_actor(tmp_path):
+    from collector.routes import activity as web_activity
+
+    activity.use(tmp_path / "state.db")
+    activity.record("jobs", "started", subject="1")
+    activity.record("sender.tick", "idle")
+    body = web_activity.journal(actor="jobs")
+    assert [event["actor"] for event in body["events"]] == ["jobs"]
+    activity.use(None)
