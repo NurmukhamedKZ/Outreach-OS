@@ -154,7 +154,31 @@ export function fetchStats() {
   return json<DashboardStats>("/api/stats");
 }
 
-/** Подписка на SSE. Сервер шлёт события snapshot | job | log | refresh;
+export type ActivityEvent = {
+  at: string;
+  last_at: string;
+  repeats: number;
+  actor: string;
+  outcome: string;
+  subject: string | null;
+  detail: string | null;
+};
+
+export type ActivityWorker = {
+  actor: string;
+  last_at: string | null;
+  events: number;
+  /** Порог молчания приезжает с бэкенда: интервалы тиков живут в sender/config.toml. */
+  silent_after_seconds: number;
+};
+
+export function fetchActivity(limit = 200, actor?: string) {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (actor) query.set("actor", actor);
+  return json<{ events: ActivityEvent[]; workers: ActivityWorker[] }>(`/api/activity?${query}`);
+}
+
+/** Подписка на SSE. Сервер шлёт события snapshot | job | log | refresh | activity;
  * на refresh консьюмер обычно перезабирает fetchStats().
  *
  * Стрим ходит на API-оригин напрямую, минуя rewrite next: dev-прокси
@@ -166,7 +190,7 @@ export function subscribeEvents(
   onEvent: (event: MessageEvent) => void,
 ): () => void {
   const source = new EventSource(`${SSE_ORIGIN}/api/events`);
-  for (const type of ["snapshot", "job", "log", "refresh"] as const) {
+  for (const type of ["snapshot", "job", "log", "refresh", "activity"] as const) {
     source.addEventListener(type, onEvent as EventListener);
   }
   return () => source.close();
@@ -248,6 +272,21 @@ export type SenderNumber = {
   sent_today: number;
   capacity: number;
   note: string | null;
+  skip_warmup: number;
+};
+
+export type WarmupCalendarRow = {
+  phase: "socket_delay" | "passive" | "internal" | "cold";
+  days: string;
+  daily_limit: string;
+};
+
+export type WarmupLogRow = {
+  outbox_id: number;
+  our_number: string;
+  recipient: string;
+  status: string;
+  updated_at: string;
 };
 
 export type SenderStatus = {
@@ -257,6 +296,8 @@ export type SenderStatus = {
   queue: { queued: number; sent_today: number; overdue: number };
   threads: { waiting: number; escalated: number };
   heartbeat: string | null;
+  warmup_calendar: WarmupCalendarRow[];
+  warmup_log: WarmupLogRow[];
 };
 
 export function fetchSender() {
@@ -289,12 +330,24 @@ export function setAutopilot(mode: "off" | "replies" | "full") {
   return post<{ autopilot: string }>("/api/sender/autopilot", { mode });
 }
 
-export async function registerNumber(number: string): Promise<SenderNumber> {
-  return post("/api/sender/numbers", { number });
+export async function registerNumber(number: string, skipWarmup = false): Promise<SenderNumber> {
+  return post("/api/sender/numbers", { number, skip_warmup: skipWarmup });
 }
 
-export async function pairNumber(number: string): Promise<{ code: string }> {
-  return post(`/api/sender/numbers/${encodeURIComponent(number)}/pair`, {});
+/** Снятие карантина — оператор подтверждает, что причина (см. `note` номера)
+ * больше не действует; сам монитор здоровья статус назад не откатывает. */
+export async function liftQuarantine(number: string): Promise<SenderNumber> {
+  return post(`/api/sender/numbers/${encodeURIComponent(number)}/status`, { status: "warming" });
+}
+
+/** Постфактум для уже существующего номера — та же отметка, что чекбокс
+ * «уже прогрет» при регистрации. */
+export async function markWarmed(number: string): Promise<SenderNumber> {
+  return post(`/api/sender/numbers/${encodeURIComponent(number)}/warmed`, {});
+}
+
+export async function qrNumber(number: string): Promise<{ qr: string }> {
+  return post(`/api/sender/numbers/${encodeURIComponent(number)}/qr`, {});
 }
 
 function post<T>(url: string, body: unknown) {

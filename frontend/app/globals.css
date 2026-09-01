@@ -754,14 +754,21 @@ a.nav-item:hover {
 
 /* --- карточка лида ----------------------------------------------------------- */
 
+/* sticky само по себе не прокручивает: если карточка выше вьюпорта, её низ
+   просто уходит за экран, и читать приходится скроллом всей страницы. Тот же
+   приём, что у .sidebar, — своя высота и свой overflow вместо чужого скролла. */
 .detail {
   position: sticky;
   top: 24px;
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
 }
 
 @media (max-width: 1100px) {
   .detail {
     position: static;
+    max-height: none;
+    overflow-y: visible;
   }
 }
 
@@ -1046,6 +1053,134 @@ a.nav-item:hover {
   font-size: 12px;
 }
 
+/* --- полоска активной джобы (RunBar) ---------------------------------------- */
+
+.runbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 40px;
+  border-bottom: 1px solid var(--hairline-strong);
+  background: var(--canvas-soft);
+  font-size: 13px;
+}
+
+.runbar-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+.runbar-step {
+  color: var(--muted);
+}
+
+.runbar-link {
+  margin-left: auto;
+  font-size: 13px;
+}
+
+/* --- «Процессы»: журнал фоновой работы ---------------------------------------- */
+
+.daemons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  padding: 16px 20px;
+  margin-bottom: 18px;
+}
+
+.daemon {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.daemon-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--hairline-strong);
+}
+
+.daemon-dot.is-on {
+  background: var(--success);
+}
+
+.daemon-name {
+  font-weight: 500;
+}
+
+.daemon-last {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.daemon-note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.daemon-dot.is-on + .daemon-name + .daemon-note {
+  color: var(--success);
+}
+
+.feed {
+  display: flex;
+  flex-direction: column;
+}
+
+.feed-row {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(0, 1fr) auto;
+  gap: 6px 12px;
+  align-items: baseline;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 14px;
+}
+
+.feed-row:last-child {
+  border-bottom: 0;
+}
+
+.feed-when {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.feed-actor {
+  font-weight: 500;
+}
+
+.feed-outcome {
+  color: var(--body);
+}
+
+.feed-subject {
+  grid-column: 3 / 4;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feed-repeats {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.feed-detail {
+  grid-column: 3 / -1;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* --- инбокс системы 2 ------------------------------------------------------------ */
 
 .inbox-row {
@@ -1130,4 +1265,49 @@ a.nav-item:hover {
   .skeleton-line {
     animation: none;
   }
+}
+
+/* --- гайд на «Обзоре» ------------------------------------------------------------ */
+
+.guide {
+  margin-bottom: 20px;
+}
+
+.guide summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.guide summary:hover {
+  color: var(--ink);
+}
+
+.guide-steps {
+  margin: 16px 0 0;
+  padding-left: 20px;
+  color: var(--body);
+  font-size: 14px;
+}
+
+.guide-steps li {
+  margin-bottom: 12px;
+}
+
+.guide-steps b {
+  color: var(--ink);
+}
+
+.ui {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 4px;
+  background: var(--canvas-soft);
+  color: var(--ink);
+  font-size: 13px;
+  white-space: nowrap;
 }

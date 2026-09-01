@@ -10,8 +10,6 @@
 import { useEffect, useState } from "react";
 import { fetchCatalogue, type PipelineCatalogue } from "./api";
 import { JobMonitor, PipelineActions } from "@/components/JobMonitor";
-import { OperationsPanel } from "@/components/OperationsPanel";
-import { RunsHistory } from "@/components/RunsHistory";
 import { useLive } from "@/components/live";
 
 const WHEN = new Intl.DateTimeFormat("ru", { hour: "2-digit", minute: "2-digit" });
@@ -36,6 +34,8 @@ export default function Overview() {
               : "ждём бэкенд"}
         </span>
       </header>
+
+      <Guide />
 
       {stats ? (
         <div className="metrics">
@@ -114,7 +114,6 @@ export default function Overview() {
       )}
 
       <PipelineActions pipelines={catalogue?.pipelines ?? []} />
-      <OperationsPanel operations={catalogue?.operations ?? []} />
       <JobMonitor />
 
       <section className="card">
@@ -137,9 +136,75 @@ export default function Overview() {
           {jobs.length === 0 && <p className="note">Пока ничего не запускали.</p>}
         </div>
       </section>
-
-      <RunsHistory />
     </>
+  );
+}
+
+/** Гайд: путь оператора от пустой базы до отправленного сообщения.
+ * Собран из настоящих подписей кнопок — это инструкция, а не пересказ архитектуры.
+ */
+function Guide() {
+  return (
+    <details className="guide card">
+      <summary>Как этим пользоваться</summary>
+
+      <ol className="guide-steps">
+        <li>
+          <b>Найти компании.</b> Здесь же, на «Обзоре», нажмите{" "}
+          <span className="ui">Поиск новых лидов</span> — 2ГИС, сайты, инстаграм,
+          пересборка базы. Ход виден ниже: названные шаги, счётчик и живой лог;
+          остановить — <span className="ui">прервать</span>. Очередь одна: пока джоба идёт,
+          остальные кнопки заблокированы.
+        </li>
+        <li>
+          <b>Понять, кто из них годится.</b> Кнопка <span className="ui">Анализ и досье</span>:
+          модель читает отзывы, сайт и инстаграм и ставит intent-скор. Нужен{" "}
+          <code className="mono">OPENROUTER_API_KEY</code> в <code className="mono">backend/.env</code>,
+          иначе шаг упадёт с 503.
+        </li>
+        <li>
+          <b>Посмотреть выдачу.</b> Сайдбар → <span className="ui">Сбор лидов</span>. Слева список
+          по скору (фильтры «все города» и «N лидов» сверху), справа карточка: каналы, сигналы
+          и цитата «почему сейчас». Не писать этой компании никогда — в карточке впишите причину
+          и нажмите <span className="ui">Больше не писать</span>; запись переживает пересборку
+          и не отменяется.
+        </li>
+        <li>
+          <b>Написать первое сообщение.</b> Сайдбар → <span className="ui">Персонализация</span> →{" "}
+          <span className="ui">Черновики топ-N</span>: агент напишет тем, у кого треда ещё нет.
+          Черновик правится прямо в поле, дальше <span className="ui">Поставить в очередь</span> —
+          в историю треда сообщение попадёт после подтверждения отправки. Ответ, пришедший мимо
+          системы, вставляется как есть кнопкой <span className="ui">Записать ответ</span>.
+        </li>
+        <li>
+          <b>Подключить номер.</b> Сайдбар → <span className="ui">Отправка</span> → блок
+          «Подключить номер»: введите <code className="mono">+77001112233</code>,{" "}
+          <span className="ui">Добавить в пул</span>, затем <span className="ui">Показать QR</span> и
+          на телефоне WhatsApp → Связанные устройства → Привязать устройство. Номер уже отлежался —
+          галочка «уже прогрет» при добавлении или <span className="ui">Уже прогрет</span> в таблице
+          пула. Новый номер сам идёт по календарю прогрева, пишет нашим же номерам.
+        </li>
+        <li>
+          <b>Включить отправку.</b> Там же, в блоке «Очередь», три кнопки:{" "}
+          <span className="ui">Стоп</span> (kill switch, прогрев продолжается),{" "}
+          <span className="ui">Только ответы</span> (автомат отвечает написавшим, сам не пишет),{" "}
+          <span className="ui">Полный автопилот</span> (сам ставит касания в очередь). Окно
+          отправки 10:00–18:00 Asia/Almaty, ответы уходят круглосуточно.
+        </li>
+        <li>
+          <b>Следить.</b> На «Отправке» — «созрели, но стоят», «ждут ответа», «эскалировано» и
+          пульс воркера (если пульс замер — воркер лёг). Ответы лидов на «Персонализации»
+          помечены <span className="ui">↩</span>; эскалированный тред ждёт человека.
+        </li>
+      </ol>
+
+      <p className="note">
+        <b>Пересборка из сырья</b> — когда поменялись веса скоринга или разбор: считает всё заново
+        из уже скачанного, в сеть не ходит и денег не стоит. Серые кнопки под пайплайнами — те же
+        шаги поштучно (<code className="mono">collect.gis</code>, <code className="mono">probe.serp</code>{" "}
+        и прочие), для точечной проверки, а не для обычной работы.
+      </p>
+    </details>
   );
 }
 

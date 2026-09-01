@@ -18,6 +18,7 @@ const NAV = [
   { href: "/sourcing", label: "Сбор лидов", icon: TargetIcon },
   { href: "/writer", label: "Персонализация", icon: PenNibIcon },
   { href: "/sender", label: "Отправка", icon: PaperPlaneTiltIcon },
+  { href: "/activity", label: "Процессы", icon: PulseIcon },
 ];
 
 export default function Sidebar() {
