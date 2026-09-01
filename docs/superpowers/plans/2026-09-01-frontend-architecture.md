@@ -1517,29 +1517,117 @@ git commit -m "feat(web): страница лидов и карточка с р�
 - [ ] **Step 1: Написать падающий тест**
 
 ```python
-def test_inbox_puts_the_urgent_first(threads_db):
+SEED = {"name": "Ромашка", "signals": []}
+
+
+def _talked(db, thread_id, company_id, texts):
+    """Тред с отправленной историей. sent_text пишет система 3, поэтому тест
+    подтверждает отправку UPDATE'ом — как соседние тесты файла."""
+    thread_store.open_thread(db, thread_id, company_id, SEED)
+    for role, text in texts:
+        if role == "incoming":
+            thread_store.add_incoming(db, thread_id, text)
+            continue
+        message_id = thread_store.add_draft(db, thread_id, text, "crm_widget")
+        db.execute("UPDATE messages SET sent_text = ?, sent_at = ? WHERE message_id = ?",
+                   (text, thread_store.now(), message_id))
+    db.commit()
+
+
+def test_inbox_puts_the_urgent_first():
     """Эскалированный тред ждёт человека прямо сейчас, ответивший — почти;
     молчащий не ждёт никого. Порядок задаёт бэкенд, страница его не считает."""
-    # три треда: escalated, с ответом лида, молчащий
-    ...
-    order = [row["thread_id"] for row in thread_store.inbox(threads_db)]
-    assert order == [ESCALATED, ANSWERED, SILENT]
+    db = thread_store.connect(":memory:")
+    db.execute("ALTER TABLE threads ADD COLUMN status TEXT NOT NULL DEFAULT 'queued'")
+
+    _talked(db, "+77010000003", "c3", [("outgoing", "молчит")])
+    _talked(db, "+77010000002", "c2", [("outgoing", "привет"), ("incoming", "сколько стоит?")])
+    _talked(db, "+77010000001", "c1", [("outgoing", "привет")])
+    db.execute("UPDATE threads SET status = 'escalated' WHERE thread_id = '+77010000001'")
+    db.commit()
+
+    order = [row["thread_id"] for row in thread_store.inbox(db)]
+    assert order == ["+77010000001", "+77010000002", "+77010000003"]
+    db.close()
 
 
-def test_a_thread_we_already_answered_is_not_urgent(threads_db):
+def test_a_thread_we_already_answered_is_not_urgent():
     """Лид ответил, мы ответили — ждать нечего. Считать «когда-либо отвечал»
     значило бы держать наверху каждый живой диалог."""
-    # тред, где последнее сообщение — наше, стоит ниже треда с ответом лида
-    ...
+    db = thread_store.connect(":memory:")
+    db.execute("ALTER TABLE threads ADD COLUMN status TEXT NOT NULL DEFAULT 'queued'")
+
+    _talked(db, "+77010000001", "c1",
+            [("outgoing", "привет"), ("incoming", "сколько?"), ("outgoing", "назовём на созвоне")])
+    _talked(db, "+77010000002", "c2", [("outgoing", "привет"), ("incoming", "перезвоните")])
+
+    order = [row["thread_id"] for row in thread_store.inbox(db)]
+    assert order[0] == "+77010000002", "ждёт ответа тот, чьё сообщение последнее"
+    db.close()
 
 
-def test_history_carries_the_kind_of_touch(threads_db):
+def test_history_carries_the_kind_of_touch():
     """reply и followup ставит только автомат — по ним и подписывается
-    «отправлено автоматом»."""
-    history = thread_store.history(threads_db, "+77001112233")
+    «отправлено автоматом». Вид касания живёт в outbox: он собственность
+    системы 3, а не переписки."""
+    db = thread_store.connect(":memory:")
+    db.execute("CREATE TABLE outbox (outbox_id INTEGER PRIMARY KEY, message_id INTEGER,"
+               " kind TEXT NOT NULL DEFAULT 'cold')")
+    _talked(db, "+77010000001", "c1", [("outgoing", "привет")])
+    db.execute("INSERT INTO outbox (message_id, kind) VALUES (1, 'cold')")
+    db.commit()
+
+    history = thread_store.history(db, "+77010000001")
     assert history[0]["kind"] == "cold"
-    assert history[0]["message_id"] > 0
+    assert history[0]["message_id"] == 1
+    db.close()
 ```
+
+`status` у тредов доливает `sender/db/migrate.py`, а тесты writer'а открывают
+базу без него — поэтому колонка добавляется в тесте руками, как уже делает
+`test_threads.py` с `provider_id`. Таблицу `outbox` тест создаёт в
+минимальной форме по той же причине: `history` обязана переживать её
+отсутствие (`LEFT JOIN`), но проверять `kind` без единой строки очереди
+бессмысленно.
+
+Отсюда требование к реализации, и оно неочевидное: **`LEFT JOIN` не спасает от
+отсутствующей таблицы** — SQLite падает `no such table: outbox` независимо от
+вида соединения. А базы без `outbox` реальны: её создаёт
+`sender/db/migrate.py`, и всё, что открывает переписку без демонов системы 3
+(тесты writer'а, операция `writer.outreach`), работает именно на такой. Значит
+наличие таблицы проверяется до запроса:
+
+```python
+def history(db, thread_id):
+    """Состоявшееся: отправленное оператором и пришедшее от лида. Больше ничего.
+
+    kind живёт в outbox — он собственность системы 3, а не переписки, — и
+    таблицы может не быть вовсе: её создаёт миграция системы 3, а writer
+    открывает базу и без неё. Тот же приём, которым migrate.py страхуется от
+    отсутствия чужих таблиц; импортировать его сюда нельзя — граница систем.
+    """
+    join = ""
+    columns = "m.role, m.sent_text, m.angle, m.sent_at, m.message_id, NULL AS kind"
+    if _has_table(db, "outbox"):
+        join = " LEFT JOIN outbox o ON o.message_id = m.message_id"
+        columns = "m.role, m.sent_text, m.angle, m.sent_at, m.message_id, o.kind"
+    rows = db.execute(
+        f"SELECT {columns} FROM messages m{join}"
+        " WHERE m.thread_id = ? AND m.sent_text IS NOT NULL ORDER BY m.message_id",
+        (thread_id,))
+    return [{"role": role, "text": text, "angle": angle, "sent_at": sent_at,
+             "message_id": message_id, "kind": kind}
+            for role, text, angle, sent_at, message_id, kind in rows]
+
+
+def _has_table(db, name):
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                      (name,)).fetchone() is not None
+```
+
+Существующий `writer/tests/test_threads.py::test_draft_stays_out_of_history_until_confirmed`
+работает на базе без `outbox` и уже проверяет ровно эту ветку — он обязан
+остаться зелёным без единой правки.
 
 - [ ] **Step 2: Убедиться, что тест падает**
 
