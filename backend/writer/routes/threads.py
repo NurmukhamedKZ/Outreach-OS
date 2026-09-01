@@ -96,9 +96,11 @@ def make_draft(company_id: str, request: DraftRequest):
                         else _writer_move(request.kind, threads, thread, history))
             if proposal is None:
                 raise HTTPException(409, "агент закрыл тред — ответа не будет")
-            if not proposal.stop:
-                thread_store.add_draft(threads, channel[1], proposal.text, proposal.angle)
-            return {**state(leads, threads, company_id), "stop": proposal.stop}
+            if not proposal.draft.stop:
+                thread_store.add_draft(threads, channel[1], proposal.draft.text,
+                                       proposal.draft.angle,
+                                       prompt=proposal.prompt, model=proposal.model)
+            return {**state(leads, threads, company_id), "stop": proposal.draft.stop}
         finally:
             leads.close()
             threads.close()
@@ -151,7 +153,8 @@ def _writer_move(kind, threads, thread, history):
     task = agent.FIRST if kind == "first" else followup.task(threads, thread)
     return agent.draft(agent.model(CONFIG), thread["seed"], history, task,
                        session_id=thread["thread_id"], name=f"writer.{kind}",
-                       offer=CONFIG["offer"]["text"])
+                       offer=CONFIG["offer"]["text"],
+                       model_name=CONFIG["llm"]["model"])
 
 
 def _seller_move(threads, thread, history):

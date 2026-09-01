@@ -9,6 +9,7 @@ import makeWASocket, {
   useMultiFileAuthState,
 } from "baileys";
 import pino from "pino";
+import QRCode from "qrcode";
 
 const PORT = Number(process.env.SENDER_NODE_PORT ?? 8788);
 const PYTHON_URL = process.env.SENDER_PYTHON_URL ?? "http://127.0.0.1:8787";
@@ -20,9 +21,10 @@ const WEBHOOK_MAX_ATTEMPTS = 12;      // ~час с учётом backoff, пот
 const RECONNECT_BASE_MS = 5000;
 const RECONNECT_MAX_MS = 300000;      // пять минут между попытками — потолок
 const RECONNECT_MAX_ATTEMPTS = 12;    // дальше молчим: связь чинит человек
+const QR_WAIT_MS = 15000;             // первый QR приходит за пару секунд
 
 const log = pino({ level: "info" });
-// number -> {sock, state, reconnects, day, attempts}
+// number -> {sock, state, reconnects, day, attempts, qr}
 const sockets = new Map();
 // key идемпотентности -> provider_id уже отправленного сообщения
 const sentKeys = new Map();
@@ -52,23 +54,30 @@ async function connect(number) {
 
   sock.ev.on("connection.update", async (update) => {
     const current = sockets.get(number);
+    // QR-логин и pairing-code — два взаимоисключающих способа привязать один
+    // и тот же неавторизованный сокет: Baileys шлёт `qr`, пока ничей код не
+    // запрошен, поэтому кадр просто копится в записи номера, а /qr его читает.
+    if (update.qr) {
+      sockets.set(number, { ...sockets.get(number), qr: await QRCode.toDataURL(update.qr) });
+    }
     if (update.connection === "open") {
-      sockets.set(number, { ...current, state: "connected", attempts: 0 });
+      sockets.set(number, { ...sockets.get(number), state: "connected", attempts: 0, qr: null });
     }
     if (update.connection === "close") {
       const code = update.lastDisconnect?.error?.output?.statusCode;
       const loggedOut = code === DisconnectReason.loggedOut;
       // loggedOut не переподключается: сессия мертва, номер требует телефона.
       if (loggedOut) {
-        sockets.set(number, { ...current, state: "loggedOut" });
+        sockets.set(number, { ...sockets.get(number), state: "loggedOut", qr: null });
       } else {
         const attempts = current.attempts + 1;
         const exhausted = attempts > RECONNECT_MAX_ATTEMPTS;
         sockets.set(number, {
-          ...current,
+          ...sockets.get(number),
           ...countReconnect(current),
           state: exhausted ? "stalled" : "reconnecting",
           attempts,
+          qr: null,
         });
         // Экспоненциальный backoff с потолком и капом попыток. Плоские пять
         // секунд давали бы ~17k подключений в сутки с одного адреса на номер,
@@ -150,6 +159,16 @@ async function socketOf(number) {
   return sockets.get(number).sock;
 }
 
+async function waitForQr(number) {
+  const start = Date.now();
+  while (Date.now() - start < QR_WAIT_MS) {
+    const qr = sockets.get(number)?.qr;
+    if (qr) return qr;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  return null;
+}
+
 const routes = {
   // type=text — единственный вид боевой отправки; audio/image нужны прогреву,
   // которому требуется разнообразный контент. Медиа приезжает как путь к файлу
@@ -193,6 +212,12 @@ const routes = {
   "POST /pair": async ({ number }) => {
     const sock = await socketOf(number);
     return { code: await sock.requestPairingCode(number.replace(/\D/g, "")) };
+  },
+  "POST /qr": async ({ number }) => {
+    await socketOf(number);
+    const qr = await waitForQr(number);
+    if (!qr) throw new Error("QR не пришёл вовремя");
+    return { qr };
   },
 };
 

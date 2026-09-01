@@ -30,6 +30,26 @@ def test_register_starts_in_new(db):
     assert numbers.get(db, "+77001112233")["started_at"] == "2026-08-28T12:00:00+00:00"
 
 
+def test_register_with_skip_warmup_starts_active(db):
+    numbers.register(db, "+77001112233", "sessions/x", NOW, skip_warmup=True)
+    row = numbers.get(db, "+77001112233")
+    assert row["status"] == "active"
+    assert row["skip_warmup"] == 1
+
+
+def test_mark_warmed_flips_an_existing_number_to_active(db):
+    numbers.register(db, "+77001112233", "sessions/x", NOW)
+    numbers.mark_warmed(db, "+77001112233")
+    row = numbers.get(db, "+77001112233")
+    assert row["status"] == "active"
+    assert row["skip_warmup"] == 1
+
+
+def test_mark_warmed_on_unknown_number_raises(db):
+    with pytest.raises(numbers.UnknownNumberError):
+        numbers.mark_warmed(db, "+70000000000")
+
+
 def test_get_unknown_number_raises(db):
     with pytest.raises(numbers.UnknownNumberError):
         numbers.get(db, "+70000000000")

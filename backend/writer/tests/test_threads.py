@@ -106,3 +106,46 @@ def test_a_verdict_leaves_no_draft(monkeypatch):
 
     thread = {"thread_id": "+77010000001", "seed": {"name": "Ромашка", "signals": []}}
     assert route._seller_move(None, thread, []) is None
+
+def test_a_stored_draft_keeps_its_prompt():
+    """Промпт — аудит: сегодняшний seed и история завтра будут другими, а
+    текст писался по сегодняшним."""
+    db = thread_store.connect(":memory:")
+    thread_store.open_thread(db, "+77010000001", "c1", {"name": "Ромашка", "signals": []})
+
+    message_id = thread_store.add_draft(
+        db, "+77010000001", "привет", "crm_widget",
+        prompt=[("system", "правила"), ("human", "факты")],
+        model="deepseek/deepseek-v4-flash")
+
+    stored = thread_store.draft_prompt(db, message_id)
+    assert stored["prompt"] == [["system", "правила"], ["human", "факты"]]
+    assert stored["model"] == "deepseek/deepseek-v4-flash"
+    db.close()
+
+
+def test_an_old_draft_without_a_prompt_answers_nothing():
+    """Черновики, написанные до этой правки, промпта не имеют. Реконструировать
+    его задним числом значило бы выдать догадку за факт."""
+    db = thread_store.connect(":memory:")
+    thread_store.open_thread(db, "+77010000001", "c1", {"name": "Ромашка", "signals": []})
+    message_id = thread_store.add_draft(db, "+77010000001", "привет", "crm_widget")
+    assert thread_store.draft_prompt(db, message_id) is None
+    db.close()
+
+
+def test_prompt_columns_are_added_to_an_existing_table(tmp_path):
+    """База переписки у всех уже создана, и CREATE TABLE IF NOT EXISTS её не
+    тронет — колонки обязан долить владелец таблицы."""
+    import sqlite3
+
+    path = tmp_path / "state.db"
+    with sqlite3.connect(path) as old:      # таблица без prompt/model
+        old.execute("CREATE TABLE messages (message_id INTEGER PRIMARY KEY,"
+                    " thread_id TEXT NOT NULL, role TEXT NOT NULL, draft_text TEXT,"
+                    " sent_text TEXT, angle TEXT, created_at TEXT NOT NULL, sent_at TEXT)")
+
+    db = thread_store.connect(path)
+    columns = {row[1] for row in db.execute("PRAGMA table_info(messages)")}
+    assert {"prompt", "model"} <= columns
+    db.close()

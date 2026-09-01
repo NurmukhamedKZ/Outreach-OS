@@ -70,6 +70,8 @@ CONVERSATION_COLUMNS = (
     ("messages", "handled_at", "TEXT"),
     ("messages", "queued_text", "TEXT"),
     ("messages", "handle_attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ("messages", "prompt", "TEXT"),
+    ("messages", "model", "TEXT"),
 )
 
 
@@ -86,6 +88,9 @@ def apply(db: sqlite3.Connection) -> None:
     # диалоге своё окно) и дашборду, где холодное касание и ответ сейчас
     # неразличимы. DEFAULT 'cold' — то, чем были все строки до этой части.
     ensure_column(db, "outbox", "kind", "TEXT NOT NULL DEFAULT 'cold'")
+    # Номер, уже прогретый вне нашей системы: подключается сразу боевым, минуя
+    # календарь warmup.plan() целиком (см. warmup.plan_for).
+    ensure_column(db, "numbers", "skip_warmup", "INTEGER NOT NULL DEFAULT 0")
     _conversation_state(db)
     db.commit()
 
@@ -94,10 +99,17 @@ def _conversation_state(db: sqlite3.Connection) -> None:
     """Состояние треда и сообщения. Ничего не делает, пока таблиц переписки нет:
     их создаёт владелец (writer/collector), и порядок старта не гарантирован."""
     if ensure_column(db, "threads", "status", "TEXT NOT NULL DEFAULT 'queued'"):
-        # Треды, существовавшие до системы 3, вёл человек: они остаются в
-        # состоянии, из которого автомат не пишет. Новые приезжают в 'queued'
-        # значением по умолчанию — open_thread системы 2 о колонке не знает.
-        db.execute("UPDATE threads SET status = 'escalated'")
+        # Эскалируем не все старые треды, а только те, где уже была реальная
+        # переписка (sent_text) — то есть их вёл человек. Черновик без единого
+        # отправленного сообщения не отличить от треда, который просто ждал
+        # первого запуска sender'а на этой базе: гнать его в escalated значило
+        # бы хоронить лида, до которого автомат ещё не успел дойти.
+        db.execute("""
+            UPDATE threads SET status = 'escalated'
+            WHERE thread_id IN (
+                SELECT DISTINCT thread_id FROM messages WHERE sent_text IS NOT NULL
+            )
+        """)
     for table, column, ddl in CONVERSATION_COLUMNS:
         ensure_column(db, table, column, ddl)
     if _has_table(db, "messages"):

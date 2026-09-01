@@ -11,7 +11,7 @@ from datetime import datetime
 
 STATUSES = ("new", "warming", "active", "quarantined", "banned")
 
-FIELDS = "number, session_dir, status, started_at, note"
+FIELDS = "number, session_dir, status, started_at, note, skip_warmup"
 
 
 NUMBER = re.compile(r"^\+\d{10,15}$")
@@ -40,10 +40,14 @@ def normalize(raw: str) -> str:
     return candidate
 
 
-def register(db: sqlite3.Connection, number: str, session_dir: str, now: datetime) -> None:
+def register(db: sqlite3.Connection, number: str, session_dir: str, now: datetime,
+             skip_warmup: bool = False) -> None:
+    """`skip_warmup` — номер, уже прогретый вне нашей системы: сразу `active`
+    и без похода через календарь (см. `warmup.plan_for`)."""
+    status = "active" if skip_warmup else "new"
     db.execute(
-        f"INSERT INTO numbers ({FIELDS}) VALUES (?, ?, 'new', ?, NULL)",
-        (number, session_dir, stamp(now)))
+        f"INSERT INTO numbers ({FIELDS}) VALUES (?, ?, ?, ?, NULL, ?)",
+        (number, session_dir, status, stamp(now), int(skip_warmup)))
     db.commit()
 
 
@@ -72,6 +76,16 @@ def set_status(db: sqlite3.Connection, number: str, status: str,
     else:
         db.execute("UPDATE numbers SET status = ?, note = ? WHERE number = ?",
                    (status, note, number))
+    db.commit()
+
+
+def mark_warmed(db: sqlite3.Connection, number: str) -> None:
+    """Ручная отметка постфактум: та же семантика, что `skip_warmup` при
+    регистрации (см. `warmup.plan_for`) — номер уже прогрет вне нашей системы,
+    сразу боевой, календарь ему больше не указ."""
+    get(db, number)
+    db.execute("UPDATE numbers SET skip_warmup = 1, status = 'active' WHERE number = ?",
+              (number,))
     db.commit()
 
 

@@ -96,15 +96,34 @@ def test_conversation_columns_are_added(db):
 
 
 def test_threads_that_existed_before_system_3_stay_with_the_human(db):
-    """Их вёл человек. Миграция не имеет права отдать их роботу."""
+    """Их вёл человек (есть отправленное сообщение). Миграция не имеет права
+    отдать их роботу."""
     conversation_tables(db)
     db.execute("INSERT INTO threads VALUES ('+77010000001', 'c1', '{}', '2026-08-01T10:00:00+00:00')")
+    db.execute("INSERT INTO messages (thread_id, role, sent_text, created_at)"
+               " VALUES ('+77010000001', 'outgoing', 'привет', '2026-08-01T10:00:00+00:00')")
     db.commit()
 
     migrate.apply(db)
 
     status = db.execute("SELECT status FROM threads").fetchone()[0]
     assert status == "escalated", status
+
+
+def test_draft_only_thread_that_predates_the_column_is_queued_not_escalated(db):
+    """Черновик без единого отправленного сообщения не отличить от треда,
+    который просто ждал первого запуска sender'а на этой базе — эскалировать
+    его значит хоронить лида, до которого автомат ещё не дошёл."""
+    conversation_tables(db)
+    db.execute("INSERT INTO threads VALUES ('+77010000003', 'c3', '{}', '2026-08-01T10:00:00+00:00')")
+    db.execute("INSERT INTO messages (thread_id, role, draft_text, created_at)"
+               " VALUES ('+77010000003', 'outgoing', 'черновик', '2026-08-01T10:00:00+00:00')")
+    db.commit()
+
+    migrate.apply(db)
+
+    status = db.execute("SELECT status FROM threads").fetchone()[0]
+    assert status == "queued", status
 
 
 def test_thread_opened_after_migration_is_queued(db):

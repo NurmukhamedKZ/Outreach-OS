@@ -73,3 +73,44 @@ def test_cold_touches_forbidden_before_day_eleven():
     """Холодные касания — примерно с 11-го дня, не с четвёртого."""
     assert warmup.plan(STARTED, at(10), WARMUP).cold_allowed is False
     assert warmup.plan(STARTED, at(11), WARMUP).cold_allowed is True
+
+
+# --- calendar(): справка для веба, без похода в базу -----------------------
+
+def test_calendar_has_one_row_per_phase_in_order():
+    rows = warmup.calendar(WARMUP)
+    assert [row["phase"] for row in rows] == [
+        warmup.Phase.socket_delay, warmup.Phase.passive,
+        warmup.Phase.internal, warmup.Phase.cold,
+    ]
+
+
+def test_calendar_day_ranges_follow_the_config():
+    rows = {row["phase"]: row for row in warmup.calendar(WARMUP)}
+    assert rows[warmup.Phase.socket_delay]["days"] == "1"
+    assert rows[warmup.Phase.passive]["days"] == "2–4"
+    assert rows[warmup.Phase.internal]["days"] == "5–10"
+    assert rows[warmup.Phase.cold]["days"] == "11+"
+
+
+def test_plan_for_with_skip_warmup_ignores_the_calendar():
+    """Номер, подключённый без прогрева, — сразу боевой: день 1 по календарю
+    был бы socket_delay, но флаг переопределяет фазу и лимит целиком."""
+    row = {"started_at": STARTED, "skip_warmup": 1}
+    plan = warmup.plan_for(row, at(1), WARMUP)
+    assert plan.phase is warmup.Phase.cold
+    assert plan.daily_limit == WARMUP["ceiling"]
+    assert plan.cold_allowed is True
+
+
+def test_plan_for_without_skip_warmup_matches_plan():
+    row = {"started_at": STARTED, "skip_warmup": 0}
+    assert warmup.plan_for(row, at(5), WARMUP) == warmup.plan(STARTED, at(5), WARMUP)
+
+
+def test_calendar_limits_show_first_and_last_ramp_step():
+    rows = {row["phase"]: row for row in warmup.calendar(WARMUP)}
+    assert rows[warmup.Phase.socket_delay]["daily_limit"] == "0"
+    assert rows[warmup.Phase.passive]["daily_limit"] == "0 (входящие раз в 2 ч)"
+    assert rows[warmup.Phase.internal]["daily_limit"] == "6 → 60 (рампа)"
+    assert rows[warmup.Phase.cold]["daily_limit"] == "5 → 30, потолок 30"

@@ -55,7 +55,7 @@ def test_system_role_carries_offer(monkeypatch):
     result = agent.draft(fake, seed, [], TASK,
                           session_id="thread-1", name="sender.followup",
                           offer=CONFIG["offer"]["text"])
-    assert result.angle == "ads_platform", result
+    assert result.draft.angle == "ads_platform", result
     assert fake.seen[0][0] == "system", fake.seen[0]
     assert CONFIG["offer"]["text"].strip()[:40] in fake.seen[0][1], "оффер не дошёл до модели"
     assert fake.seen_config["run_name"] == "sender.followup"
@@ -97,7 +97,7 @@ def test_draft_retries_transport_error_then_succeeds(monkeypatch):
 
     result = agent.draft(flaky, seed, [], agent.FIRST, session_id="thread-1", name="writer.first")
 
-    assert result.angle == "ads_platform"
+    assert result.draft.angle == "ads_platform"
     assert flaky.calls == agent.TRANSPORT_RETRIES
 
 

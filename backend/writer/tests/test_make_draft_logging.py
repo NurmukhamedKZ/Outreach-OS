@@ -16,7 +16,7 @@ def test_make_draft_tags_logs_with_company_id(monkeypatch):
     monkeypatch.setattr(routes, "channel_of", lambda leads, company_id: ("whatsapp", "t7"))
     monkeypatch.setattr(routes.thread_store, "thread", lambda db, thread_id: {"seed": {}})
     monkeypatch.setattr(routes.thread_store, "history", lambda db, thread_id: [])
-    monkeypatch.setattr(routes.thread_store, "add_draft", lambda *a: None)
+    monkeypatch.setattr(routes.thread_store, "add_draft", lambda *a, **kw: None)
     monkeypatch.setattr(routes, "_writer_move", lambda kind, threads, thread, history: None)
     monkeypatch.setattr(routes.agent, "model", lambda config: "llm-stub")
     monkeypatch.setattr(routes, "state", lambda leads, threads, company_id: {"thread_id": "t7"})
@@ -25,7 +25,9 @@ def test_make_draft_tags_logs_with_company_id(monkeypatch):
 
     def fake_draft(*a, **kw):
         seen_entity.append(logctx.current_entity())
-        return SimpleNamespace(stop=False, text="hi", angle="pain")
+        return SimpleNamespace(
+            draft=SimpleNamespace(stop=False, text="hi", angle="pain"),
+            prompt=[], model="")
 
     monkeypatch.setattr(routes.agent, "draft", fake_draft)
     monkeypatch.setattr(routes, "_writer_move", fake_draft)

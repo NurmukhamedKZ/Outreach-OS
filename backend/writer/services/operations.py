@@ -31,12 +31,15 @@ def open_new_threads(ctx):
                 thread_store.open_thread(threads, lead["thread_id"], lead["company_id"], lead["seed"])
                 proposal = agent.draft(llm, lead["seed"], [], agent.FIRST,
                                         session_id=lead["thread_id"], name="writer.first",
-                                        offer=CONFIG["offer"]["text"])
-                if proposal.stop:
+                                        offer=CONFIG["offer"]["text"],
+                                        model_name=CONFIG["llm"]["model"])
+                if proposal.draft.stop:
                     ctx.log(f"{lead['seed']['name']}: агент советует не писать — повода в данных нет")
                     continue
-                thread_store.add_draft(threads, lead["thread_id"], proposal.text, proposal.angle)
-                ctx.log(f"{lead['seed']['name']}: черновик готов ({proposal.angle})")
+                thread_store.add_draft(threads, lead["thread_id"], proposal.draft.text,
+                                       proposal.draft.angle,
+                                       prompt=proposal.prompt, model=proposal.model)
+                ctx.log(f"{lead['seed']['name']}: черновик готов ({proposal.draft.angle})")
         return {"drafted": len(fresh)}
     finally:
         leads.close()

@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 import observability
+from writer.schemas.outreach import Draft
 from writer.services import agent
 
 
@@ -42,7 +43,7 @@ def test_draft_logs_langfuse_trace_when_handler_present(monkeypatch):
     fake = FakeLLM(answer="draft-result")
     result = agent.draft(fake, SEED, [], agent.FIRST, session_id="t1", name="writer.first")
 
-    assert result == "draft-result"
+    assert result.draft == "draft-result"
     assert calls == [fake_handler]
 
 
@@ -64,5 +65,24 @@ def test_draft_still_retries_transport_error_then_succeeds(monkeypatch):
 
     result = agent.draft(flaky, SEED, [], agent.FIRST, session_id="t1", name="writer.first")
 
-    assert result == "ok"
+    assert result.draft == "ok"
     assert flaky.calls == agent.TRANSPORT_RETRIES
+
+
+def test_draft_returns_the_prompt_that_was_sent():
+    """Промпт — аудит, а не реконструкция: seed и история завтра будут другими,
+    а текст писался по сегодняшним."""
+    sent = {}
+
+    class FakeLLM2:
+        def invoke(self, messages, config=None):
+            sent["messages"] = messages
+            return Draft(text="привет", angle="crm_widget", stop=False)
+
+    attempt = agent.draft(FakeLLM2(), SEED, [], agent.FIRST,
+                          session_id="+77001112233", name="writer.first", offer="оффер")
+    assert attempt.draft.text == "привет"
+    assert attempt.prompt == [list(pair) for pair in sent["messages"]] or \
+           attempt.prompt == sent["messages"]
+    assert attempt.prompt[0][0] == "system"
+    assert "оффер" in attempt.prompt[0][1]

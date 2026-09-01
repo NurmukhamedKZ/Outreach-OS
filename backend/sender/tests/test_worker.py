@@ -6,6 +6,8 @@
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from sender.db import conversation, numbers, outbox
 from sender.services import config, worker
 from sender.tests.conftest import FakeTransport
@@ -15,6 +17,14 @@ CONFIG = config.load()
 # Среда, 07:00 UTC = 12:00 в Алматы: середина рабочего окна.
 INSIDE = datetime(2026, 9, 2, 7, 0, tzinfo=timezone.utc)
 NIGHT = datetime(2026, 9, 2, 20, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _autopilot_on(monkeypatch):
+    """Этот файл проверяет гейты и отправку уже стоящей строки, а не политику
+    автопилота — та тестируется в test_worker_autopilot.py. Держим его
+    включённым, чтобы kill switch (off) не глушил тесты, которые о нём не знают."""
+    monkeypatch.setattr(worker.sender_config, "autopilot", lambda: "full")
 
 
 def ready(db, thread_id="+77010000001", status="queued", number="+77001112233",

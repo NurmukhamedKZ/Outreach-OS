@@ -9,6 +9,7 @@
 записью в messages/outbox.
 """
 
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -196,14 +197,17 @@ def add_incoming(db: sqlite3.Connection, thread_id: str, text: str,
     return cursor.lastrowid
 
 
-def add_draft(db: sqlite3.Connection, thread_id: str, text: str, angle: str) -> int:
+def add_draft(db: sqlite3.Connection, thread_id: str, text: str, angle: str,
+              prompt: list | None = None, model: str | None = None) -> int:
     """Черновик автомата. Копия thread_store.add_draft, отличающаяся ровно
     отсутствием commit: черновик, счётчик auto_replies и отметка обработки
     обязаны лечь одной транзакцией."""
     cursor = db.execute(
-        "INSERT INTO messages (thread_id, role, draft_text, angle, created_at)"
-        " VALUES (?, 'outgoing', ?, ?, ?)",
-        (thread_id, text, angle, now_stamp()))
+        "INSERT INTO messages (thread_id, role, draft_text, angle, prompt, model,"
+        " created_at) VALUES (?, 'outgoing', ?, ?, ?, ?, ?)",
+        (thread_id, text, angle,
+         json.dumps(prompt, ensure_ascii=False) if prompt else None,
+         model, now_stamp()))
     return cursor.lastrowid
 
 

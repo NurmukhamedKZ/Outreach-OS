@@ -40,7 +40,8 @@ def matured(db, monkeypatch):
 def пишет(monkeypatch, draft):
     monkeypatch.setattr(followup, "_llm", lambda: object())
     monkeypatch.setattr(followup, "_write",
-                        lambda llm, card, history, task, offer: draft)
+                        lambda llm, card, history, task, offer:
+                        agent.Attempt(draft=draft, prompt=[], model=""))
 
 
 async def test_the_model_is_actually_reached_with_a_live_connection(matured, monkeypatch):
@@ -50,9 +51,9 @@ async def test_the_model_is_actually_reached_with_a_live_connection(matured, mon
     трассировку каждые двадцать секунд до конца времён."""
     seen = {}
 
-    def draft(llm, seed, history, task, *, session_id, name, offer=""):
+    def draft(llm, seed, history, task, *, session_id, name, offer="", model_name=""):
         seen["seed"], seen["task"], seen["name"] = seed, task, name
-        return FakeDraft()
+        return agent.Attempt(draft=FakeDraft(), prompt=[], model="")
 
     monkeypatch.setattr(followup, "_llm", lambda: object())
     monkeypatch.setattr(agent, "draft", draft)

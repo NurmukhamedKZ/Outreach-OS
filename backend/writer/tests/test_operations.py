@@ -53,10 +53,12 @@ def test_open_new_threads_skips_existing_threads_and_drafts_only_new(monkeypatch
                          lambda db, thread_id: thread_id in existing_threads)
     monkeypatch.setattr(operations.thread_store, "open_thread", lambda *a: None)
     monkeypatch.setattr(operations.thread_store, "add_draft",
-                         lambda db, thread_id, text, angle: drafted.append(thread_id))
+                         lambda db, thread_id, text, angle, **kw: drafted.append(thread_id))
     monkeypatch.setattr(operations.agent, "model", lambda config: "llm-stub")
     monkeypatch.setattr(operations.agent, "draft",
-                         lambda *a, **kw: SimpleNamespace(stop=False, text="hi", angle="pain"))
+                         lambda *a, **kw: SimpleNamespace(
+                             draft=SimpleNamespace(stop=False, text="hi", angle="pain"),
+                             prompt=[], model=""))
 
     ctx = DummyCtx()
     result = operations.open_new_threads(ctx)
@@ -87,14 +89,16 @@ def test_open_new_threads_tags_draft_calls_with_thread_id(monkeypatch):
     monkeypatch.setattr(operations.thread_store, "connect", lambda path: SimpleNamespace(close=lambda: None))
     monkeypatch.setattr(operations.thread_store, "thread", lambda db, thread_id: False)
     monkeypatch.setattr(operations.thread_store, "open_thread", lambda *a: None)
-    monkeypatch.setattr(operations.thread_store, "add_draft", lambda *a: None)
+    monkeypatch.setattr(operations.thread_store, "add_draft", lambda *a, **kw: None)
     monkeypatch.setattr(operations.agent, "model", lambda config: "llm-stub")
 
     seen_entity = []
 
     def fake_draft(*a, **kw):
         seen_entity.append(logctx.current_entity())
-        return SimpleNamespace(stop=False, text="hi", angle="pain")
+        return SimpleNamespace(
+            draft=SimpleNamespace(stop=False, text="hi", angle="pain"),
+            prompt=[], model="")
 
     monkeypatch.setattr(operations.agent, "draft", fake_draft)
 

@@ -52,6 +52,10 @@ class Transport:
         body = await self._post("/pair", {"number": number})
         return body["code"]
 
+    async def qr(self, number: str) -> str:
+        body = await self._post("/qr", {"number": number})
+        return body["qr"]
+
     async def health(self) -> dict[str, dict]:
         try:
             response = await self._client.get(f"{self._base_url}/health",

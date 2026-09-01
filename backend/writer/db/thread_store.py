@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS messages (
   draft_text TEXT,               -- что предложила модель; у incoming пусто
   sent_text  TEXT,               -- что реально ушло или пришло; пусто = черновик
   angle      TEXT,
+  prompt     TEXT,               -- json: полный запрос, ушедший в модель
+  model      TEXT,               -- чем сгенерировано
   created_at TEXT NOT NULL,
   sent_at    TEXT
 );
@@ -40,7 +42,20 @@ CREATE INDEX IF NOT EXISTS messages_thread ON messages (thread_id, message_id);
 def connect(path):
     db = sqlite3.connect(path)
     db.executescript(SCHEMA)
+    _ensure_prompt_columns(db)
     return db
+
+
+def _ensure_prompt_columns(db):
+    """CREATE TABLE IF NOT EXISTS не трогает существующую таблицу, а базы
+    переписки у всех давно созданы. Колонки владельца доливает владелец:
+    полагаться на то, что до него добежит migrate системы 3, значит уронить
+    writer везде, где система 3 не стартовала."""
+    existing = {row[1] for row in db.execute("PRAGMA table_info(messages)")}
+    for column in ("prompt", "model"):
+        if column not in existing:
+            db.execute(f"ALTER TABLE messages ADD COLUMN {column} TEXT")
+    db.commit()
 
 
 def now():
@@ -128,14 +143,26 @@ def pending_draft(db, thread_id):
     return {"message_id": row[0], "draft_text": row[1], "angle": row[2], "created_at": row[3]}
 
 
-def add_draft(db, thread_id, text, angle):
+def add_draft(db, thread_id, text, angle, prompt=None, model=None):
     cursor = db.execute(
-        "INSERT INTO messages (thread_id, role, draft_text, angle, created_at)"
-        " VALUES (?, 'outgoing', ?, ?, ?)",
-        (thread_id, text, angle, now()),
+        "INSERT INTO messages (thread_id, role, draft_text, angle, prompt, model, created_at)"
+        " VALUES (?, 'outgoing', ?, ?, ?, ?, ?)",
+        (thread_id, text, angle,
+         json.dumps(prompt, ensure_ascii=False) if prompt else None,
+         model, now()),
     )
     db.commit()
     return cursor.lastrowid
+
+
+def draft_prompt(db, message_id):
+    """Полный запрос, ушедший в модель. None — черновик написан до того, как
+    промпт начали сохранять."""
+    row = db.execute("SELECT prompt, model FROM messages WHERE message_id = ?",
+                     (message_id,)).fetchone()
+    if not row or not row[0]:
+        return None
+    return {"prompt": json.loads(row[0]), "model": row[1]}
 
 
 def add_incoming(db, thread_id, text, provider_id=None):

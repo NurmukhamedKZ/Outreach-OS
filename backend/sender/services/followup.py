@@ -42,9 +42,10 @@ async def touch_one(db, transport, config: dict, now: datetime) -> str | None:
         card = thread_store.thread(db, thread["thread_id"])
         history = thread_store.history(db, thread["thread_id"])
         task = writer_followup.task(db, card)
-        draft = await asyncio.to_thread(
+        attempt = await asyncio.to_thread(
             _write, _llm(), card, history, task,
             writer_config.load()["offer"]["text"])
+        draft = attempt.draft
     except Exception:
         # Срок остаётся на месте: следующий тик попробует снова, и лид не
         # теряет касание из-за одного таймаута.
@@ -59,7 +60,8 @@ async def touch_one(db, transport, config: dict, now: datetime) -> str | None:
         return "exhausted"
 
     with db:
-        conversation.add_draft(db, thread["thread_id"], draft.text, draft.angle)
+        conversation.add_draft(db, thread["thread_id"], draft.text, draft.angle,
+                               prompt=attempt.prompt, model=attempt.model)
         conversation.clear_schedule(db, thread["thread_id"])
     if sender_config.autopilot() not in FULL_MODES:
         log.info("касание в тред %s осталось черновиком: автопилот не полный",
@@ -102,4 +104,5 @@ def _write(llm, card: dict, history: list[dict], task: str, offer: str):
     with logctx.entity(card["thread_id"]):
         return agent.draft(llm, card["seed"], history, task,
                            session_id=card["thread_id"],
-                           name="sender.followup", offer=offer)
+                           name="sender.followup", offer=offer,
+                           model_name=writer_config.load()["llm"]["model"])

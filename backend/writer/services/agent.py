@@ -11,6 +11,7 @@ draft -> правка оператора -> отправка требует, ч�
 
 import threading
 import time
+from dataclasses import dataclass
 
 import httpx
 from langchain_core.exceptions import OutputParserException
@@ -22,6 +23,16 @@ import logctx
 import observability
 from config import settings
 from writer.schemas.outreach import Draft
+
+
+@dataclass(frozen=True)
+class Attempt:
+    """Ход агента вместе с уликой: что именно ушло в модель и какой моделью
+    отвечено. Без этого «почему модель написала это» отвечать нечем —
+    сегодняшний seed и история уже другие."""
+    draft: Draft
+    prompt: list[tuple[str, str]]
+    model: str
 
 # см. collector/services/pipeline/llm.py::NO_SDK_RETRY — max_retries=0 не
 # отключает ретраи SDK (падает на его часовой дефолт), нужен явный оверрайд.
@@ -99,7 +110,7 @@ def _log_trace_background(handler):
     threading.Thread(target=run, daemon=True).start()
 
 
-def draft(llm, seed, history, task, *, session_id, name, offer=""):
+def draft(llm, seed, history, task, *, session_id, name, offer="", model_name=""):
     handler = observability.langfuse_handler()
     messages = [
         ("system", SYSTEM.format(offer=offer)),
@@ -115,7 +126,7 @@ def draft(llm, seed, history, task, *, session_id, name, offer=""):
             result = llm.invoke(messages, config=config)
             if handler:
                 _log_trace_background(handler)
-            return result
+            return Attempt(draft=result, prompt=messages, model=model_name)
         except (httpx.TransportError, OutputParserException, ResponseValidationError):
             if attempt == TRANSPORT_RETRIES:
                 raise

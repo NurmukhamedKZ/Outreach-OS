@@ -24,7 +24,7 @@ class NoNumberAvailableError(Exception):
 
 def capacity(db: sqlite3.Connection, number: str, now: datetime, config: dict) -> int:
     row = numbers.get(db, number)
-    limit = warmup.plan(row["started_at"], now, config["warmup"]).daily_limit
+    limit = warmup.plan_for(row, now, config["warmup"]).daily_limit
     return max(0, limit - numbers.sent_today(db, number, now))
 
 

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from sender.db import migrate, numbers
+from sender.db import migrate, numbers, outbox
 from sender.services import config, warmup
 from sender.transport import Sent
 
@@ -205,3 +205,19 @@ async def test_banned_number_neither_sends_nor_receives(db):
 
     assert await warmup.tick(db, transport, CONFIG, at(5)) is None
     assert transport.calls == []
+
+
+async def test_successful_send_shows_up_in_the_warmup_log(db):
+    """recent() скрывает прогревочные строки за message_id IS NOT NULL — веб
+    для них смотрит на warmup_log(), а не на очередь боевых отправок."""
+    add(db, "+7700", "warming")
+    add(db, "+7701", "active")
+    transport = FakeTransport()
+
+    sender_number = await warmup.tick(db, transport, CONFIG, at(5))
+
+    log = outbox.warmup_log(db, limit=10)
+    assert len(log) == 1
+    assert log[0]["outbox_id"] is not None
+    assert log[0]["our_number"] == sender_number
+    assert log[0]["status"] == "sent"

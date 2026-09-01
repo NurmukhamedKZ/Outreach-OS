@@ -207,6 +207,16 @@ def recent(db: sqlite3.Connection, limit: int,
     return [dict(row) for row in rows]
 
 
+def warmup_log(db: sqlite3.Connection, limit: int) -> list[dict]:
+    """Последние прогревочные отправки: кто кому и с каким исходом.
+    recent() их скрывает через WHERE message_id IS NOT NULL — у прогрева его
+    нет, и без этой функции они на вебе не видны вовсе."""
+    rows = db.execute(
+        "SELECT outbox_id, our_number, recipient, status, updated_at FROM outbox"
+        " WHERE kind = 'warmup' ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(row) for row in rows]
+
+
 def _count(db: sqlite3.Connection, condition: str, arguments: tuple = ()) -> int:
     return db.execute(
         f"SELECT count(*) FROM outbox WHERE {condition}", arguments).fetchone()[0]
