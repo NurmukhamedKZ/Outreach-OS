@@ -170,15 +170,26 @@ def test_workers_answer_whether_a_daemon_is_alive(journal):
     assert workers["sender.warmup"]["last_at"] is not None
 
 
-def test_prune_drops_only_the_old(journal):
-    stale = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds")
+def test_prune_drops_only_the_old(journal, tmp_path):
+    import sqlite3
+
     journal.record("sender.tick", "idle")
-    with journal._connect() as db:
+    stale = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds")
+    with sqlite3.connect(tmp_path / "state.db") as db:
         db.execute("UPDATE activity SET at = ?, last_at = ?", (stale, stale))
-        db.commit()
     journal.record("sender.tick", "sent", subject="+77001112233")
+
     assert journal.prune(days=14) == 1
     assert [event["outcome"] for event in journal.recent()] == ["sent"]
+
+
+def test_record_returns_the_event_it_wrote(journal):
+    """Возврат нужен ленте: публиковать событие в SSE перечитыванием базы
+    значило бы лишний запрос на каждый тик и падение на пустом журнале."""
+    journal.record("sender.tick", "idle")
+    event = journal.record("sender.tick", "idle")
+    assert event["outcome"] == "idle"
+    assert event["repeats"] == 2
 
 
 def test_journal_without_a_path_refuses_loudly(tmp_path):
@@ -234,6 +245,11 @@ CREATE TABLE IF NOT EXISTS activity (
 CREATE INDEX IF NOT EXISTS activity_recent ON activity (last_at DESC);
 """
 
+# В state.db одновременно пишут вебхук, тик воркера и воркер джоб. Журнал
+# приходит четвёртым писателем со своим соединением, и без ожидания первая же
+# встреча двух записей дала бы «database is locked» на ровном месте.
+BUSY_TIMEOUT_MS = 5000
+
 _path: Path | None = None
 
 
@@ -242,26 +258,44 @@ class NotConfiguredError(RuntimeError):
 
 
 def use(path: str | Path | None) -> None:
-    """Шов: где лежит state.db, знает сборщик приложения, а не журнал."""
+    """Шов: где лежит state.db, знает сборщик приложения, а не журнал.
+
+    Схема применяется здесь, один раз за процесс: executescript на каждой
+    записи открывал бы лишнюю транзакцию записи три раза в минуту — ровно
+    там, где за право писать и так стоит очередь.
+    """
     global _path
     _path = Path(path) if path is not None else None
+    if _path is None:
+        return
+    with closing(_open()) as db, db:
+        db.executescript(SCHEMA)
 
 
 def record(actor: str, outcome: str, subject: str | None = None,
-           detail: str | None = None) -> None:
-    """Событие в журнал. Повтор последней строки не создаёт новую."""
+           detail: str | None = None) -> dict:
+    """Событие в журнал. Повтор последней строки не создаёт новую.
+
+    Зовётся ВНЕ транзакции вызывающего: собственное соединение, попав внутрь
+    чужого `with db:`, ждало бы освобождения базы, которое наступит только
+    после его же возврата, — и падало бы по таймауту. Это не педантичность:
+    отдельное соединение здесь и нужно затем, чтобы след пережил откат тика.
+    """
     stamp = _now()
+    event = {"at": stamp, "last_at": stamp, "repeats": 1, "actor": actor,
+             "outcome": outcome, "subject": subject, "detail": detail}
     with closing(_connect()) as db, db:
         last = db.execute(
-            "SELECT id, actor, outcome, subject FROM activity ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+            "SELECT id, actor, outcome, subject, at, repeats FROM activity"
+            " ORDER BY id DESC LIMIT 1").fetchone()
         if last is not None and (last[1], last[2], last[3]) == (actor, outcome, subject):
             db.execute("UPDATE activity SET repeats = repeats + 1, last_at = ?"
                        " WHERE id = ?", (stamp, last[0]))
-            return
+            return {**event, "at": last[4], "repeats": last[5] + 1}
         db.execute(
             "INSERT INTO activity (at, last_at, actor, outcome, subject, detail)"
             " VALUES (?, ?, ?, ?, ?, ?)", (stamp, stamp, actor, outcome, subject, detail))
+    return event
 
 
 def recent(limit: int = 200, actor: str | None = None) -> list[dict]:
@@ -295,10 +329,13 @@ def _connect() -> sqlite3.Connection:
         raise NotConfiguredError(
             "activity.use(path) не звали — журналу некуда писать. "
             "В приложении это делает collector/api.py, в тестах — фикстура.")
+    return _open()
+
+
+def _open() -> sqlite3.Connection:
     db = sqlite3.connect(_path)
     db.row_factory = sqlite3.Row
-    db.executescript(SCHEMA)
-    db.commit()
+    db.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
     return db
 
 
@@ -479,7 +516,13 @@ async def loop(db_factory, transport_factory, publish=None) -> None:
         await asyncio.sleep(interval)
 ```
 
-Записи в шагах — рядом с существующими `log.info`, чтобы журнал и лог не разъезжались:
+Записи в шагах — рядом с существующими `log.info`, чтобы журнал и лог не
+разъезжались, и **всегда после закрытия блока `with db:`**, а не внутри него.
+Причина не стилистическая: `record` пишет своим соединением, и внутри открытой
+транзакции вызывающего оно ждало бы освобождения базы, которое наступит только
+после его же возврата, — `database is locked` через пять секунд на каждой
+отправке. Все существующие `log.info` в этих местах уже стоят за пределами
+транзакции, так что достаточно ставить запись рядом с ними:
 
 - в `_send`, после подтверждённой отправки:
   `activity.record("sender.tick", "sent", subject=row["our_number"], detail=f"тред {row['thread_id']}")`
@@ -690,10 +733,25 @@ Expected: PASS
 
 Событие с типом `activity` публикуется тем же `bus.publish`, что и `refresh`. В `worker.loop` рядом с публикацией `refresh` добавь:
 
+`record` возвращает записанное событие — его и публикуем. Перечитывать базу
+ради последней строки значило бы лишний запрос на каждый тик и `IndexError` на
+пустом журнале:
+
 ```python
-if publish is not None:
-    publish({"type": "activity", "event": activity.recent(limit=1)[0]})
+async def loop_once(db, transport, settings: dict, now: datetime) -> str | None:
+    outcome = await tick(db, transport, settings, now)
+    if outcome is None:
+        event = activity.record("sender.tick", "idle")
+        if publish is not None:
+            publish({"type": "activity", "event": event})
+    return outcome
 ```
+
+`publish` для этого приходит в `loop_once` четвёртым параметром (по умолчанию
+`None`), тем же швом, каким он уже приходит в `loop`. Записи из шагов
+(`_send`, `_process`) в SSE не публикуются: страница «Процессы» дотянет их
+следующим `fetchActivity`, а протаскивать шину в каждый шаг воркера значило бы
+раздать системе 3 знание о системе 1.
 
 В докстринге `collector/routes/events.py` перечисли новый тип рядом с `snapshot | job | log | refresh`.
 
@@ -899,6 +957,54 @@ Expected: FAIL — `AttributeError: module 'writer.services.agent' has no attrib
 ```
 
 `ensure_column` уже умеет ровно это; вторая копия механизма не заводится.
+
+**Этого недостаточно.** `CONVERSATION_COLUMNS` доливает `sender/db/migrate.py`,
+а таблицей `messages` владеет `writer/db/thread_store.py`, и открыть базу
+writer'ом можно, ни разу не позвав `migrate.connect`: так работают
+`uv run pytest writer/tests/`, операция `writer.outreach` и всё, что стартует
+без демонов системы 3. На такой базе `add_draft(..., prompt=…)` упадёт
+`sqlite3.OperationalError: table messages has no column named prompt`.
+Поэтому владелец таблицы доливает свои же колонки сам:
+
+```python
+def connect(path):
+    db = sqlite3.connect(path)
+    db.executescript(SCHEMA)
+    _ensure_prompt_columns(db)
+    return db
+
+
+def _ensure_prompt_columns(db):
+    """CREATE TABLE IF NOT EXISTS не трогает существующую таблицу, а базы
+    переписки у всех давно созданы. Колонки владельца доливает владелец:
+    полагаться на то, что до него добежит migrate системы 3, значит уронить
+    writer везде, где система 3 не стартовала."""
+    existing = {row[1] for row in db.execute("PRAGMA table_info(messages)")}
+    for column in ("prompt", "model"):
+        if column not in existing:
+            db.execute(f"ALTER TABLE messages ADD COLUMN {column} TEXT")
+    db.commit()
+```
+
+Проверь это тестом на старой форме таблицы:
+
+```python
+def test_prompt_columns_are_added_to_an_existing_table(tmp_path):
+    """База переписки у всех уже создана, и CREATE TABLE IF NOT EXISTS её не
+    тронет — колонки обязан долить владелец таблицы."""
+    import sqlite3
+
+    path = tmp_path / "state.db"
+    with sqlite3.connect(path) as old:      # таблица без prompt/model
+        old.execute("CREATE TABLE messages (message_id INTEGER PRIMARY KEY,"
+                    " thread_id TEXT NOT NULL, role TEXT NOT NULL, draft_text TEXT,"
+                    " sent_text TEXT, angle TEXT, created_at TEXT NOT NULL, sent_at TEXT)")
+
+    db = thread_store.connect(path)
+    columns = {row[1] for row in db.execute("PRAGMA table_info(messages)")}
+    assert {"prompt", "model"} <= columns
+    db.close()
+```
 
 - [ ] **Step 4: `Attempt` в агенте**
 
@@ -1420,6 +1526,13 @@ def test_inbox_puts_the_urgent_first(threads_db):
     assert order == [ESCALATED, ANSWERED, SILENT]
 
 
+def test_a_thread_we_already_answered_is_not_urgent(threads_db):
+    """Лид ответил, мы ответили — ждать нечего. Считать «когда-либо отвечал»
+    значило бы держать наверху каждый живой диалог."""
+    # тред, где последнее сообщение — наше, стоит ниже треда с ответом лида
+    ...
+
+
 def test_history_carries_the_kind_of_touch(threads_db):
     """reply и followup ставит только автомат — по ним и подписывается
     «отправлено автоматом»."""
@@ -1439,10 +1552,16 @@ Expected: FAIL
 
 ```sql
  ORDER BY CASE t.status WHEN 'escalated' THEN 0 ELSE 1 END,
-          (SELECT count(*) FROM messages m WHERE m.thread_id = t.thread_id
-           AND m.role = 'incoming') > 0 DESC,
+          CASE WHEN (SELECT m.role FROM messages m WHERE m.thread_id = t.thread_id
+                     AND m.sent_text IS NOT NULL
+                     ORDER BY m.message_id DESC LIMIT 1) = 'incoming'
+               THEN 0 ELSE 1 END,
           7 DESC NULLS LAST, t.created_at DESC
 ```
+
+Наверх поднимается тред, где **последнее** сообщение — от лида, а не любой, где
+лид когда-либо отвечал: второе держало бы в голове списка каждый живой диалог,
+на который мы уже ответили, и «кому ответить» перестало бы читаться с экрана.
 
 `history` добавляет `message_id` и `kind`. `kind` берётся из `outbox` по `message_id` (`LEFT JOIN outbox o ON o.message_id = m.message_id`), потому что вид касания — собственность системы 3, а не переписки. У входящих `kind` пуст.
 
@@ -1474,6 +1593,11 @@ git commit -m "feat(writer): инбокс по срочности, истори�
 - [ ] **Step 1: `/threads`**
 
 Создай `frontend/app/threads/page.tsx` на основе нынешнего `frontend/app/writer/page.tsx`: слева инбокс (порядок задаёт бэкенд, страница не пересортировывает), справа — переписка плюс `MessageComposer`. Вместо `LeadCard` в правой колонке — шапка с именем компании и ссылкой на `/leads/[id]`. У каждого нашего сообщения — вид касания и, для `reply`/`followup`, подпись «отправлено автоматом». Секция очереди (`fetchQueue`) остаётся: она показывает, что уже стоит в `outbox`.
+
+Форма «Ответ лида — вставить как есть» (`addIncoming`) переезжает сюда из
+нынешнего `Thread` целиком. Без неё ответ, пришедший мимо системы — с личного
+телефона, из другого мессенджера, — записать было бы негде, и следующий ход
+агента строился бы на неполной истории.
 
 - [ ] **Step 2: Редиректы вместо старых страниц**
 
