@@ -98,8 +98,13 @@ def inbox(db):
     «Когда-либо отвечал» наверх не поднимает: на каждый живой диалог, на
     который мы уже ответили, смотреть незачем.
     """
+    # status принадлежит системе 3 и появляется её миграцией. Долить его
+    # здесь нельзя: sender при добавлении колонки размечает старые треды с
+    # перепиской в escalated, и колонка, созданная раньше него, украла бы эту
+    # разметку. Значит терпим отсутствие — как history терпит отсутствие outbox.
+    status = "t.status" if _has_column(db, "threads", "status") else "'queued'"
     rows = db.execute(
-        "SELECT t.thread_id, t.company_id, t.created_at, t.status,"
+        f"SELECT t.thread_id, t.company_id, t.created_at, {status},"
         " (SELECT count(*) FROM messages m WHERE m.thread_id = t.thread_id"
         "  AND m.sent_text IS NOT NULL AND m.role = 'outgoing'),"
         " (SELECT count(*) FROM messages m WHERE m.thread_id = t.thread_id"
@@ -110,7 +115,7 @@ def inbox(db):
         "  AND m.sent_text IS NOT NULL ORDER BY m.message_id DESC LIMIT 1),"
         " (SELECT sent_text FROM messages m WHERE m.thread_id = t.thread_id"
         "  AND m.sent_text IS NOT NULL ORDER BY m.message_id DESC LIMIT 1)"
-        " FROM threads t ORDER BY CASE t.status WHEN 'escalated' THEN 0 ELSE 1 END,"
+        f" FROM threads t ORDER BY CASE {status} WHEN 'escalated' THEN 0 ELSE 1 END,"
         "   CASE (SELECT m.role FROM messages m WHERE m.thread_id = t.thread_id"
         "         AND m.sent_text IS NOT NULL ORDER BY m.message_id DESC LIMIT 1)"
         "     WHEN 'incoming' THEN 0 ELSE 1 END,"
@@ -137,13 +142,16 @@ def history(db, thread_id):
     открывает базу и без неё. Тот же приём, которым migrate.py страхуется от
     отсутствия чужих таблиц; импортировать его сюда нельзя — граница систем.
     """
-    join = ""
-    columns = "m.role, m.sent_text, m.angle, m.sent_at, m.message_id, NULL AS kind"
+    kind = "NULL"
     if _has_table(db, "outbox"):
-        join = " LEFT JOIN outbox o ON o.message_id = m.message_id"
-        columns = "m.role, m.sent_text, m.angle, m.sent_at, m.message_id, o.kind"
+        # Подзапрос, а не join: уникальность в outbox держится только по живым
+        # строкам, и у сообщения, кончившегося в failed и поставленного
+        # заново, строк две. Join раздвоил бы саму переписку — и на экране, и
+        # во входе агента, который строится из этой же history.
+        kind = ("(SELECT o.kind FROM outbox o WHERE o.message_id = m.message_id"
+                " ORDER BY o.outbox_id DESC LIMIT 1)")
     rows = db.execute(
-        f"SELECT {columns} FROM messages m{join}"
+        f"SELECT m.role, m.sent_text, m.angle, m.sent_at, m.message_id, {kind} FROM messages m"
         " WHERE m.thread_id = ? AND m.sent_text IS NOT NULL ORDER BY m.message_id",
         (thread_id,))
     return [{"role": role, "text": text, "angle": angle, "sent_at": sent_at,
@@ -154,6 +162,10 @@ def history(db, thread_id):
 def _has_table(db, name):
     return db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
                       (name,)).fetchone() is not None
+
+
+def _has_column(db, table, column):
+    return any(row[1] == column for row in db.execute(f"PRAGMA table_info({table})"))
 
 
 def pending_draft(db, thread_id):
@@ -190,6 +202,13 @@ def cold_drafts(db):
         " WHERE m.role = 'outgoing' AND m.sent_text IS NULL"
         "   AND NOT EXISTS (SELECT 1 FROM messages s WHERE s.thread_id = t.thread_id"
         "                   AND s.sent_text IS NOT NULL)"
+        # Последний черновик треда, тот же, что отдаёт pending_draft:
+        # «Перегенерировать» оставляет предыдущий вариант в таблице (разница
+        # предложенного и отправленного — разметка для промпта), но в очередь
+        # проверки тред обязан попасть один раз и с новым текстом.
+        "   AND m.message_id = (SELECT max(l.message_id) FROM messages l"
+        "                       WHERE l.thread_id = t.thread_id AND l.role = 'outgoing'"
+        "                         AND l.sent_text IS NULL)"
         " ORDER BY m.message_id DESC"
     ).fetchall()
     keys = ("thread_id", "company_id", "message_id", "draft_text", "angle", "model")

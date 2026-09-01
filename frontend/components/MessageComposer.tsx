@@ -46,6 +46,22 @@ export default function MessageComposer({
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [queued, setQueued] = useState<QueueRow | null>(null);
+  const [shown, setShown] = useState(messageId);
+
+  // Показанный черновик сменился — сбрасываем всё, что относилось к прежнему.
+  // useState(text) отрабатывает только при монтировании, а конвейер «Холодных»
+  // и переключение тредов в «Диалогах» переиспользуют этот же компонент: без
+  // сброса в поле остался бы текст предыдущей компании, и «Отправить» ушло бы
+  // с ним в чужой тред. Сброс живёт здесь, а не key= на вызывающей стороне,
+  // потому что забыть его может только один файл, а не каждый следующий.
+  if (shown !== messageId) {
+    setShown(messageId);
+    setValue(text);
+    setQueued(null);
+    setPrompt(null);
+    setPromptAsked(false);
+    setFailure(null);
+  }
 
   // Промпт весит 2–4 КБ и нужен только тому, кто раскрыл
   // <details>: не грузим его при показе композера.

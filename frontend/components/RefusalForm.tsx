@@ -18,6 +18,16 @@ export default function RefusalForm({
   const [reason, setReason] = useState("");
   const [sending, setSending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [shown, setShown] = useState(channel?.handle ?? null);
+
+  // Конвейер «Холодных» переиспользует форму на следующей компании. Причина
+  // отказа уходит в suppression, который не очищается: перенести недописанный
+  // текст про прошлую компанию на новую значит записать туда неправду.
+  if (shown !== (channel?.handle ?? null)) {
+    setShown(channel?.handle ?? null);
+    setReason("");
+    setFailure(null);
+  }
 
   if (!channel) return null;
 

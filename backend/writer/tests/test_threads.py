@@ -247,3 +247,52 @@ def test_history_carries_the_kind_of_touch():
     assert history[0]["kind"] == "cold"
     assert history[0]["message_id"] == 1
     db.close()
+
+
+def test_history_does_not_double_a_message_with_two_outbox_rows():
+    """Строка, кончившаяся в failed, не запрещает поставить сообщение заново —
+    уникальность в outbox держится только по живым. Значит на одно сообщение
+    строк бывает две, и join по message_id раздваивал бы саму переписку: не
+    только на экране, но и во входе агента (agent.prompt строит из history)."""
+    db = thread_store.connect(":memory:")
+    db.execute("CREATE TABLE outbox (outbox_id INTEGER PRIMARY KEY, message_id INTEGER,"
+               " kind TEXT NOT NULL DEFAULT 'cold', status TEXT)")
+    _talked(db, "+77010000001", "c1", [("outgoing", "привет")])
+    db.execute("INSERT INTO outbox (message_id, kind, status) VALUES (1, 'cold', 'failed')")
+    db.execute("INSERT INTO outbox (message_id, kind, status) VALUES (1, 'cold', 'sent')")
+    db.commit()
+
+    history = thread_store.history(db, "+77010000001")
+    assert [message["text"] for message in history] == ["привет"]
+    assert history[0]["kind"] == "cold"
+    db.close()
+
+
+def test_cold_drafts_shows_a_thread_once_after_a_rewrite():
+    """«Перегенерировать» пишет новый черновик, старый остаётся рядом (разница
+    предложенного и отправленного — разметка для калибровки промпта). В очереди
+    проверки тред обязан остаться один, и с последним вариантом: показать оба
+    значит дать оператору отправить устаревший."""
+    db = thread_store.connect(":memory:")
+    thread_store.open_thread(db, "+77010000001", "c1", SEED)
+    thread_store.add_draft(db, "+77010000001", "вариант 1", "crm_widget")
+    thread_store.add_draft(db, "+77010000001", "вариант 2", "ads_platform")
+
+    drafts = thread_store.cold_drafts(db)
+    assert [row["draft_text"] for row in drafts] == ["вариант 2"]
+    assert drafts[0]["message_id"] == thread_store.pending_draft(db, "+77010000001")["message_id"]
+    db.close()
+
+
+def test_inbox_works_without_the_column_system_three_owns():
+    """threads.status доливает миграция системы 3, а writer открывает базу и
+    без неё (свои тесты, операция writer.outreach). Требовать чужую колонку
+    значит падать там, где системы 3 просто нет; долить её самим — украсть у
+    миграции разметку старых тредов в escalated."""
+    db = thread_store.connect(":memory:")
+    thread_store.open_thread(db, "+77010000001", "c1", SEED)
+
+    rows = thread_store.inbox(db)
+    assert [row["thread_id"] for row in rows] == ["+77010000001"]
+    assert rows[0]["status"] == "queued"
+    db.close()

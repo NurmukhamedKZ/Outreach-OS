@@ -254,7 +254,7 @@ async def monitor_numbers() -> None:
             activity.prune()
         except Exception:
             log.exception("монитор здоровья номеров упал на тике")
-            activity.record("sender.monitor", "crashed", detail="см. логи процесса")
+            activity.record_crash("sender.monitor")
         await asyncio.sleep(MONITOR_INTERVAL_SECONDS)
 
 

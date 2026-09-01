@@ -242,7 +242,7 @@ async def loop(db_factory, transport_factory, interval_seconds: int) -> None:
                 activity.record("sender.warmup", "sent", subject=sender_number)
         except Exception:
             log.exception("прогрев упал на тике")
-            activity.record("sender.warmup", "crashed", detail="см. логи процесса")
+            activity.record_crash("sender.warmup")
         await asyncio.sleep(interval_seconds + _jitter_seconds())
 
 

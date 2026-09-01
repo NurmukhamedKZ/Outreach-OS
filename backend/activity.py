@@ -13,10 +13,13 @@
 по которому numbers и outbox живут в sender/db/migrate.py.
 """
 
+import logging
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 RETENTION_DAYS = 14
 
@@ -85,6 +88,23 @@ def record(actor: str, outcome: str, subject: str | None = None,
             "INSERT INTO activity (at, last_at, actor, outcome, subject, detail)"
             " VALUES (?, ?, ?, ?, ?, ?)", (stamp, stamp, actor, outcome, subject, detail))
     return event
+
+
+def record_crash(actor: str, detail: str = "см. логи процесса") -> None:
+    """Запись из обработчика аварии демона — единственное место, где журнал
+    молчит о собственной беде.
+
+    Обычный record() шумит намеренно: потерянное событие — это та самая
+    невидимая работа, которую журнал и заводился показывать. Но в `except`
+    цикла демона исключение отсюда вылетело бы наружу while и убило бы
+    asyncio-задачу — ровно тот отказ, ради которого этот `except` и стоит.
+    Между «не записали аварию» и «после аварии некому работать» выбор
+    очевиден.
+    """
+    try:
+        record(actor, "crashed", detail=detail)
+    except Exception:
+        log.exception("журнал не смог записать аварию %s", actor)
 
 
 def recent(limit: int = 200, actor: str | None = None) -> list[dict]:

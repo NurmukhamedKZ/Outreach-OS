@@ -99,3 +99,22 @@ def test_journal_without_a_path_refuses_loudly(tmp_path):
     activity.use(None)
     with pytest.raises(activity.NotConfiguredError):
         activity.record("sender.tick", "idle")
+
+
+def test_record_crash_never_throws(journal, monkeypatch):
+    """В `except` цикла демона исключение из журнала вылетело бы наружу while
+    и убило бы asyncio-задачу — тот самый отказ, ради которого этот `except` и
+    стоит. Между «не записали аварию» и «после аварии некому работать» выбор
+    очевиден."""
+    def explode(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(activity, "record", explode)
+    activity.record_crash("sender.tick")     # молча, без исключения
+
+
+def test_record_crash_writes_when_it_can(journal):
+    activity.record_crash("sender.warmup", detail="конфиг не читается")
+    event = activity.recent(actor="sender.warmup")[0]
+    assert event["outcome"] == "crashed"
+    assert event["detail"] == "конфиг не читается"

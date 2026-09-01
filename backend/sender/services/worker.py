@@ -329,7 +329,7 @@ async def loop(db_factory, transport_factory, publish=None) -> None:
                 publish({"type": "refresh", "reason": f"sender.{outcome}"})
         except Exception:
             log.exception("воркер outbox упал на тике")
-            activity.record("sender.tick", "crashed", detail="см. логи процесса")
+            activity.record_crash("sender.tick")
         await asyncio.sleep(interval)
 
 
