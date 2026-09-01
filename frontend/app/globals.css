@@ -1181,6 +1181,112 @@ a.nav-item:hover {
   font-size: 12px;
 }
 
+/* --- композер черновика (MessageComposer) ------------------------------------------ */
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.composer textarea {
+  font: inherit;
+  padding: 12px 14px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-btn);
+  background: var(--canvas);
+  color: var(--ink);
+  resize: vertical;
+  min-height: 120px;
+}
+
+.composer textarea:focus {
+  outline: 2px solid var(--ink);
+  outline-offset: -1px;
+}
+
+.composer-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.composer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.prompt-details {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-btn);
+  padding: 8px 12px;
+}
+
+.prompt-details summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--body);
+}
+
+.prompt-details summary:hover {
+  color: var(--ink);
+}
+
+.prompt-block {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-btn);
+  background: var(--surface-dark);
+  max-height: 320px;
+  overflow: auto;
+}
+
+.prompt-pair {
+  margin-bottom: 10px;
+}
+
+.prompt-pair:last-child {
+  margin-bottom: 0;
+}
+
+.prompt-role {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-dark-elevated);
+  color: #9aa1ab;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.prompt-pair pre {
+  margin: 0;
+  color: #d7dae0;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* --- «Холодные»: шапка правой колонки --------------------------------------------- */
+
+.cold-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-bottom: 14px;
+  font-size: 14px;
+}
+
+.cold-position {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 /* --- инбокс системы 2 ------------------------------------------------------------ */
 
 .inbox-row {

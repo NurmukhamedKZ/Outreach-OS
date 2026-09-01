@@ -260,6 +260,30 @@ export function fetchThreads() {
   return json<{ threads: ThreadSummary[] }>("/api/threads");
 }
 
+/** Первые касания, ждущие проверки. Порядок задаёт бэкенд: по убыванию скора. */
+export type ColdDraft = {
+  company_id: string;
+  company_name: string;
+  city: string;
+  intent_score: number;
+  thread_id: string;
+  message_id: number;
+  draft_text: string;
+  angle: string | null;
+  model: string | null;
+  has_prompt: boolean;
+};
+
+export function fetchColdDrafts() {
+  return json<{ drafts: ColdDraft[] }>("/api/threads/drafts");
+}
+
+export function fetchPrompt(companyId: string, messageId: number) {
+  return json<{ prompt: [string, string][] | null; model: string | null }>(
+    `/api/threads/${encodeURIComponent(companyId)}/messages/${messageId}/prompt`,
+  );
+}
+
 // ---- Система 3: пул номеров ----
 
 export type SenderNumber = {

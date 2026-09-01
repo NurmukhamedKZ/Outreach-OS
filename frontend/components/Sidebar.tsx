@@ -9,6 +9,7 @@ import {
   TargetIcon,
   PenNibIcon,
   PaperPlaneTiltIcon,
+  BroadcastIcon,
   SquaresFourIcon,
 } from "@phosphor-icons/react";
 import { useLive } from "./live";
@@ -16,8 +17,9 @@ import { useLive } from "./live";
 const NAV = [
   { href: "/", label: "Обзор", icon: SquaresFourIcon },
   { href: "/sourcing", label: "Сбор лидов", icon: TargetIcon },
+  { href: "/cold", label: "Холодные", icon: PaperPlaneTiltIcon },
   { href: "/writer", label: "Персонализация", icon: PenNibIcon },
-  { href: "/sender", label: "Отправка", icon: PaperPlaneTiltIcon },
+  { href: "/sender", label: "Отправка", icon: BroadcastIcon },
   { href: "/activity", label: "Процессы", icon: PulseIcon },
 ];
 
