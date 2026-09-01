@@ -61,6 +61,37 @@ def inbox():
         threads.close()
 
 
+@router.get("/drafts")
+def cold_drafts():
+    """Очередь проверки первых писем. Сортировка по скору: проверять выгоднее
+    с самых сильных лидов, а скор знает база системы 1."""
+    leads, threads = open_stores()
+    try:
+        drafts = thread_store.cold_drafts(threads)
+        cards = leads_source.cards_of(leads, [row["company_id"] for row in drafts])
+        merged = [{**row, **cards.get(row["company_id"], {})} for row in drafts]
+        merged.sort(key=lambda row: row.get("intent_score") or 0, reverse=True)
+        return {"drafts": merged}
+    finally:
+        leads.close()
+        threads.close()
+
+
+@router.get("/{company_id}/messages/{message_id}/prompt")
+def draft_prompt(company_id: str, message_id: int):
+    """Отдельной ручкой, а не полем списка: промпт весит 2–4 КБ, и тащить его
+    в каждую строку инбокса незачем."""
+    leads, threads = open_stores()
+    try:
+        if not thread_store.message_exists(threads, message_id):
+            raise HTTPException(404, f"сообщения {message_id} нет")
+        stored = thread_store.draft_prompt(threads, message_id)
+        return stored or {"prompt": None, "model": None}
+    finally:
+        leads.close()
+        threads.close()
+
+
 @router.get("/{company_id}")
 def conversation(company_id: str):
     leads, threads = open_stores()
@@ -186,9 +217,11 @@ def demo():
     assert thread_store.thread(threads, "нет такого треда") is None
     assert {route.path for route in router.routes} == {
         "/api/threads",
+        "/api/threads/drafts",
         "/api/threads/{company_id}",
         "/api/threads/{company_id}/draft",
         "/api/threads/{company_id}/incoming",
+        "/api/threads/{company_id}/messages/{message_id}/prompt",
     }
     leads.close()
     threads.close()

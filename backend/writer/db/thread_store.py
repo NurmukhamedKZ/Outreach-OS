@@ -155,6 +155,30 @@ def add_draft(db, thread_id, text, angle, prompt=None, model=None):
     return cursor.lastrowid
 
 
+def cold_drafts(db):
+    """Треды, где есть черновик и не отправлено ни одного сообщения, — то есть
+    ровно первое касание. Порядок задаёт вызывающий: скор живёт в базе лидов."""
+    rows = db.execute(
+        "SELECT t.thread_id, t.company_id, m.message_id, m.draft_text, m.angle,"
+        "       m.model, m.prompt IS NOT NULL"
+        " FROM threads t JOIN messages m ON m.thread_id = t.thread_id"
+        " WHERE m.role = 'outgoing' AND m.sent_text IS NULL"
+        "   AND NOT EXISTS (SELECT 1 FROM messages s WHERE s.thread_id = t.thread_id"
+        "                   AND s.sent_text IS NOT NULL)"
+        " ORDER BY m.message_id DESC"
+    ).fetchall()
+    keys = ("thread_id", "company_id", "message_id", "draft_text", "angle", "model")
+    # has_prompt приводится к bool здесь: SQLite отдаёт 0/1, а контракт
+    # фронтенда обещает булево — приводить его в TypeScript значило бы чинить
+    # тип не там, где он рождается.
+    return [{**dict(zip(keys, row[:6])), "has_prompt": bool(row[6])} for row in rows]
+
+
+def message_exists(db, message_id):
+    return db.execute("SELECT 1 FROM messages WHERE message_id = ?",
+                      (message_id,)).fetchone() is not None
+
+
 def draft_prompt(db, message_id):
     """Полный запрос, ушедший в модель. None — черновик написан до того, как
     промпт начали сохранять."""

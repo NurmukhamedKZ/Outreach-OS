@@ -149,3 +149,36 @@ def test_prompt_columns_are_added_to_an_existing_table(tmp_path):
     columns = {row[1] for row in db.execute("PRAGMA table_info(messages)")}
     assert {"prompt", "model"} <= columns
     db.close()
+
+
+SEED = {"name": "Ромашка", "signals": []}
+
+
+def test_cold_drafts_lists_only_the_first_touch():
+    """Тред, в котором уже что-то отправлено, — не холодное касание: его
+    место в «Диалогах», а не в конвейере проверки первых писем."""
+    db = thread_store.connect(":memory:")
+    thread_store.open_thread(db, "+77010000001", "c1", SEED)
+    thread_store.add_draft(db, "+77010000001", "первое", "crm_widget")
+    thread_store.open_thread(db, "+77007776655", "c2", SEED)
+    sent_id = thread_store.add_draft(db, "+77007776655", "уже писали", "ads_platform")
+    # sent_text пишет ровно один автор — воркер системы 3; тест подтверждает
+    # отправку тем же UPDATE'ом, что и соседние тесты файла.
+    db.execute("UPDATE messages SET sent_text = ?, sent_at = ? WHERE message_id = ?",
+               ("уже писали", thread_store.now(), sent_id))
+    db.commit()
+
+    drafts = thread_store.cold_drafts(db)
+    assert [row["thread_id"] for row in drafts] == ["+77010000001"]
+    assert drafts[0]["has_prompt"] is False
+    db.close()
+
+
+def test_prompt_of_a_draft_that_has_one():
+    db = thread_store.connect(":memory:")
+    thread_store.open_thread(db, "+77010000001", "c1", SEED)
+    message_id = thread_store.add_draft(
+        db, "+77010000001", "привет", "crm_widget",
+        prompt=[("system", "правила"), ("human", "факты")], model="модель")
+    assert thread_store.draft_prompt(db, message_id)["prompt"][0][0] == "system"
+    db.close()

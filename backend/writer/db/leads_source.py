@@ -90,6 +90,29 @@ def company_names(db):
     return dict(rows)
 
 
+def cards_of(db, company_ids):
+    """Имя, город и скор компаний пачкой — одним запросом с IN. Список холодных
+    черновиков сортируется по скору, и спрашивать базу на каждый черновик
+    отдельно значило бы двадцать запросов вместо одного."""
+    if not company_ids:
+        return {}
+    marks = ",".join("?" * len(company_ids))
+    rows = db.execute(
+        "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm), c.city,"
+        "       s.intent_score"
+        " FROM companies c"
+        " LEFT JOIN company_links l ON l.company_id = c.company_id AND l.rule = 'self'"
+        " LEFT JOIN orgs o ON o.branch_id = l.branch_id"
+        " LEFT JOIN scores s USING (company_id)"
+        f" WHERE c.company_id IN ({marks})",
+        tuple(company_ids),
+    )
+    return {
+        company_id: {"company_name": name, "city": city, "intent_score": intent_score}
+        for company_id, name, city, intent_score in rows
+    }
+
+
 def seed_of(db, company_id):
     """Контекст лида для затравки треда. None, если компания исчезла из базы."""
     row = db.execute(CANDIDATES + ONE_COMPANY, (company_id,)).fetchone()
