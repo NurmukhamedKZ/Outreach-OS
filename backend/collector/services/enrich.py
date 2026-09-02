@@ -190,7 +190,7 @@ def newest_review_match(reviews, complaints):
 
 
 def review_url(company_id, review):
-    return f"https://2gis.kz/search/{review['branch_id']}" if review.get("branch_id") else ""
+    return f"https://2gis.kz/firm/{review['branch_id']}" if review.get("branch_id") else ""
 
 
 def emit(db, run_id, company_id, signal_type, observed_at, weights, quote, url):

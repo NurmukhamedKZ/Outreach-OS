@@ -41,13 +41,20 @@ def connect(path):
     return db
 
 
-def candidates(db, limit):
-    """Лиды по убыванию intent, у которых есть номер и нет отказа."""
+def candidates(db, limit=None):
+    """Лиды по убыванию intent, у которых есть номер и нет отказа.
+
+    limit=None — без потолка: вызывающая сторона сама фильтрует список (например,
+    по «уже есть тред») и не может заранее знать, сколько строк из начала
+    ранжированного списка отсеется её фильтром.
+    """
     suppressed = suppression_handles(db)
     channels = channels_by_company(db)
     found = []
     for (company_id, name, city, summary, hooks, pains, approach,
          sources) in db.execute(CANDIDATES + WITH_INTENT):
+        if limit is not None and len(found) == limit:
+            break
         channel = best_channel(channels.get(company_id, []), suppressed)
         if not channel:
             continue
@@ -68,8 +75,6 @@ def candidates(db, limit):
                 "signals": signals_of(db, company_id),
             },
         })
-        if len(found) == limit:
-            break
     return found
 
 

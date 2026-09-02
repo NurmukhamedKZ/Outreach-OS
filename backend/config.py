@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     langfuse_secret_key: str | None = None
     langfuse_host: str | None = None
     sender_node_url: str = "http://127.0.0.1:8788"
+    # `uv run python main.py` и `uv run uvicorn main:app --reload` обязаны
+    # биндиться на один и тот же адрес: иначе случайный повторный запуск не
+    # падает с "address already in use", а тихо слушает недостижимый wildcard
+    # рядом с рабочим процессом — вебхуки Node лидят на первый, второй мёртв.
+    # В Docker переопределяется на 0.0.0.0 (backend слушает контейнерный порт).
+    uvicorn_host: str = "127.0.0.1"
     sender_webhook_secret: str | None = None
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None

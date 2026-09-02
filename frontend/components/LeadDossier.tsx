@@ -201,11 +201,11 @@ export default function LeadDossier({
             {answer.kind} · {answer.model}
           </summary>
           <div className="prompt-block mono">
-            <div>
+            <div className="prompt-pair">
               <span className="prompt-role">prompt</span>
               <pre>{answer.prompt}</pre>
             </div>
-            <div>
+            <div className="prompt-pair">
               <span className="prompt-role">answer</span>
               <pre>{answer.answer}</pre>
             </div>

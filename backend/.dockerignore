@@ -1,0 +1,9 @@
+.venv
+**/.venv
+sender/node
+collector/data
+.env
+.env.local
+__pycache__
+**/__pycache__
+*.pyc

@@ -82,3 +82,14 @@ def test_candidates_follow_f19_and_f21(leads_db):
     assert [row["company_id"] for row in found] == ["c_ok", "c_phone"], \
         "порядок отбора не по intent"
     db.close()
+
+
+def test_candidates_without_limit_returns_everyone(leads_db):
+    """limit=None — вызывающая сторона (operations.open_new_threads) сама режет
+    список после фильтра «уже есть тред», и не может заранее знать, сколько
+    кандидатов из начала списка тот фильтр отсеет."""
+    db = leads_db
+    _seed(db)
+    found = leads_source.candidates(db)
+    assert [row["company_id"] for row in found] == ["c_ok", "c_phone"]
+    db.close()

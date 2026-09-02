@@ -17,7 +17,8 @@ import logging_setup  # noqa: E402
 logging_setup.configure()
 
 from collector.api import app  # noqa: E402
+from config import settings  # noqa: E402
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8787)
+    uvicorn.run(app, host=settings.uvicorn_host, port=8787)

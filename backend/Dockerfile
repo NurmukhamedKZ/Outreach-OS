@@ -5,10 +5,12 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
+# Корневые модули (config.py и т.д.) — общая точка входа для всех трёх систем,
+# collector/writer/sender импортируют их напрямую (`from config import settings`).
+COPY config.py llm_schema.py logctx.py logging_setup.py observability.py main.py ./
 COPY collector/ collector/
 COPY writer/ writer/
 COPY sender/ sender/
-COPY main.py ./
 
 # scrapling[fetchers] качает свой Chromium отдельно от pip-пакета — без этого
 # шага collect.* и probe.* падают при первом обращении к сети.

@@ -1,10 +1,12 @@
-# Тот же контур, что и `README.md`: два процесса, browser'у нужен только 3000.
-# writer — не отдельный сервис: его роутер монтируется в api.py (backend/collector/api.py),
-# а venv у него общий с collector'ом (backend/pyproject.toml), потому что операции системы 2
-# вызываются в том же процессе воркера джобов (collector/services/jobs.py).
+# Три системы в одном контуре (см. CLAUDE.md): backend — FastAPI, все три
+# системы под одним main.py; frontend — продуктовый дашборд, браузеру нужен
+# только его порт; sender-node — сокеты WhatsApp (Baileys), отдельный процесс
+# по контракту системы 3, backend ходит в него по SENDER_NODE_URL.
 #
-# Перед первым запуском: cp collector/.env.example collector/.env и вписать ключи —
-# без них поднимутся сбор/пересборка/веб, но не analyze.* и probe.serp.
+# config.py — единственная точка чтения секретов, общая для всех систем:
+# читает ровно backend/.env. Перед первым запуском: cp backend/.env.example
+# backend/.env и вписать ключи — без них поднимутся сбор/пересборка/веб, но
+# не analyze.*, probe.serp и черновики writer'а.
 #
 #   docker compose up --build
 
@@ -16,24 +18,50 @@ services:
     ports:
       - "8787:8787"
     env_file:
-      - path: backend/collector/.env
+      - path: backend/.env
         required: false
+    environment:
+      # Backend ходит в sender-node по DNS-имени сервиса compose, а не
+      # localhost (дефолт config.py) — контейнеры друг для друга хосты.
+      SENDER_NODE_URL: http://sender-node:8788
+      # Дефолт config.py (127.0.0.1) в контейнере недостижим снаружи — порт
+      # 8787 наружу пробрасывается только с wildcard-бинда.
+      UVICORN_HOST: 0.0.0.0
     volumes:
       # Сырьё и базы — невосстановимые или производные слои (см. CLAUDE.md),
       # им место на хосте, а не в слоях образа.
       - ./backend/collector/data:/app/collector/data
       - ./backend/collector/config.toml:/app/collector/config.toml
-      - ./backend/collector/.env:/app/collector/.env
       - ./backend/writer/config.toml:/app/writer/config.toml
-      - ./backend/writer/.env:/app/writer/.env
+      - ./backend/sender/config.toml:/app/sender/config.toml
+    depends_on:
+      - sender-node
+
+  sender-node:
+    build:
+      context: ./backend/sender/node
+      dockerfile: Dockerfile
+    ports:
+      - "8788:8788"
+    environment:
+      SENDER_PYTHON_URL: http://backend:8787
+    env_file:
+      # SENDER_WEBHOOK_SECRET, если задан, лежит в том же backend/.env.
+      - path: backend/.env
+        required: false
+    volumes:
+      # Ключи сессий WhatsApp — невосстановимый слой (см. CLAUDE.md), на хост.
+      - ./backend/sender/node/sessions:/app/sessions
 
   frontend:
     build:
       context: ./frontend
       args:
-        # Имя сервиса compose, не localhost: контейнеры друг для друга — хосты.
+        # Имя сервиса compose — только для next.config.ts rewrites() внутри
+        # сети контейнеров. NEXT_PUBLIC_API_ORIGIN (SSE) остаётся на дефолте
+        # Dockerfile — резолвится из браузера на хосте, не из контейнера.
         API_ORIGIN: http://backend:8787
     ports:
-      - "3001:3000"
+      - "3000:3000"
     depends_on:
       - backend
