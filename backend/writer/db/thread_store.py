@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS messages (
   angle      TEXT,
   prompt     TEXT,               -- json: полный запрос, ушедший в модель
   model      TEXT,               -- чем сгенерировано
+  offer_variant TEXT,
   created_at TEXT NOT NULL,
   sent_at    TEXT
 );
@@ -53,7 +54,7 @@ def _ensure_columns(db):
     полагаться на то, что до него добежит migrate системы 3, значит уронить
     writer везде, где система 3 не стартовала."""
     for table, columns in (
-        ("messages", (("prompt", "TEXT"), ("model", "TEXT"))),
+        ("messages", (("prompt", "TEXT"), ("model", "TEXT"), ("offer_variant", "TEXT"))),
         ("threads", (("stage", "TEXT NOT NULL DEFAULT 'contact'"),)),
     ):
         existing = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
@@ -190,13 +191,13 @@ def pending_draft(db, thread_id):
     return {"message_id": row[0], "draft_text": row[1], "angle": row[2], "created_at": row[3]}
 
 
-def add_draft(db, thread_id, text, angle, prompt=None, model=None):
+def add_draft(db, thread_id, text, angle, prompt=None, model=None, offer_variant=None):
     cursor = db.execute(
-        "INSERT INTO messages (thread_id, role, draft_text, angle, prompt, model, created_at)"
-        " VALUES (?, 'outgoing', ?, ?, ?, ?, ?)",
+        "INSERT INTO messages (thread_id, role, draft_text, angle, prompt, model, offer_variant, created_at)"
+        " VALUES (?, 'outgoing', ?, ?, ?, ?, ?, ?)",
         (thread_id, text, angle,
          json.dumps(prompt, ensure_ascii=False) if prompt else None,
-         model, now()),
+         model, offer_variant, now()),
     )
     db.commit()
     return cursor.lastrowid

@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 import logctx
 from config import settings
-from writer.services import agent, config, followup, seller
+from writer.services import agent, config, followup, offers, seller, stages
 from writer.db import leads_source, thread_store
 
 router = APIRouter(prefix="/api/threads")
@@ -128,9 +128,11 @@ def make_draft(company_id: str, request: DraftRequest):
             if proposal is None:
                 raise HTTPException(409, "агент закрыл тред — ответа не будет")
             if not proposal.draft.stop:
+                variant = offers.variant_of(channel[1], CONFIG)
                 thread_store.add_draft(threads, channel[1], proposal.draft.text,
                                        proposal.draft.angle,
-                                       prompt=proposal.prompt, model=proposal.model)
+                                       prompt=proposal.prompt, model=proposal.model,
+                                       offer_variant=variant["id"])
             return {**state(leads, threads, company_id), "stop": proposal.draft.stop}
         finally:
             leads.close()
@@ -182,10 +184,13 @@ def seller_agent():
 def _writer_move(kind, threads, thread, history):
     """Холодное касание и follow-up: один вызов со structured output."""
     task = agent.FIRST if kind == "first" else followup.task(threads, thread)
+    variant = offers.variant_of(thread["thread_id"], CONFIG)
+    rules = leads_source.pitch_rules(CONFIG)
     return agent.draft(agent.model(CONFIG), thread["seed"], history, task,
                        session_id=thread["thread_id"], name=f"writer.{kind}",
-                       offer=CONFIG["offer"]["text"],
-                       model_name=CONFIG["llm"]["model"])
+                       offer=variant["text"],
+                       model_name=CONFIG["llm"]["model"],
+                       stage=stages.FIRST, pitchable=rules.pitchable)
 
 
 def _seller_move(threads, thread, history):

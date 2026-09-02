@@ -6,7 +6,7 @@
 """
 
 from config import settings
-from writer.services import agent, config, stages
+from writer.services import agent, config, offers, stages
 from writer.db import leads_source, thread_store
 
 import logctx
@@ -30,17 +30,17 @@ def open_new_threads(ctx):
             ctx.progress(number, len(fresh), lead["seed"]["name"])
             with logctx.entity(lead["thread_id"]):
                 thread_store.open_thread(threads, lead["thread_id"], lead["company_id"], lead["seed"])
+                variant = offers.variant_of(lead["thread_id"], CONFIG)
                 proposal = agent.draft(llm, lead["seed"], [], agent.FIRST,
                                         session_id=lead["thread_id"], name="writer.first",
-                                        offer=CONFIG["offer"]["text"],
-                                        model_name=CONFIG["llm"]["model"],
+                                        offer=variant["text"], model_name=CONFIG["llm"]["model"],
                                         stage=stages.FIRST, pitchable=rules.pitchable)
                 if proposal.draft.stop:
                     ctx.log(f"{lead['seed']['name']}: агент советует не писать — повода в данных нет")
                     continue
                 thread_store.add_draft(threads, lead["thread_id"], proposal.draft.text,
-                                       proposal.draft.angle,
-                                       prompt=proposal.prompt, model=proposal.model)
+                                       proposal.draft.angle, prompt=proposal.prompt,
+                                       model=proposal.model, offer_variant=variant["id"])
                 ctx.log(f"{lead['seed']['name']}: черновик готов ({proposal.draft.angle})")
         return {"drafted": len(fresh)}
     finally:
