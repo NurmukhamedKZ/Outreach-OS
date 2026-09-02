@@ -115,7 +115,8 @@ def make_draft(company_id: str, request: DraftRequest):
             channel = channel_of(leads, company_id)
             thread = thread_store.thread(threads, channel[1])
             if not thread:
-                seed = leads_source.seed_of(leads, company_id)
+                seed = leads_source.seed_of(leads, company_id,
+                                            leads_source.pitch_rules(CONFIG))
                 if not seed:
                     raise HTTPException(404, f"компании {company_id} нет в базе лидов")
                 thread_store.open_thread(threads, channel[1], company_id, seed)
@@ -205,7 +206,12 @@ def seller_agent():
 
 
 def _writer_move(kind, threads, thread, history):
-    """Холодное касание и follow-up: один вызов со structured output."""
+    """Холодное касание и follow-up: один вызов со structured output.
+
+    Этап берётся из треда, а не считается первым: follow-up уходит туда, где
+    лид уже отвечал, и правила первого касания («не продавать, не звать на
+    разговор») там неверны.
+    """
     task = agent.FIRST if kind == "first" else followup.task(threads, thread)
     variant = offers.variant_of(thread["thread_id"], CONFIG)
     rules = leads_source.pitch_rules(CONFIG)
@@ -213,15 +219,15 @@ def _writer_move(kind, threads, thread, history):
                        session_id=thread["thread_id"], name=f"writer.{kind}",
                        offer=variant["text"],
                        model_name=CONFIG["llm"]["model"],
-                       stage=stages.FIRST, pitchable=rules.pitchable)
+                       stage=thread["stage"], pitchable=rules.pitchable)
 
 
 def _seller_move(threads, thread, history):
     """Ответ в диалоге — тот же агент, что отвечает автоматически. None, если
     он решил закрыть тред: черновика в этом ходе нет, и это правильно."""
     reply = seller.respond(seller_agent(), thread["seed"], history,
-                           CONFIG["offer"]["text"],
-                           session_id=thread["thread_id"])
+                           offers.variant_of(thread["thread_id"], CONFIG)["text"],
+                           session_id=thread["thread_id"], stage=thread["stage"])
     if reply.status is not None:
         return None
     return Move(text=reply.text, angle="answer", stop=False)

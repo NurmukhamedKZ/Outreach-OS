@@ -82,9 +82,14 @@ def build(config: dict):
 
 
 def respond(agent, seed: dict, history: list[dict], offer: str, *,
-            session_id: str, stage: str = stages.FIRST) -> Reply:
+            session_id: str, stage: str) -> Reply:
     """Один ход. Сессия Langfuse — тред: когда лид скажет «вы обещали X»,
-    ответ должен находиться за десять секунд."""
+    ответ должен находиться за десять секунд.
+
+    stage без дефолта: со stages.FIRST забытый аргумент означал бы правила
+    первого касания в треде, дошедшем до оффера, — то есть «не продавать, не
+    звать на разговор» ровно там, где пора и то, и другое.
+    """
     handler = observability.langfuse_handler()
     config = {
         "run_name": "sender.reply",

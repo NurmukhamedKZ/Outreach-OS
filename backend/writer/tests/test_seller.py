@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from writer.services import seller
+from writer.services import seller, stages
 
 SEED = {"name": "Ромашка", "city": "Алматы",
         "signals": [{"type": "crm_widget", "quote": "виджет Bitrix24"}]}
@@ -38,7 +38,7 @@ class FakeAgent:
 def test_free_text_comes_back_as_text():
     agent = FakeAgent(FakeMessage("Цену назовём после короткого разговора."))
 
-    reply = seller.respond(agent, SEED, HISTORY, "оффер", session_id="+77010000001")
+    reply = seller.respond(agent, SEED, HISTORY, "оффер", session_id="+77010000001", stage=stages.FIRST)
 
     assert reply.text == "Цену назовём после короткого разговора."
     assert reply.status is None
@@ -51,7 +51,7 @@ def test_every_verdict_comes_back_as_a_status(status):
     verdict = json.dumps({"status": status, "reason": "так решил агент"})
     agent = FakeAgent(FakeMessage(verdict, type_="tool"))
 
-    reply = seller.respond(agent, SEED, HISTORY, "оффер", session_id="+77010000001")
+    reply = seller.respond(agent, SEED, HISTORY, "оффер", session_id="+77010000001", stage=stages.FIRST)
 
     assert reply.status == status and reply.reason == "так решил агент"
     assert reply.text is None
@@ -63,7 +63,7 @@ def test_an_unknown_status_is_not_a_crash():
     verdict = json.dumps({"status": "выдумал", "reason": "почему бы и нет"})
     agent = FakeAgent(FakeMessage(verdict, type_="tool"))
 
-    reply = seller.respond(agent, SEED, HISTORY, "оффер", session_id="+77010000001")
+    reply = seller.respond(agent, SEED, HISTORY, "оффер", session_id="+77010000001", stage=stages.FIRST)
 
     assert reply.status == seller.UNKNOWN
 
@@ -71,13 +71,13 @@ def test_an_unknown_status_is_not_a_crash():
 def test_broken_tool_output_is_not_a_crash():
     agent = FakeAgent(FakeMessage("не json вовсе", type_="tool"))
     assert seller.respond(agent, SEED, HISTORY, "оффер",
-                          session_id="+7").status == seller.UNKNOWN
+                          session_id="+7", stage=stages.FIRST).status == seller.UNKNOWN
 
 
 def test_the_dialogue_and_the_offer_reach_the_prompt():
     agent = FakeAgent(FakeMessage("ответ"))
 
-    seller.respond(agent, SEED, HISTORY, "мы строим лидоген", session_id="+77010000001")
+    seller.respond(agent, SEED, HISTORY, "мы строим лидоген", session_id="+77010000001", stage=stages.FIRST)
 
     prompt = seller.prompt(SEED, HISTORY)
     assert "Ромашка" in prompt and "а сколько стоит?" in prompt
@@ -90,7 +90,7 @@ def test_the_loop_is_capped_and_the_session_is_the_thread():
     находиться за десять секунд."""
     agent = FakeAgent(FakeMessage("ответ"))
 
-    seller.respond(agent, SEED, HISTORY, "оффер", session_id="+77010000001")
+    seller.respond(agent, SEED, HISTORY, "оффер", session_id="+77010000001", stage=stages.FIRST)
 
     assert agent.seen_config["recursion_limit"] == seller.RECURSION_LIMIT
     assert agent.seen_config["metadata"]["langfuse_session_id"] == "+77010000001"

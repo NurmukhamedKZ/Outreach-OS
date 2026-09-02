@@ -40,7 +40,7 @@ def matured(db, monkeypatch):
 def пишет(monkeypatch, draft):
     monkeypatch.setattr(followup, "_llm", lambda: object())
     monkeypatch.setattr(followup, "_write",
-                        lambda llm, card, history, task, offer:
+                        lambda llm, card, history, task, offer, pitchable:
                         agent.Attempt(draft=draft, prompt=[], model=""))
 
 
@@ -51,8 +51,10 @@ async def test_the_model_is_actually_reached_with_a_live_connection(matured, mon
     трассировку каждые двадцать секунд до конца времён."""
     seen = {}
 
-    def draft(llm, seed, history, task, *, session_id, name, offer="", model_name=""):
+    def draft(llm, seed, history, task, *, session_id, name, stage, pitchable,
+              offer="", model_name=""):
         seen["seed"], seen["task"], seen["name"] = seed, task, name
+        seen["stage"], seen["pitchable"], seen["offer"] = stage, pitchable, offer
         return agent.Attempt(draft=FakeDraft(), prompt=[], model="")
 
     monkeypatch.setattr(followup, "_llm", lambda: object())
@@ -63,6 +65,11 @@ async def test_the_model_is_actually_reached_with_a_live_connection(matured, mon
     assert seen["seed"]["name"] == "Ромашка"
     assert "ads_platform" in seen["task"], seen["task"]
     assert seen["name"] == "sender.followup"
+    # Касание уходит в тред, где лид уже отвечал: правила первого контакта там
+    # неверны, а пустой pitchable схлопнул бы угол каждого follow-up в «other».
+    assert seen["stage"] == matured.execute(
+        "SELECT stage FROM threads").fetchone()[0]
+    assert seen["pitchable"], "список поводов не доехал — угол станет other"
 
 
 async def test_a_matured_thread_gets_a_draft_and_a_queued_row(matured, monkeypatch):

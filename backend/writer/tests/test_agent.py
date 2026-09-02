@@ -4,9 +4,12 @@ langfuse-callback, ретраи на обрыв соединения, тепер
 import httpx
 import pytest
 
+PITCHABLE = frozenset({"crm_widget", "site_no_pricing",
+                        "reviews_unanswered_complaint"})
+
 import observability
 from writer.schemas.outreach import Draft
-from writer.services import agent
+from writer.services import agent, stages
 
 
 class FakeLLM:
@@ -41,7 +44,7 @@ def test_draft_logs_langfuse_trace_when_handler_present(monkeypatch):
     monkeypatch.setattr(observability, "log_trace", lambda handler: calls.append(handler))
 
     fake = FakeLLM(answer="draft-result")
-    result = agent.draft(fake, SEED, [], agent.FIRST, session_id="t1", name="writer.first")
+    result = agent.draft(fake, SEED, [], agent.FIRST, session_id="t1", name="writer.first", stage=stages.FIRST, pitchable=PITCHABLE)
 
     assert result.draft == "draft-result"
     assert calls == [fake_handler]
@@ -53,7 +56,7 @@ def test_draft_does_not_log_trace_without_handler(monkeypatch):
     monkeypatch.setattr(observability, "log_trace", lambda handler: calls.append(handler))
 
     fake = FakeLLM(answer="draft-result")
-    agent.draft(fake, SEED, [], agent.FIRST, session_id="t1", name="writer.first")
+    agent.draft(fake, SEED, [], agent.FIRST, session_id="t1", name="writer.first", stage=stages.FIRST, pitchable=PITCHABLE)
 
     assert calls == []
 
@@ -63,7 +66,7 @@ def test_draft_still_retries_transport_error_then_succeeds(monkeypatch):
     monkeypatch.setattr(observability, "langfuse_handler", lambda: None)
     flaky = FlakyLLM(fail_times=agent.TRANSPORT_RETRIES - 1)
 
-    result = agent.draft(flaky, SEED, [], agent.FIRST, session_id="t1", name="writer.first")
+    result = agent.draft(flaky, SEED, [], agent.FIRST, session_id="t1", name="writer.first", stage=stages.FIRST, pitchable=PITCHABLE)
 
     assert result.draft == "ok"
     assert flaky.calls == agent.TRANSPORT_RETRIES
@@ -80,7 +83,7 @@ def test_draft_returns_the_prompt_that_was_sent():
             return Draft(text="привет", angle="crm_widget", stop=False)
 
     attempt = agent.draft(FakeLLM2(), SEED, [], agent.FIRST,
-                          session_id="+77001112233", name="writer.first", offer="оффер")
+                          session_id="+77001112233", name="writer.first", stage=stages.FIRST, pitchable=PITCHABLE, offer="оффер")
     assert attempt.draft.text == "привет"
     assert attempt.prompt == [list(pair) for pair in sent["messages"]] or \
            attempt.prompt == sent["messages"]

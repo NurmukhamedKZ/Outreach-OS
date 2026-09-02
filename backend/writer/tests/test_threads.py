@@ -83,11 +83,12 @@ def test_the_reply_move_goes_through_the_seller(monkeypatch):
     monkeypatch.setattr(route, "seller_agent", lambda: object())
     monkeypatch.setattr(
         seller, "respond",
-        lambda agent_, seed, history, offer, *, session_id:
+        lambda agent_, seed, history, offer, *, session_id, stage:
             asked.append(session_id) or seller.Reply(
                 text="Ответ продавца", status=None, reason=None))
 
-    thread = {"thread_id": "+77010000001", "seed": {"name": "Ромашка", "signals": []}}
+    thread = {"thread_id": "+77010000001", "stage": "probing",
+              "seed": {"name": "Ромашка", "signals": []}}
     move = route._seller_move(None, thread, [])
 
     assert move.text == "Ответ продавца" and move.angle == "answer" and not move.stop
@@ -102,10 +103,11 @@ def test_a_verdict_leaves_no_draft(monkeypatch):
     monkeypatch.setattr(route, "seller_agent", lambda: object())
     monkeypatch.setattr(
         seller, "respond",
-        lambda agent_, seed, history, offer, *, session_id:
+        lambda agent_, seed, history, offer, *, session_id, stage:
             seller.Reply(text=None, status="refusal", reason="не интересно"))
 
-    thread = {"thread_id": "+77010000001", "seed": {"name": "Ромашка", "signals": []}}
+    thread = {"thread_id": "+77010000001", "stage": "probing",
+              "seed": {"name": "Ромашка", "signals": []}}
     assert route._seller_move(None, thread, []) is None
 
 def test_a_stored_draft_keeps_its_prompt():

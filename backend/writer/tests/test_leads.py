@@ -7,6 +7,8 @@
 
 from datetime import date
 
+import pytest
+
 from writer.db import leads_source
 from writer.db.leads_source import PitchRules
 
@@ -157,3 +159,24 @@ def test_seed_carries_decision_maker(leads_db):
 
     assert lead["seed"]["dossier"]["decision_maker"] == "Айгуль, основатель", \
         "имя ЛПР собрано системой 1, но до системы 2 не доехало"
+
+def test_seed_of_demands_pitch_rules(leads_db):
+    """Дефолт у rules означал бы «отдать все сигналы» — и забытый аргумент
+    тихо вернул бы поведение до фильтра, причём навсегда: seed замерзает в
+    threads.seed и кормит непригодными поводами каждый следующий ход."""
+    db = leads_db
+    _seed(db)
+
+    with pytest.raises(TypeError):
+        leads_source.seed_of(db, "c_ok")
+
+
+def test_seed_of_filters_the_same_way_as_candidates(leads_db):
+    db = leads_db
+    _seed(db)
+    _extra_signals(db)
+
+    seed = leads_source.seed_of(db, "c_ok", RULES)
+
+    assert [s["type"] for s in seed["signals"]] == ["reviews_unanswered_complaint"], \
+        "путь карточки отбирает поводы иначе, чем путь операции"

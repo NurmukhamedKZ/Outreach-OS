@@ -150,24 +150,19 @@ def cards_of(db, company_ids):
     }
 
 
-def seed_of(db, company_id, rules: PitchRules | None = None):
-    """Контекст лида для затравки треда. None, если компания исчезла из базы."""
+def seed_of(db, company_id, rules: PitchRules):
+    """Контекст лида для затравки треда. None, если компания исчезла из базы.
+
+    rules обязателен и дефолта не имеет намеренно. Со значением по умолчанию
+    забытый аргумент означал бы «отдать все сигналы» — то есть тихо вернуть
+    поведение до фильтра, причём навсегда: seed замерзает в threads.seed, и
+    каждый следующий ход треда кормил бы модель непригодными поводами.
+    """
     row = db.execute(CANDIDATES + ONE_COMPANY, (company_id,)).fetchone()
     if not row:
         return None
     _, name, city, summary, decision_maker, hooks, pains, approach, sources = row
-    if rules is None:
-        rows = db.execute(
-            "SELECT type, quote, url, observed_at FROM signals WHERE company_id = ?"
-            " ORDER BY weight DESC, observed_at DESC, type",
-            (company_id,),
-        )
-        signals = [
-            {"type": kind, "quote": quote, "url": url, "observed_at": observed_at}
-            for kind, quote, url, observed_at in rows
-        ]
-    else:
-        signals = signals_of(db, company_id, rules)
+    signals = signals_of(db, company_id, rules)
     return {
         "name": name, "city": city,
         "dossier": {

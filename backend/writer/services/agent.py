@@ -136,8 +136,16 @@ def _log_trace_background(handler):
     threading.Thread(target=run, daemon=True).start()
 
 
-def draft(llm, seed, history, task, *, session_id, name, offer="", model_name="",
-          stage: str = stages.FIRST, pitchable: frozenset[str] = frozenset()):
+def draft(llm, seed, history, task, *, session_id, name, stage: str,
+          pitchable: frozenset[str], offer="", model_name=""):
+    """Ход агента. stage и pitchable — без дефолтов намеренно.
+
+    Дефолты у них были бы тихим откатом к старому поведению: забытый stage
+    писал бы follow-up по правилам первого касания, а забытый pitchable
+    схлопывал бы каждый угол в «other» и обнулял разрез by_angle. Отсутствие
+    значения обязано быть видно на первом же прогоне, а не в аналитике через
+    месяц.
+    """
     handler = observability.langfuse_handler()
     messages = [
         ("system", system_prompt(offer, stage)),

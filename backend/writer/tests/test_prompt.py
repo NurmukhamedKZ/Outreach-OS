@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from writer.services import agent, config
+from writer.services import agent, stages, config
 from writer.schemas.outreach import Draft
 
 CONFIG = config.load()
@@ -54,8 +54,8 @@ def test_system_role_carries_offer(monkeypatch):
     fake = FakeModel(Draft(text="Здравствуйте!", angle="ads_platform"))
     result = agent.draft(fake, seed, [], TASK,
                           session_id="thread-1", name="sender.followup",
-                          offer=CONFIG["offer"]["text"],
-                          pitchable=frozenset({"ads_platform"}))
+                          stage=stages.FIRST, pitchable=frozenset({"ads_platform"}),
+                          offer=CONFIG["offer"]["text"])
     assert result.draft.angle == "ads_platform", result
     assert fake.seen[0][0] == "system", fake.seen[0]
     assert CONFIG["offer"]["text"].strip()[:40] in fake.seen[0][1], "оффер не дошёл до модели"
@@ -97,7 +97,7 @@ def test_draft_retries_transport_error_then_succeeds(monkeypatch):
                         answer=Draft(text="Здравствуйте!", angle="ads_platform"))
 
     result = agent.draft(flaky, seed, [], agent.FIRST, session_id="thread-1", name="writer.first",
-                         pitchable=frozenset({"ads_platform"}))
+                         stage=stages.FIRST, pitchable=frozenset({"ads_platform"}))
 
     assert result.draft.angle == "ads_platform"
     assert flaky.calls == agent.TRANSPORT_RETRIES
@@ -112,7 +112,7 @@ def test_draft_gives_up_after_max_transport_retries(monkeypatch):
 
     with pytest.raises(httpx.RemoteProtocolError):
         agent.draft(flaky, seed, [], agent.FIRST, session_id="thread-1", name="writer.first",
-                    pitchable=frozenset({"ads_platform"}))
+                    stage=stages.FIRST, pitchable=frozenset({"ads_platform"}))
 
     assert flaky.calls == agent.TRANSPORT_RETRIES
 

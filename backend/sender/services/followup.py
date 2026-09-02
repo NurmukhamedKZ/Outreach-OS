@@ -16,8 +16,9 @@ from functools import lru_cache
 import logctx
 from sender.db import conversation
 from sender.services import config as sender_config, pool, queue
-from writer.db import thread_store
-from writer.services import agent, config as writer_config, followup as writer_followup
+from writer.db import leads_source, thread_store
+from writer.services import (agent, config as writer_config,
+                             followup as writer_followup, offers)
 
 log = logging.getLogger(__name__)
 
@@ -42,9 +43,11 @@ async def touch_one(db, transport, config: dict, now: datetime) -> str | None:
         card = thread_store.thread(db, thread["thread_id"])
         history = thread_store.history(db, thread["thread_id"])
         task = writer_followup.task(db, card)
+        config = writer_config.load()
         attempt = await asyncio.to_thread(
             _write, _llm(), card, history, task,
-            writer_config.load()["offer"]["text"])
+            offers.variant_of(thread["thread_id"], config)["text"],
+            leads_source.pitch_rules(config).pitchable)
         draft = attempt.draft
     except Exception:
         # Срок остаётся на месте: следующий тик попробует снова, и лид не
@@ -98,11 +101,14 @@ def _llm():
     return agent.model(writer_config.load())
 
 
-def _write(llm, card: dict, history: list[dict], task: str, offer: str):
+def _write(llm, card: dict, history: list[dict], task: str, offer: str,
+           pitchable: frozenset[str]):
     """Ровно поход в сеть — его и уносит to_thread. Базы здесь нет и быть не
-    может: соединение принадлежит потоку цикла."""
+    может: соединение принадлежит потоку цикла, поэтому этап, оффер и список
+    поводов приезжают сюда готовыми значениями."""
     with logctx.entity(card["thread_id"]):
         return agent.draft(llm, card["seed"], history, task,
                            session_id=card["thread_id"],
                            name="sender.followup", offer=offer,
-                           model_name=writer_config.load()["llm"]["model"])
+                           model_name=writer_config.load()["llm"]["model"],
+                           stage=card["stage"], pitchable=pitchable)
