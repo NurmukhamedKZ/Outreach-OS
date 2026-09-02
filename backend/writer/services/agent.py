@@ -23,6 +23,7 @@ import logctx
 import observability
 from config import settings
 from writer.schemas.outreach import Draft
+from writer.services import stages
 
 
 @dataclass(frozen=True)
@@ -53,24 +54,49 @@ REASONING = {"enabled": False}
 # collector/services/pipeline/llm.py::REQUEST_TIMEOUT_MS.
 REQUEST_TIMEOUT_MS = 60_000
 
-SYSTEM = """Ты пишешь исходящие сообщения в WhatsApp от лица команды, которая предлагает:
+SYSTEM = """# Роль
+Ты пишешь исходящие сообщения в WhatsApp от лица команды, которая предлагает:
 {offer}
 
-Правила, которые не обсуждаются:
+# Инструкции
 - Одно сообщение — один конкретный факт об этой компании, взятый из данных ниже.
   Без факта сообщение не отправляется: пиши stop=true.
-- Пиши так, как пишет человек в мессенджере: 3-5 коротких предложений, на «вы»,
-  без списков, без «Надеюсь, у вас всё хорошо», без слова «уникальный».
+- Пиши так, как пишет человек в мессенджере: на «вы», без списков, без
+  «Надеюсь, у вас всё хорошо», без слова «уникальный».
 - Не выдумывай фактов о компании. Всё, чего нет в данных, не существует.
 - Цены, сроки и любые цифры бери только из оффера выше. Их там нет — значит их
   нет и в сообщении: на вопрос о цене отвечай, что назовём после короткого
   разговора. Выдуманная цифра — это обещание, которое даёт живому человеку
   компания, а не модель.
-- angle — короткий машинный тип (crm_widget, ads_platform, answer), а не
-  описание сообщения фразой.
-- Заканчивай одним понятным вопросом, на который легко ответить «да» или «нет».
-- Каждое следующее сообщение несёт новый повод. Напоминание о предыдущем письме
-  поводом не является."""
+- Каждое следующее сообщение несёт новый повод. Напоминание о предыдущем
+  письме поводом не является.
+
+# Ограничения этапа
+{stage_rules}
+
+# Формат
+- 3-5 коротких предложений, заканчивай одним вопросом, на который легко
+  ответить «да» или «нет».
+- angle — машинный тип повода из данных, а не описание сообщения фразой."""
+
+
+def system_prompt(offer: str, stage: str) -> str:
+    return SYSTEM.format(offer=offer, stage_rules=stages.rules_for(stage))
+
+
+ANSWER_ANGLE = "answer"
+OTHER_ANGLE = "other"
+
+
+def normalize_angle(angle: str, pitchable: frozenset[str]) -> str:
+    """Угол, которого нет среди поводов, схлопывается в один «other».
+
+    Ронять готовый черновик из-за неудачного слова незачем, но и пускать
+    свободную фразу в разрез by_angle нельзя: таблица наполнится вариациями
+    одного повода — «отзывы», «жалоба в отзывах», «неотвеченный отзыв» — и
+    перестанет отвечать на вопрос, какой повод работает.
+    """
+    return angle if angle in pitchable or angle == ANSWER_ANGLE else OTHER_ANGLE
 
 
 def client(config):
@@ -110,10 +136,11 @@ def _log_trace_background(handler):
     threading.Thread(target=run, daemon=True).start()
 
 
-def draft(llm, seed, history, task, *, session_id, name, offer="", model_name=""):
+def draft(llm, seed, history, task, *, session_id, name, offer="", model_name="",
+          stage: str = stages.FIRST, pitchable: frozenset[str] = frozenset()):
     handler = observability.langfuse_handler()
     messages = [
-        ("system", SYSTEM.format(offer=offer)),
+        ("system", system_prompt(offer, stage)),
         ("human", prompt(seed, history, task)),
     ]
     config = {
@@ -126,7 +153,12 @@ def draft(llm, seed, history, task, *, session_id, name, offer="", model_name=""
             result = llm.invoke(messages, config=config)
             if handler:
                 _log_trace_background(handler)
-            return Attempt(draft=result, prompt=messages, model=model_name)
+            if isinstance(result, Draft):
+                checked = result.model_copy(
+                    update={"angle": normalize_angle(result.angle, pitchable)})
+            else:
+                checked = result
+            return Attempt(draft=checked, prompt=messages, model=model_name)
         except (httpx.TransportError, OutputParserException, ResponseValidationError):
             if attempt == TRANSPORT_RETRIES:
                 raise

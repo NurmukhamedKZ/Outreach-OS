@@ -54,7 +54,8 @@ def test_system_role_carries_offer(monkeypatch):
     fake = FakeModel(Draft(text="Здравствуйте!", angle="ads_platform"))
     result = agent.draft(fake, seed, [], TASK,
                           session_id="thread-1", name="sender.followup",
-                          offer=CONFIG["offer"]["text"])
+                          offer=CONFIG["offer"]["text"],
+                          pitchable=frozenset({"ads_platform"}))
     assert result.draft.angle == "ads_platform", result
     assert fake.seen[0][0] == "system", fake.seen[0]
     assert CONFIG["offer"]["text"].strip()[:40] in fake.seen[0][1], "оффер не дошёл до модели"
@@ -95,7 +96,8 @@ def test_draft_retries_transport_error_then_succeeds(monkeypatch):
     flaky = FlakyModel(fail_times=agent.TRANSPORT_RETRIES - 1,
                         answer=Draft(text="Здравствуйте!", angle="ads_platform"))
 
-    result = agent.draft(flaky, seed, [], agent.FIRST, session_id="thread-1", name="writer.first")
+    result = agent.draft(flaky, seed, [], agent.FIRST, session_id="thread-1", name="writer.first",
+                         pitchable=frozenset({"ads_platform"}))
 
     assert result.draft.angle == "ads_platform"
     assert flaky.calls == agent.TRANSPORT_RETRIES
@@ -109,7 +111,8 @@ def test_draft_gives_up_after_max_transport_retries(monkeypatch):
     flaky = FlakyModel(fail_times=agent.TRANSPORT_RETRIES, answer=None)
 
     with pytest.raises(httpx.RemoteProtocolError):
-        agent.draft(flaky, seed, [], agent.FIRST, session_id="thread-1", name="writer.first")
+        agent.draft(flaky, seed, [], agent.FIRST, session_id="thread-1", name="writer.first",
+                    pitchable=frozenset({"ads_platform"}))
 
     assert flaky.calls == agent.TRANSPORT_RETRIES
 
@@ -135,3 +138,28 @@ def test_prompt_stays_silent_about_unknown_decision_maker():
     }
     assert "Кто решает" not in agent.prompt(seed, [], TASK), \
         "пустая строка про ЛПР — приглашение модели выдумать имя"
+
+
+def test_unknown_angle_collapses_into_other():
+    """Модель вернула описание фразой вместо типа сигнала. Ронять из-за этого
+    готовый черновик незачем, но и в разрез аналитики такой угол пускать
+    нельзя: таблица by_angle наполнится вариациями одного и того же повода."""
+    assert agent.normalize_angle("рассказал про отзывы",
+                                 frozenset({"site_no_pricing"})) == agent.OTHER_ANGLE
+
+
+def test_known_angle_and_answer_survive():
+    pitchable = frozenset({"site_no_pricing"})
+
+    assert agent.normalize_angle("site_no_pricing", pitchable) == "site_no_pricing"
+    assert agent.normalize_angle("answer", pitchable) == "answer"
+
+
+def test_system_prompt_carries_rules_of_current_stage_only():
+    from writer.services import stages
+
+    system = agent.system_prompt(offer="оплата за встречу", stage="contact")
+
+    assert stages.rules_for("contact") in system
+    assert stages.rules_for("closing") not in system, \
+        "правила чужого этапа в промпте — приглашение перескочить"

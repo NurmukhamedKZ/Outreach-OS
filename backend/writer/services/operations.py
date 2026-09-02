@@ -6,7 +6,7 @@
 """
 
 from config import settings
-from writer.services import agent, config
+from writer.services import agent, config, stages
 from writer.db import leads_source, thread_store
 
 import logctx
@@ -33,7 +33,8 @@ def open_new_threads(ctx):
                 proposal = agent.draft(llm, lead["seed"], [], agent.FIRST,
                                         session_id=lead["thread_id"], name="writer.first",
                                         offer=CONFIG["offer"]["text"],
-                                        model_name=CONFIG["llm"]["model"])
+                                        model_name=CONFIG["llm"]["model"],
+                                        stage=stages.FIRST, pitchable=rules.pitchable)
                 if proposal.draft.stop:
                     ctx.log(f"{lead['seed']['name']}: агент советует не писать — повода в данных нет")
                     continue
