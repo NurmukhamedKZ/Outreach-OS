@@ -46,7 +46,7 @@ def test_open_new_threads_skips_existing_threads_and_drafts_only_new(monkeypatch
     monkeypatch.setattr(operations.leads_source, "connect",
                          lambda path: SimpleNamespace(close=lambda: None))
     monkeypatch.setattr(operations.leads_source, "candidates",
-                         lambda db, limit=None: candidates)
+                         lambda db, rules, limit=None: candidates)
     monkeypatch.setattr(operations.thread_store, "connect",
                          lambda path: SimpleNamespace(close=lambda: None))
     monkeypatch.setattr(operations.thread_store, "thread",
@@ -84,7 +84,7 @@ def test_open_new_threads_looks_past_already_threaded_top_of_list(monkeypatch):
     monkeypatch.setattr(operations.leads_source, "connect", lambda path: SimpleNamespace(close=lambda: None))
     # Как настоящий leads_source.candidates: limit режет список, а не игнорируется.
     monkeypatch.setattr(operations.leads_source, "candidates",
-                         lambda db, limit=None: candidates[:limit] if limit is not None else candidates)
+                         lambda db, rules, limit=None: candidates[:limit] if limit is not None else candidates)
     monkeypatch.setattr(operations.thread_store, "connect", lambda path: SimpleNamespace(close=lambda: None))
     monkeypatch.setattr(operations.thread_store, "thread", lambda db, thread_id: thread_id in existing_threads)
     monkeypatch.setattr(operations.thread_store, "open_thread", lambda *a: None)
@@ -120,7 +120,7 @@ def test_open_new_threads_tags_draft_calls_with_thread_id(monkeypatch):
 
     candidates = [{"thread_id": "t9", "company_id": "c9", "seed": {"name": "Gamma"}}]
     monkeypatch.setattr(operations.leads_source, "connect", lambda path: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(operations.leads_source, "candidates", lambda db, limit=None: candidates)
+    monkeypatch.setattr(operations.leads_source, "candidates", lambda db, rules, limit=None: candidates)
     monkeypatch.setattr(operations.thread_store, "connect", lambda path: SimpleNamespace(close=lambda: None))
     monkeypatch.setattr(operations.thread_store, "thread", lambda db, thread_id: False)
     monkeypatch.setattr(operations.thread_store, "open_thread", lambda *a: None)

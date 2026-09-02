@@ -20,7 +20,8 @@ def open_new_threads(ctx):
     leads = leads_source.connect(CONFIG["leads_db"])
     threads = thread_store.connect(CONFIG["threads_db"])
     try:
-        fresh = [lead for lead in leads_source.candidates(leads)
+        rules = leads_source.pitch_rules(CONFIG)
+        fresh = [lead for lead in leads_source.candidates(leads, rules)
                  if not thread_store.thread(threads, lead["thread_id"])][:limit]
         ctx.log(f"писем: {len(fresh)}, модель {CONFIG['llm']['model']}")
         llm = agent.model(CONFIG)

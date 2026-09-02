@@ -213,7 +213,7 @@ def state(leads, threads, company_id):
 def demo():
     """Роутер собирается, конфиг читается, базы открываются — без сети и модели."""
     leads, threads = open_stores()
-    assert leads_source.candidates(leads, 1) is not None
+    assert leads_source.candidates(leads, leads_source.pitch_rules(CONFIG), 1) is not None
     assert thread_store.thread(threads, "нет такого треда") is None
     assert {route.path for route in router.routes} == {
         "/api/threads",

@@ -13,6 +13,8 @@ scripts/check.py: он гоняет отбор на синтетической �
 import json
 import re
 import sqlite3
+from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 CHANNEL_PRIORITY = ("whatsapp", "phone")
@@ -41,7 +43,36 @@ def connect(path):
     return db
 
 
-def candidates(db, limit=None):
+@dataclass(frozen=True)
+class PitchRules:
+    """Чем разрешено цеплять. Три параметра одного решения — «годится ли этот
+    сигнал как повод», поэтому едут вместе, а не тремя аргументами."""
+    pitchable: frozenset[str]
+    max_age_days: int
+    today: date
+
+
+def pitch_rules(config: dict, today: date | None = None) -> PitchRules:
+    return PitchRules(
+        pitchable=frozenset(config["signals"]["pitchable"]),
+        max_age_days=config["signals"]["max_age_days"],
+        today=today or date.today(),
+    )
+
+
+def _fresh(observed_at: str | None, rules: PitchRules) -> bool:
+    """Нечитаемая дата считается свежей: сигнал теряется молча только когда мы
+    точно знаем, что он стар."""
+    if not observed_at:
+        return True
+    try:
+        observed = date.fromisoformat(observed_at[:10])
+    except ValueError:
+        return True
+    return (rules.today - observed).days <= rules.max_age_days
+
+
+def candidates(db, rules: PitchRules, limit: int | None = None) -> list[dict]:
     """Лиды по убыванию intent, у которых есть номер и нет отказа.
 
     limit=None — без потолка: вызывающая сторона сама фильтрует список (например,
@@ -72,7 +103,7 @@ def candidates(db, limit=None):
                     "approach": approach,
                     "sources": json.loads(sources or "[]"),
                 },
-                "signals": signals_of(db, company_id),
+                "signals": signals_of(db, company_id, rules),
             },
         })
     return found
@@ -118,12 +149,24 @@ def cards_of(db, company_ids):
     }
 
 
-def seed_of(db, company_id):
+def seed_of(db, company_id, rules: PitchRules | None = None):
     """Контекст лида для затравки треда. None, если компания исчезла из базы."""
     row = db.execute(CANDIDATES + ONE_COMPANY, (company_id,)).fetchone()
     if not row:
         return None
     _, name, city, summary, hooks, pains, approach, sources = row
+    if rules is None:
+        rows = db.execute(
+            "SELECT type, quote, url, observed_at FROM signals WHERE company_id = ?"
+            " ORDER BY weight DESC, observed_at DESC, type",
+            (company_id,),
+        )
+        signals = [
+            {"type": kind, "quote": quote, "url": url, "observed_at": observed_at}
+            for kind, quote, url, observed_at in rows
+        ]
+    else:
+        signals = signals_of(db, company_id, rules)
     return {
         "name": name, "city": city,
         "dossier": {
@@ -133,18 +176,32 @@ def seed_of(db, company_id):
             "approach": approach,
             "sources": json.loads(sources or "[]"),
         },
-        "signals": signals_of(db, company_id),
+        "signals": signals,
     }
 
 
-def signals_of(db, company_id):
-    """Сигналы системы 1 — они же углы для follow-up: у каждого своя цитата."""
+def signals_of(db, company_id: str, rules: PitchRules | None = None) -> list[dict]:
+    """Поводы для письма: только pitchable-типы, только с цитатой, только свежие.
+
+    Сигнал без цитаты — не наблюдение, а догадка: процитировать его в письме
+    нечем, а письмо без цитаты и есть тот шаблон, ради отсутствия которого
+    написана система 2.
+    """
     rows = db.execute(
-        "SELECT type, quote, url FROM signals WHERE company_id = ?"
+        "SELECT type, quote, url, observed_at FROM signals WHERE company_id = ?"
         " ORDER BY weight DESC, observed_at DESC, type",
         (company_id,),
     )
-    return [{"type": kind, "quote": quote, "url": url} for kind, quote, url in rows]
+    if rules is None:
+        return [
+            {"type": kind, "quote": quote, "url": url, "observed_at": observed_at}
+            for kind, quote, url, observed_at in rows
+        ]
+    return [
+        {"type": kind, "quote": quote, "url": url, "observed_at": observed_at}
+        for kind, quote, url, observed_at in rows
+        if kind in rules.pitchable and quote and _fresh(observed_at, rules)
+    ]
 
 
 def channels_by_company(db, company_id=None):
