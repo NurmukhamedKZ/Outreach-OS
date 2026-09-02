@@ -102,3 +102,15 @@ def test_classify_tool_returns_its_verdict_as_json():
     assert json.loads(seller.classify.invoke(
         {"status": "refusal", "reason": "не интересно"})) == {
             "status": "refusal", "reason": "не интересно"}
+
+
+def test_prompt_carries_rules_of_the_current_stage():
+    from writer.services import stages
+
+    seed = {"name": "Ромашка", "city": "almaty", "dossier": {}, "signals": []}
+
+    text = seller.prompt(seed, [{"role": "incoming", "text": "а сколько стоит?"}], "probing")
+
+    assert stages.rules_for("probing") in text
+    assert stages.rules_for("closing") not in text, \
+        "правила чужого этапа рядом с вопросом о цене — прямой путь в выдуманную цифру"

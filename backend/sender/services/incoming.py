@@ -20,7 +20,7 @@ from sender import notify
 from sender.db import conversation
 from sender.services import config as sender_config, pool, queue, refusal
 from writer.db import thread_store
-from writer.services import config as writer_config, seller
+from writer.services import config as writer_config, offers, seller, stages
 
 log = logging.getLogger(__name__)
 
@@ -66,10 +66,11 @@ async def handle_one(db, transport, config: dict, now: datetime) -> str | None:
         # данные. sqlite3-соединение создано в потоке цикла и из чужого потока
         # бросает ProgrammingError — то есть агент не был бы вызван ни разу, а
         # каждое входящее сгорало бы тремя попытками в эскалацию.
-        seed = thread_store.thread(db, thread["thread_id"])["seed"]
+        record = thread_store.thread(db, thread["thread_id"])
+        seed, stage = record["seed"], record["stage"]
         history = thread_store.history(db, thread["thread_id"])
         reply = await asyncio.to_thread(_ask, _seller(), seed, history,
-                                        thread["thread_id"])
+                                        thread["thread_id"], stage)
     except Exception:
         # Попытка потрачена, `handled_at` пуст: следующий тик попробует снова,
         # а четвёртый отдаст тред человеку.
@@ -78,11 +79,11 @@ async def handle_one(db, transport, config: dict, now: datetime) -> str | None:
 
     if reply.status is not None:
         return await _verdict(db, thread, row, reply, now)
-    return await _answer(db, transport, thread, row, reply.text, now, config)
+    return await _answer(db, transport, thread, row, reply.text, now, config, stage)
 
 
 async def _answer(db, transport, thread: dict, row: dict, text: str,
-                  now: datetime, config: dict) -> str:
+                  now: datetime, config: dict, stage: str) -> str:
     """Свободный текст агента — через те же гейты, что холодное касание."""
     if len(text) > config["limits"]["max_reply_chars"] or PRICE.search(text):
         return await _escalate(db, thread, row, now,
@@ -91,6 +92,8 @@ async def _answer(db, transport, thread: dict, row: dict, text: str,
         message_id = conversation.add_draft(db, thread["thread_id"], text, ANGLE)
         conversation.bump_auto_replies(db, thread["thread_id"])
         conversation.mark_handled(db, row["message_id"], now)
+        thread_store.set_stage(db, thread["thread_id"],
+                               stages.stage_after(stage, stages.advance(stage)))
     if sender_config.autopilot() not in REPLY_MODES:
         log.info("ответ в тред %s остался черновиком: автопилот выключен",
                  thread["thread_id"])
@@ -140,9 +143,10 @@ def _seller():
     return seller.build(writer_config.load())
 
 
-def _ask(agent, seed: dict, history: list[dict], thread_id: str):
+def _ask(agent, seed: dict, history: list[dict], thread_id: str, stage: str):
     """Ровно поход в сеть — его и уносит to_thread. Базы здесь нет и быть не
     может: соединение принадлежит потоку цикла."""
+    config = writer_config.load()
     return seller.respond(agent, seed, history,
-                          writer_config.load()["offer"]["text"],
-                          session_id=thread_id)
+                          offers.variant_of(thread_id, config)["text"],
+                          session_id=thread_id, stage=stage)

@@ -48,7 +48,7 @@ async def test_the_agent_is_actually_reached_with_a_live_connection(answered, mo
     """
     seen = {}
 
-    def respond(agent, seed, history, offer, *, session_id):
+    def respond(agent, seed, history, offer, *, session_id, stage=None):
         seen["seed"], seen["history"], seen["session"] = seed, history, session_id
         return Reply(text="Цену назовём после разговора.", status=None, reason=None)
 

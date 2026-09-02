@@ -19,6 +19,7 @@ from langchain_core.tools import tool
 
 import observability
 from writer.services import agent as writer_agent
+from writer.services import stages
 
 log = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ def build(config: dict):
 
 
 def respond(agent, seed: dict, history: list[dict], offer: str, *,
-            session_id: str) -> Reply:
+            session_id: str, stage: str = stages.FIRST) -> Reply:
     """Один ход. Сессия Langfuse — тред: когда лид скажет «вы обещали X»,
     ответ должен находиться за десять секунд."""
     handler = observability.langfuse_handler()
@@ -92,7 +93,7 @@ def respond(agent, seed: dict, history: list[dict], offer: str, *,
                      "langfuse_tags": ["sender.reply"]},
         "callbacks": [handler] if handler else [],
     }
-    result = agent.invoke({"messages": [("human", prompt(seed, history))]},
+    result = agent.invoke({"messages": [("human", prompt(seed, history, stage))]},
                           config=config)
     if handler:
         writer_agent._log_trace_background(handler)
@@ -116,11 +117,14 @@ def _outcome(last) -> Reply:
     return Reply(text=None, status=status, reason=reason)
 
 
-def prompt(seed: dict, history: list[dict]) -> str:
-    """Карточка компании и диалог. Холодное сообщение — просто первое outgoing
-    в этом диалоге: отдельное поле для него было бы вторым представлением того
-    же текста."""
+def prompt(seed: dict, history: list[dict], stage: str = stages.FIRST) -> str:
+    """Карточка компании, диалог и ограничения текущего этапа.
+
+    Правила этапа идут сюда, а не в системный промпт: агент собирается один раз
+    на процесс, а этап меняется от хода к ходу.
+    """
     return writer_agent.prompt(
         seed, history,
+        f"Ограничения этапа:\n{stages.rules_for(stage)}\n\n"
         "Задача: ответить на последнюю реплику собеседника — или закрыть тред"
         " инструментом classify.")
