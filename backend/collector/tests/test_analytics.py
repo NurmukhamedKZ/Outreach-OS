@@ -120,3 +120,27 @@ def test_endpoint_answers_with_the_full_report(state):
     assert body["days"] == 7
     assert [row["step"] for row in body["funnel"]] == list(analytics.STEPS)
     assert "diagnosis" in body
+
+
+def test_report_survives_a_database_without_foreign_layers(tmp_path):
+    """state.db, которую создал только collector: ни outbox системы 3, ни
+    stage/outcome системы 2 в ней ещё нет. Страница обязана показать нули —
+    аналитика читает три чужих слоя и не создаёт ни одного."""
+    import pathlib
+
+    path = tmp_path / "state.db"
+    db = sqlite3.connect(path)
+    schema = (pathlib.Path(__file__).resolve().parent.parent / "db" / "schema.sql"
+              ).read_text(encoding="utf-8")
+    db.executescript(schema[schema.index("-- STATE --"):schema.index("-- DERIVED --")])
+    db.execute("INSERT INTO threads (thread_id, company_id, seed, created_at)"
+               " VALUES ('+77010000001', 'c_ok', '{}', '2026-01-01')")
+    db.commit()
+    db.close()
+    analytics.use(path)
+
+    report = analytics.report()
+
+    assert [row["count"] for row in report["funnel"]] == [0] * len(analytics.STEPS)
+    assert report["by_offer"] == [] and report["diagnosis"] == "ok"
+    analytics.use(None)

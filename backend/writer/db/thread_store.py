@@ -14,6 +14,11 @@ import json
 import sqlite3
 from datetime import date, datetime, timezone
 
+# Этап новорождённого треда. Живёт здесь, а не берётся из services.stages:
+# слой базы не зависит от слоя сервисов, и та же строка уже стоит дефолтом в
+# SCHEMA ниже — расхождение поймает test_threads.
+FIRST_STAGE = "contact"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS threads (
   thread_id  TEXT PRIMARY KEY,   -- номер WhatsApp, +7XXXXXXXXXX
@@ -85,8 +90,19 @@ def open_thread(db, thread_id, company_id, seed):
 
 
 def thread(db, thread_id):
+    """Карточка треда. Колонки этапа и исхода читаются терпимо — их доливает
+    connect() этого модуля, а зовут thread() и с чужих соединений: тик системы
+    3 открывает базу своей миграцией, которая чужих колонок не создаёт и не
+    должна. Жёсткий SELECT падал бы там OperationalError'ом внутри широкого
+    except у входящих — то есть каждое сообщение лида молча уезжало бы в
+    escalated. Тот же приём, что у history() с чужой таблицей outbox.
+    """
+    stage = "stage" if _has_column(db, "threads", "stage") else f"'{FIRST_STAGE}'"
+    outcome = "outcome" if _has_column(db, "threads", "outcome") else "NULL"
+    meeting_at = "meeting_at" if _has_column(db, "threads", "meeting_at") else "NULL"
     row = db.execute(
-        "SELECT thread_id, company_id, seed, created_at, stage, outcome, meeting_at FROM threads WHERE thread_id = ?",
+        f"SELECT thread_id, company_id, seed, created_at, {stage}, {outcome}, {meeting_at}"
+        " FROM threads WHERE thread_id = ?",
         (thread_id,),
     ).fetchone()
     if not row:

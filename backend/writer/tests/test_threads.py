@@ -4,6 +4,7 @@
 следующий ход агента строился бы на сообщении, которого лид не получал.
 """
 
+import sqlite3
 from pathlib import Path
 
 from writer.db import thread_store
@@ -326,3 +327,31 @@ def test_refusal_leaves_meeting_time_empty():
     thread_store.set_outcome(db, "+77010000001", "refused")
 
     assert thread_store.thread(db, "+77010000001")["meeting_at"] is None
+
+
+def test_thread_reads_from_a_connection_without_writer_columns():
+    """Тик системы 3 открывает базу своей миграцией, которая stage/outcome не
+    создаёт. Жёсткий SELECT падал бы там внутри широкого except у входящих —
+    то есть каждый ответ лида молча уезжал бы в escalated."""
+    db = sqlite3.connect(":memory:")
+    db.executescript(
+        "CREATE TABLE threads (thread_id TEXT PRIMARY KEY, company_id TEXT NOT NULL,"
+        "  seed TEXT NOT NULL, created_at TEXT NOT NULL);"
+        "CREATE TABLE messages (message_id INTEGER PRIMARY KEY, thread_id TEXT,"
+        "  role TEXT, draft_text TEXT, sent_text TEXT, angle TEXT, created_at TEXT,"
+        "  sent_at TEXT);"
+    )
+    db.execute("INSERT INTO threads VALUES ('+77010000001', 'c_ok', '{}', '2026-01-01')")
+    db.commit()
+
+    card = thread_store.thread(db, "+77010000001")
+
+    assert card["stage"] == thread_store.FIRST_STAGE
+    assert card["outcome"] is None and card["meeting_at"] is None
+
+
+def test_first_stage_matches_the_default_in_schema():
+    """Строка продублирована в константе и в DDL этого же файла — расхождение
+    означало бы, что тред, созданный SQL, и тред, прочитанный без колонки,
+    стоят на разных этапах."""
+    assert f"DEFAULT '{thread_store.FIRST_STAGE}'" in thread_store.SCHEMA

@@ -32,6 +32,7 @@ from collector.db import lead as lead_store
 from collector.services.pipeline import OPERATIONS, PIPELINES
 from sender.routes import sender, webhook as sender_webhook
 from sender.services import refusal as sender_refusal
+from writer.db import thread_store
 from writer.routes import threads as writer
 from writer.services import operations as writer_operations
 
@@ -71,6 +72,14 @@ WEB_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1):\d+$"
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # Схему переписки доливает её владелец — и кто-то обязан позвать его до
+    # первого входящего. Тик системы 3 читает и пишет threads.stage на своём
+    # соединении, а её миграция чужих колонок не создаёт (и не должна: колонка,
+    # созданная раньше владельца, украла бы у его миграции разметку старых
+    # строк). Здесь же, а не в самом sender'е, по той же причине, по которой
+    # здесь живут остальные швы: api.py — единственное место, где системы
+    # видят друг друга.
+    thread_store.connect(store.STATE).close()
     queue.fail_orphans()
     worker = asyncio.create_task(queue.worker_loop())
     monitor = asyncio.create_task(sender.monitor_numbers())
