@@ -272,11 +272,18 @@ def add_incoming(db, thread_id, text, provider_id=None):
     принёс вебхук: по нему транспорт узнаёт уже записанное событие.
     """
     stamp = now()
-    db.execute(
-        "INSERT INTO messages (thread_id, role, sent_text, provider_id, created_at, sent_at)"
-        " VALUES (?, 'incoming', ?, ?, ?, ?)",
-        (thread_id, text, provider_id, stamp, stamp),
-    )
+    if _has_column(db, "messages", "provider_id"):
+        db.execute(
+            "INSERT INTO messages (thread_id, role, sent_text, provider_id, created_at, sent_at)"
+            " VALUES (?, 'incoming', ?, ?, ?, ?)",
+            (thread_id, text, provider_id, stamp, stamp),
+        )
+    else:
+        db.execute(
+            "INSERT INTO messages (thread_id, role, sent_text, created_at, sent_at)"
+            " VALUES (?, 'incoming', ?, ?, ?)",
+            (thread_id, text, stamp, stamp),
+        )
     db.commit()
 
 
