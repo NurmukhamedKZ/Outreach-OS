@@ -161,9 +161,22 @@ def _held(db: sqlite3.Connection) -> str:
     return HELD if _has_column(db, "threads", "outcome") else "0"
 
 
+FIRST_SENT = (
+    " AND m.message_id = (SELECT min(f.message_id) FROM messages f"
+    "                     WHERE f.thread_id = t.thread_id AND f.role = 'outgoing'"
+    "                     AND f.sent_text IS NOT NULL)"
+)
+
+
 def _breakdown(db: sqlite3.Connection, since: str, column: str | None) -> list[dict]:
-    """Разрез по одной из трёх переменных. Треды, открытые до A/B, идут своей
-    строкой, а не подмешиваются к варианту, которого тогда не существовало."""
+    """Разрез по одной из трёх переменных, считая тред по ЕГО ПЕРВОМУ письму.
+
+    Иначе тред попадал бы в несколько строк сразу: follow-up системы 3 пишет
+    свой угол и не пишет offer_variant вовсе, так что тред считался бы и под
+    своим вариантом, и под «до A/B», а сумма по разрезу превышала бы sent из
+    воронки. Первое письмо — то, на которое отвечают, и именно его повод и
+    оффер проверяются.
+    """
     if column is None:
         return []
     rows = db.execute(
@@ -171,7 +184,7 @@ def _breakdown(db: sqlite3.Connection, since: str, column: str | None) -> list[d
         "        count(DISTINCT t.thread_id) AS sent,"
         f"       count(DISTINCT CASE WHEN {REPLIED} THEN t.thread_id END) AS replied,"
         f"       count(DISTINCT CASE WHEN {_held(db)} THEN t.thread_id END) AS meetings"
-        + SENT_THREADS +
+        + SENT_THREADS + FIRST_SENT +
         " GROUP BY key ORDER BY sent DESC",
         (since,),
     )

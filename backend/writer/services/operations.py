@@ -21,8 +21,8 @@ def open_new_threads(ctx):
     threads = thread_store.connect(CONFIG["threads_db"])
     try:
         rules = leads_source.pitch_rules(CONFIG)
-        fresh = [lead for lead in leads_source.candidates(leads, rules)
-                 if not thread_store.thread(threads, lead["thread_id"])][:limit]
+        fresh = leads_source.candidates(leads, rules, limit,
+                                        skip=thread_store.open_thread_ids(threads))
         ctx.log(f"писем: {len(fresh)}, модель {CONFIG['llm']['model']}")
         llm = agent.model(CONFIG)
         for number, lead in enumerate(fresh, 1):

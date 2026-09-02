@@ -47,7 +47,7 @@ check_cancelled=lambda: None))"` — пробы ходят в сеть и чит
 Веб — два процесса, браузеру нужен только порт 3000:
 
 ```bash
-cd backend uv run python main.py                                         # FastAPI, все три системы
+cd backend && uv run python main.py                            # FastAPI, все три системы
 cd frontend && npm run dev                                    # Next.js -> http://localhost:3000
 cd backend/sender/node && npm start                           # сокеты WhatsApp, порт 8788
 ```

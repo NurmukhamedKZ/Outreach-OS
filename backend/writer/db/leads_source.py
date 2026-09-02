@@ -72,12 +72,17 @@ def _fresh(observed_at: str | None, rules: PitchRules) -> bool:
     return (rules.today - observed).days <= rules.max_age_days
 
 
-def candidates(db, rules: PitchRules, limit: int | None = None) -> list[dict]:
+def candidates(db, rules: PitchRules, limit: int | None = None,
+               skip: frozenset[str] = frozenset()) -> list[dict]:
     """Лиды по убыванию intent, у которых есть номер и нет отказа.
 
     limit=None — без потолка: вызывающая сторона сама фильтрует список (например,
     по «уже есть тред») и не может заранее знать, сколько строк из начала
     ранжированного списка отсеется её фильтром.
+
+    skip — её же фильтр, применённый здесь, а не после. Сигналы читаются
+    отдельным запросом на компанию, и без него отбор десяти свежих лидов
+    означал бы такой запрос на каждую из тысячи уже отработанных.
     """
     suppressed = suppression_handles(db)
     channels = channels_by_company(db)
@@ -87,7 +92,7 @@ def candidates(db, rules: PitchRules, limit: int | None = None) -> list[dict]:
         if limit is not None and len(found) == limit:
             break
         channel = best_channel(channels.get(company_id, []), suppressed)
-        if not channel:
+        if not channel or channel[1] in skip:
             continue
         found.append({
             "company_id": company_id,

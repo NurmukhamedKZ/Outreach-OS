@@ -150,6 +150,7 @@ def add_incoming(company_id: str, request: TextRequest):
         if not request.text.strip():
             raise HTTPException(400, "пустой ответ лида не бывает")
         thread_store.add_incoming(threads, channel[1], request.text.strip())
+        stages.note_incoming(threads, channel[1])
         return state(leads, threads, company_id)
     finally:
         leads.close()

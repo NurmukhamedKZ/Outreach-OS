@@ -240,6 +240,12 @@ def add_draft(db, thread_id, text, angle, prompt=None, model=None, offer_variant
     return cursor.lastrowid
 
 
+def open_thread_ids(db) -> frozenset[str]:
+    """Треды, которые уже открыты. Одним запросом: отбор новых лидов иначе
+    спрашивал бы базу про каждого кандидата по очереди."""
+    return frozenset(row[0] for row in db.execute("SELECT thread_id FROM threads"))
+
+
 def cold_drafts(db):
     """Треды, где есть черновик и не отправлено ни одного сообщения, — то есть
     ровно первое касание. Порядок задаёт вызывающий: скор живёт в базе лидов."""

@@ -58,3 +58,26 @@ def test_stage_survives_write():
     thread_store.set_stage(db, "+77010000001", "probing")
 
     assert thread_store.thread(db, "+77010000001")["stage"] == "probing"
+
+
+def test_incoming_moves_the_thread_no_matter_who_wrote_it_down():
+    """Авторов записи входящего два — вебхук и рука оператора в инбоксе. Пока
+    переход жил только у одного, при autopilot = off машина этапов была
+    мертва: тред вечно в contact, dialog в воронке ноль при растущем replied."""
+    db = thread_store.connect(":memory:")
+    thread_store.open_thread(db, "+77010000001", "c_ok", {"name": "Ромашка"})
+
+    stages.note_incoming(db, "+77010000001")
+    assert thread_store.thread(db, "+77010000001")["stage"] == "probing"
+
+    stages.note_incoming(db, "+77010000001")
+    stages.note_incoming(db, "+77010000001")
+    stages.note_incoming(db, "+77010000001")
+    assert thread_store.thread(db, "+77010000001")["stage"] == "closing", \
+        "разговор обязан дойти до closing и остановиться там"
+
+
+def test_note_incoming_survives_a_missing_thread():
+    db = thread_store.connect(":memory:")
+
+    stages.note_incoming(db, "+77019999999")

@@ -67,3 +67,22 @@ def advance(stage: str) -> str:
 
 def rules_for(stage: str) -> str:
     return RULES.get(stage, RULES[FIRST])
+
+
+def note_incoming(db, thread_id: str) -> None:
+    """Входящее двигает разговор на шаг — единственный автор перехода.
+
+    Авторов записи входящего два: вебхук системы 3 и рука оператора в инбоксе
+    (основной путь при autopilot = off). Переход, написанный только у одного,
+    означал бы, что при выключенном автопилоте машина этапов мертва: тред
+    вечно в contact, dialog в воронке ноль при растущем replied.
+
+    Своим commit'ом, а не внутри транзакции вызывающего: этап — не часть
+    записи сообщения, и держать чужой `with db:` открытым ради него нечего.
+    """
+    from writer.db import thread_store
+
+    card = thread_store.thread(db, thread_id)
+    if card is None:
+        return
+    thread_store.set_stage(db, thread_id, stage_after(card["stage"], advance(card["stage"])))

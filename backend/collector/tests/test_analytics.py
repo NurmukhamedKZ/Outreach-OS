@@ -144,3 +144,24 @@ def test_report_survives_a_database_without_foreign_layers(tmp_path):
     assert [row["count"] for row in report["funnel"]] == [0] * len(analytics.STEPS)
     assert report["by_offer"] == [] and report["diagnosis"] == "ok"
     analytics.use(None)
+
+
+def test_a_thread_lands_in_one_row_per_breakdown(state):
+    """Follow-up системы 3 пишет свой угол и не пишет offer_variant вовсе.
+    Считая все письма, тред попадал бы и под свой вариант, и под «до A/B», а
+    сумма по разрезу превышала бы sent из воронки."""
+    db, path = state
+    _thread(db, "+77010000001", angle="site_no_pricing", variant="pay_per_meeting")
+    followup = thread_store.add_draft(db, "+77010000001", "касание", "ig_dormant")
+    db.execute("UPDATE messages SET sent_text = 'касание', sent_at = ?"
+               " WHERE message_id = ?", (thread_store.now(), followup))
+    db.commit()
+    analytics.use(path)
+
+    report = analytics.report()
+    sent = next(row["count"] for row in report["funnel"] if row["step"] == "sent")
+
+    assert sum(row["sent"] for row in report["by_offer"]) == sent
+    assert sum(row["sent"] for row in report["by_angle"]) == sent
+    assert [row["key"] for row in report["by_angle"]] == ["site_no_pricing"], \
+        "разрез считает не первое письмо треда"

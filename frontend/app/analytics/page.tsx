@@ -64,13 +64,20 @@ export default function AnalyticsPage() {
             <tr>
               <th>Шаг</th>
               <th>Абсолют</th>
-              <th>Переход</th>
+              <th>Доля отправленных</th>
             </tr>
           </thead>
           <tbody>
             {report.funnel.map((row, index) => {
-              const prev = index > 0 ? report.funnel[index - 1].count : null;
-              const pct = prev ? `${Math.round((row.count / prev) * 100)}%` : "—";
+              // Доля от начала воронки, а не от предыдущего шага: исход треда
+              // ставит человек и вправе отметить встречу в треде, который до
+              // диалога не дорос, — от предыдущего шага это дало бы больше
+              // 100%. От sent такого не бывает: каждый шаг считается среди
+              // отправленных.
+              const sent = report.funnel[0]?.count ?? 0;
+              const pct = index === 0 || !sent
+                ? "—"
+                : `${Math.round((row.count / sent) * 100)}%`;
               return (
                 <tr key={row.step}>
                   <td>{STEP_LABELS[row.step] ?? row.step}</td>

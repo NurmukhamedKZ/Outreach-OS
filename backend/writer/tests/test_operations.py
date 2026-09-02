@@ -46,11 +46,12 @@ def test_open_new_threads_skips_existing_threads_and_drafts_only_new(monkeypatch
     monkeypatch.setattr(operations.leads_source, "connect",
                          lambda path: SimpleNamespace(close=lambda: None))
     monkeypatch.setattr(operations.leads_source, "candidates",
-                         lambda db, rules, limit=None: candidates)
+                         lambda db, rules, limit=None, skip=frozenset():
+                         [c for c in candidates if c["thread_id"] not in skip][:limit])
     monkeypatch.setattr(operations.thread_store, "connect",
                          lambda path: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(operations.thread_store, "thread",
-                         lambda db, thread_id: thread_id in existing_threads)
+    monkeypatch.setattr(operations.thread_store, "open_thread_ids",
+                         lambda db: frozenset(existing_threads))
     monkeypatch.setattr(operations.thread_store, "open_thread", lambda *a: None)
     monkeypatch.setattr(operations.thread_store, "add_draft",
                          lambda db, thread_id, text, angle, **kw: drafted.append(thread_id))
@@ -82,11 +83,17 @@ def test_open_new_threads_looks_past_already_threaded_top_of_list(monkeypatch):
     existing_threads = {c["thread_id"] for c in candidates[:-1]}
 
     monkeypatch.setattr(operations.leads_source, "connect", lambda path: SimpleNamespace(close=lambda: None))
-    # Как настоящий leads_source.candidates: limit режет список, а не игнорируется.
-    monkeypatch.setattr(operations.leads_source, "candidates",
-                         lambda db, rules, limit=None: candidates[:limit] if limit is not None else candidates)
+    # Как настоящий leads_source.candidates: skip отсеивает занятые треды ДО
+    # того, как limit режет список. Порядок здесь и есть суть теста: режь limit
+    # раньше skip — и свежий лид за окном снова потеряется.
+    def fake_candidates(db, rules, limit=None, skip=frozenset()):
+        fresh = [c for c in candidates if c["thread_id"] not in skip]
+        return fresh[:limit] if limit is not None else fresh
+
+    monkeypatch.setattr(operations.leads_source, "candidates", fake_candidates)
     monkeypatch.setattr(operations.thread_store, "connect", lambda path: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(operations.thread_store, "thread", lambda db, thread_id: thread_id in existing_threads)
+    monkeypatch.setattr(operations.thread_store, "open_thread_ids",
+                        lambda db: frozenset(existing_threads))
     monkeypatch.setattr(operations.thread_store, "open_thread", lambda *a: None)
     drafted = []
     monkeypatch.setattr(operations.thread_store, "add_draft",
@@ -120,9 +127,10 @@ def test_open_new_threads_tags_draft_calls_with_thread_id(monkeypatch):
 
     candidates = [{"thread_id": "t9", "company_id": "c9", "seed": {"name": "Gamma"}}]
     monkeypatch.setattr(operations.leads_source, "connect", lambda path: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(operations.leads_source, "candidates", lambda db, rules, limit=None: candidates)
+    monkeypatch.setattr(operations.leads_source, "candidates",
+                        lambda db, rules, limit=None, skip=frozenset(): candidates)
     monkeypatch.setattr(operations.thread_store, "connect", lambda path: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(operations.thread_store, "thread", lambda db, thread_id: False)
+    monkeypatch.setattr(operations.thread_store, "open_thread_ids", lambda db: frozenset())
     monkeypatch.setattr(operations.thread_store, "open_thread", lambda *a: None)
     monkeypatch.setattr(operations.thread_store, "add_draft", lambda *a, **kw: None)
     monkeypatch.setattr(operations.agent, "model", lambda config: "llm-stub")

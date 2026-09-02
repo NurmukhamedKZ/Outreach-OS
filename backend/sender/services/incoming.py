@@ -79,11 +79,11 @@ async def handle_one(db, transport, config: dict, now: datetime) -> str | None:
 
     if reply.status is not None:
         return await _verdict(db, thread, row, reply, now)
-    return await _answer(db, transport, thread, row, reply.text, now, config, stage)
+    return await _answer(db, transport, thread, row, reply.text, now, config)
 
 
 async def _answer(db, transport, thread: dict, row: dict, text: str,
-                  now: datetime, config: dict, stage: str) -> str:
+                  now: datetime, config: dict) -> str:
     """Свободный текст агента — через те же гейты, что холодное касание."""
     if len(text) > config["limits"]["max_reply_chars"] or PRICE.search(text):
         return await _escalate(db, thread, row, now,
@@ -92,8 +92,6 @@ async def _answer(db, transport, thread: dict, row: dict, text: str,
         message_id = conversation.add_draft(db, thread["thread_id"], text, ANGLE)
         conversation.bump_auto_replies(db, thread["thread_id"])
         conversation.mark_handled(db, row["message_id"], now)
-        thread_store.set_stage(db, thread["thread_id"],
-                               stages.stage_after(stage, stages.advance(stage)))
     if sender_config.autopilot() not in REPLY_MODES:
         log.info("ответ в тред %s остался черновиком: автопилот выключен",
                  thread["thread_id"])

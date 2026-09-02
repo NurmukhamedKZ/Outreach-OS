@@ -20,6 +20,7 @@ from config import settings
 from sender import notify
 from sender.db import conversation, migrate, numbers, outbox
 from sender.services import config, refusal
+from writer.services import stages
 
 router = APIRouter(prefix="/api/sender")
 log = logging.getLogger(__name__)
@@ -183,6 +184,10 @@ async def _record_incoming(event: Event, moment: datetime) -> bool:
             activity.record("webhook", "duplicate", subject=thread_id,
                             detail=event.provider_id)
             return False
+        # После коммита, а не внутри: этап — не часть записи сообщения, и
+        # держать ради него открытой транзакцию state.db, за которой стоит
+        # очередь, незачем.
+        stages.note_incoming(db, thread_id)
     activity.record("webhook", "incoming", subject=thread_id)
     if refused:
         # Отказ пишется ПОСЛЕ коммита: шов ходит в чужую базу, и держать на нём
