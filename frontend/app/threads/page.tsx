@@ -15,6 +15,7 @@ import {
   fetchQueue,
   fetchThreads,
   requestDraft,
+  setThreadOutcome,
   type Conversation,
   type QueueRow,
   type ThreadSummary,
@@ -91,6 +92,21 @@ export default function Threads() {
     try {
       const next = await action();
       setConversation(next);
+    } catch (error) {
+      setFailure((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function markOutcome(outcome: "meeting_agreed" | "meeting_held" | "lost") {
+    if (!selected) return;
+    setBusy(true);
+    setFailure(null);
+    try {
+      await setThreadOutcome(selected, outcome);
+      const conv = await fetchConversation(selected);
+      setConversation(conv);
     } catch (error) {
       setFailure((error as Error).message);
     } finally {
@@ -232,6 +248,18 @@ export default function Threads() {
                   </button>
                 </form>
               )}
+
+              <div style={{ display: "flex", gap: "8px", marginTop: "12px" }}>
+                <button className="btn" disabled={busy} onClick={() => markOutcome("meeting_agreed")}>
+                  Согласился на созвон
+                </button>
+                <button className="btn" disabled={busy} onClick={() => markOutcome("meeting_held")}>
+                  Созвон состоялся
+                </button>
+                <button className="btn" disabled={busy} onClick={() => markOutcome("lost")}>
+                  Не сложилось
+                </button>
+              </div>
 
               {conversation.stop && (
                 <p className="note">Агент советует не писать: нового повода в данных нет.</p>

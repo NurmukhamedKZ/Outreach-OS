@@ -20,7 +20,9 @@ CREATE TABLE IF NOT EXISTS threads (
   company_id TEXT NOT NULL,
   seed       TEXT NOT NULL,      -- json: контекст лида из системы 1 на момент открытия
   created_at TEXT NOT NULL,
-  stage      TEXT NOT NULL DEFAULT 'contact'  -- contact | probing | offer | closing
+  stage      TEXT NOT NULL DEFAULT 'contact',  -- contact | probing | offer | closing
+  outcome    TEXT,   -- meeting_agreed | meeting_held | refused | lost
+  meeting_at TEXT    -- когда созвон состоялся
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -55,7 +57,7 @@ def _ensure_columns(db):
     writer везде, где система 3 не стартовала."""
     for table, columns in (
         ("messages", (("prompt", "TEXT"), ("model", "TEXT"), ("offer_variant", "TEXT"))),
-        ("threads", (("stage", "TEXT NOT NULL DEFAULT 'contact'"),)),
+        ("threads", (("stage", "TEXT NOT NULL DEFAULT 'contact'"), ("outcome", "TEXT"), ("meeting_at", "TEXT"))),
     ):
         existing = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
         for column, definition in columns:
@@ -84,17 +86,36 @@ def open_thread(db, thread_id, company_id, seed):
 
 def thread(db, thread_id):
     row = db.execute(
-        "SELECT thread_id, company_id, seed, created_at, stage FROM threads WHERE thread_id = ?",
+        "SELECT thread_id, company_id, seed, created_at, stage, outcome, meeting_at FROM threads WHERE thread_id = ?",
         (thread_id,),
     ).fetchone()
     if not row:
         return None
     return {"thread_id": row[0], "company_id": row[1],
-            "seed": json.loads(row[2]), "created_at": row[3], "stage": row[4]}
+            "seed": json.loads(row[2]), "created_at": row[3], "stage": row[4],
+            "outcome": row[5], "meeting_at": row[6]}
 
 
 def set_stage(db, thread_id: str, stage: str) -> None:
     db.execute("UPDATE threads SET stage = ? WHERE thread_id = ?", (stage, thread_id))
+    db.commit()
+
+
+OUTCOMES: tuple[str, ...] = ("meeting_agreed", "meeting_held", "refused", "lost")
+
+
+def set_outcome(db, thread_id: str, outcome: str, at: str | None = None) -> None:
+    """Исход треда. meeting_held — единица оплаты, поэтому значение проверяется
+    здесь: опечатка в исходе стоит денег, а не строки в журнале.
+
+    meeting_at заполняется только у встреч: колонка с таким именем, хранящая
+    момент отказа, врала бы всякому, кто прочитает её через полгода.
+    """
+    if outcome not in OUTCOMES:
+        raise ValueError(f"исход {outcome!r} не из {OUTCOMES}")
+    moment = (at or now()) if outcome.startswith("meeting_") else None
+    db.execute("UPDATE threads SET outcome = ?, meeting_at = ? WHERE thread_id = ?",
+               (outcome, moment, thread_id))
     db.commit()
 
 

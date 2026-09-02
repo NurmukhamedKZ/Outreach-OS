@@ -296,3 +296,33 @@ def test_inbox_works_without_the_column_system_three_owns():
     assert [row["thread_id"] for row in rows] == ["+77010000001"]
     assert rows[0]["status"] == "queued"
     db.close()
+
+
+def test_meeting_is_recorded_with_its_moment():
+    import pytest
+    db = thread_store.connect(":memory:")
+    thread_store.open_thread(db, "+77010000001", "c_ok", {"name": "Ромашка"})
+
+    thread_store.set_outcome(db, "+77010000001", "meeting_held", at="2026-09-10T11:00:00+00:00")
+
+    stored = thread_store.thread(db, "+77010000001")
+    assert stored["outcome"] == "meeting_held"
+    assert stored["meeting_at"] == "2026-09-10T11:00:00+00:00"
+
+
+def test_unknown_outcome_is_refused():
+    import pytest
+    db = thread_store.connect(":memory:")
+    thread_store.open_thread(db, "+77010000001", "c_ok", {"name": "Ромашка"})
+
+    with pytest.raises(ValueError):
+        thread_store.set_outcome(db, "+77010000001", "почти согласился")
+
+
+def test_refusal_leaves_meeting_time_empty():
+    db = thread_store.connect(":memory:")
+    thread_store.open_thread(db, "+77010000001", "c_ok", {"name": "Ромашка"})
+
+    thread_store.set_outcome(db, "+77010000001", "refused")
+
+    assert thread_store.thread(db, "+77010000001")["meeting_at"] is None

@@ -320,6 +320,19 @@ export function fetchPrompt(companyId: string, messageId: number) {
   );
 }
 
+export type ThreadOutcome = "meeting_agreed" | "meeting_held" | "refused" | "lost";
+
+export function setThreadOutcome(companyId: string, outcome: ThreadOutcome) {
+  return json<{ outcome: string }>(
+    `/api/threads/${encodeURIComponent(companyId)}/outcome`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ outcome }),
+    },
+  );
+}
+
 // ---- Система 3: пул номеров ----
 
 export type SenderNumber = {

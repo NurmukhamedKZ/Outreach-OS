@@ -155,6 +155,29 @@ def add_incoming(company_id: str, request: TextRequest):
         threads.close()
 
 
+class OutcomeRequest(BaseModel):
+    outcome: str
+
+
+@router.post("/{company_id}/outcome")
+def set_outcome(company_id: str, request: OutcomeRequest) -> dict:
+    """Исход ставит человек, а не автомат: встреча — то, за что платят, и
+    вероятностный классификатор не имеет права её выписывать."""
+    leads, threads = open_stores()
+    try:
+        thread = thread_store.thread_of_company(threads, company_id)
+        if thread is None:
+            raise HTTPException(404, "тред не найден")
+        try:
+            thread_store.set_outcome(threads, thread["thread_id"], request.outcome)
+        except ValueError as bad:
+            raise HTTPException(400, str(bad)) from bad
+        return {"outcome": request.outcome}
+    finally:
+        leads.close()
+        threads.close()
+
+
 def require_api_key():
     """Отказать до сети и понятными словами, а не 500 с трассировкой pydantic."""
     if not settings.openrouter_api_key:
@@ -226,6 +249,7 @@ def demo():
         "/api/threads/{company_id}",
         "/api/threads/{company_id}/draft",
         "/api/threads/{company_id}/incoming",
+        "/api/threads/{company_id}/outcome",
         "/api/threads/{company_id}/messages/{message_id}/prompt",
     }
     leads.close()
