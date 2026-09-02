@@ -198,12 +198,35 @@ def _fresh(observed_at: str | None, rules: PitchRules) -> bool:
 half_life_days = 30
 ```
 
-- [ ] **Step 7: Прогнать тесты**
+- [ ] **Step 7: Починить существующие тесты, которые проверяли старое поведение**
+
+Новая сигнатура ломает три места, и одно из них требует осмысленной переписи, а не подгонки.
+
+`backend/writer/tests/test_leads.py:62` и `:93` — добавить `RULES` вторым аргументом: `leads_source.candidates(db, RULES, limit=10)` и `leads_source.candidates(db, RULES)`.
+
+`backend/writer/tests/test_leads.py:77` утверждает ровно то поведение, которое эта задача отменяет:
+
+```python
+    assert [s["type"] for s in lead["seed"]["signals"]] == ["crm_widget"], lead["seed"]
+```
+
+Заменить, объяснив почему:
+
+```python
+    # crm_widget остаётся сигналом и продолжает поднимать лид в очереди по
+    # intent_score, но поводом для письма не является: «у вас на сайте виджет
+    # CRM» — не боль, и цитировать в первом касании нечего.
+    assert [s["type"] for s in lead["seed"]["signals"]] == [], lead["seed"]
+```
+
+`backend/writer/tests/test_operations.py:80` — фейковый `candidates` в `monkeypatch.setattr` должен принимать новую сигнатуру: `lambda db, rules, limit=None: ...`.
+
+- [ ] **Step 8: Прогнать тесты**
 
 Запустить: `cd backend && uv run pytest writer/tests/ collector/tests/ -q`
 Ожидание: PASS. Если падает тест скоринга с зашитым числом — пересчитать ожидание под `half_life_days = 30`, не возвращая 90.
 
-- [ ] **Step 8: Коммит**
+- [ ] **Step 9: Коммит**
 
 ```bash
 git add backend/writer/config.toml backend/writer/db/leads_source.py \
@@ -335,7 +358,7 @@ git commit -m "feat(writer): имя ЛПР из досье доезжает до
 
 **Interfaces:**
 - Consumes: ничего.
-- Produces: `stages.STAGES: tuple[str, ...]`, `stages.FIRST: str`, `stages.stage_after(current: str, proposed: str) -> str`, `stages.rules_for(stage: str) -> str`; `thread_store.set_stage(db, thread_id: str, stage: str) -> None`, `thread["stage"]` в результате `thread_store.thread`.
+- Produces: `stages.STAGES: tuple[str, ...]`, `stages.FIRST: str`, `stages.stage_after(current: str, proposed: str) -> str`, `stages.advance(stage: str) -> str`, `stages.rules_for(stage: str) -> str`; `thread_store.set_stage(db, thread_id: str, stage: str) -> None`, `thread["stage"]` в результате `thread_store.thread`.
 
 - [ ] **Step 1: Написать падающий тест**
 
@@ -369,6 +392,17 @@ def test_stage_never_skips_and_never_goes_back():
 def test_unknown_stage_leaves_thread_where_it_was():
     assert stages.stage_after("probing", "переговоры") == "probing"
     assert stages.stage_after("probing", "") == "probing"
+
+
+def test_each_reply_moves_the_thread_one_step():
+    assert stages.advance("contact") == "probing"
+    assert stages.advance("probing") == "offer"
+    assert stages.advance("offer") == "closing"
+
+
+def test_last_stage_is_a_dead_end_not_an_error():
+    assert stages.advance("closing") == "closing"
+    assert stages.advance("что-то своё") == stages.FIRST
 
 
 def test_rules_differ_by_stage():
@@ -456,6 +490,18 @@ def stage_after(current: str, proposed: str) -> str:
     return proposed if step in (0, 1) else current
 
 
+def advance(stage: str) -> str:
+    """Следующий этап; из последнего — он же.
+
+    Каждый ответ лида двигает разговор на шаг: молчание не приближает сделку, а
+    ответ приближает. Кто именно двигает — важно: не модель своим мнением о
+    неотправленном черновике, а факт входящего сообщения.
+    """
+    if stage not in STAGES:
+        return FIRST
+    return STAGES[min(STAGES.index(stage) + 1, len(STAGES) - 1)]
+
+
 def rules_for(stage: str) -> str:
     return RULES.get(stage, RULES[FIRST])
 ```
@@ -510,37 +556,38 @@ git commit -m "feat(writer): этап диалога — колонка тред
 
 ---
 
-### Task 4: Промпт по этапам, `next_stage` и перечислимый `angle`
+### Task 4: Промпт по этапам и нормализованный `angle`
 
 **Files:**
 - Modify: `backend/writer/schemas/outreach.py`
 - Modify: `backend/writer/services/agent.py:47-70` (`SYSTEM`), `:120-140` (`draft`)
 - Modify: `backend/writer/services/operations.py`
-- Test: `backend/writer/tests/test_schema.py`, `backend/writer/tests/test_prompt.py`
+- Test: `backend/writer/tests/test_prompt.py`
 
 **Interfaces:**
 - Consumes: `stages.rules_for`, `stages.STAGES`, `stages.FIRST` (Task 3); `PitchRules` (Task 1).
-- Produces: `Draft.next_stage: str`, валидатор `Draft.angle`; `agent.draft(..., stage: str, pitchable: frozenset[str])` — оба параметра именованные.
+- Produces: `agent.system_prompt(offer: str, stage: str) -> str`; `agent.normalize_angle(angle: str, pitchable: frozenset[str]) -> str`; `agent.OTHER_ANGLE: str`; `agent.draft(..., stage: str, pitchable: frozenset[str])` — оба параметра именованные.
+
+**Схема остаётся без новых полей и без зависимостей.** Этап треда двигает ответ лида (Task 6), а не мнение модели о неотправленном черновике, поэтому `next_stage` не нужен никому. `angle` схемой тоже не валидируется: список поводов приходит из конфига, и загонять его в `writer/schemas/` пришлось бы скрытым глобальным состоянием, после которого один и тот же `Draft` проходит или падает в зависимости от того, кто его создал. Угол нормализуется там, где список поводов и так есть, — в `draft()`.
 
 - [ ] **Step 1: Написать падающие тесты**
 
-В `backend/writer/tests/test_schema.py`:
+В `backend/writer/tests/test_prompt.py`:
 
 ```python
-import pytest
-from pydantic import ValidationError
-
-from writer.schemas.outreach import Draft
-
-
-def test_angle_must_be_a_known_signal_type():
-    with pytest.raises(ValidationError):
-        Draft(text="Здравствуйте", angle="рассказал про отзывы", next_stage="contact")
+def test_unknown_angle_collapses_into_other():
+    """Модель вернула описание фразой вместо типа сигнала. Ронять из-за этого
+    готовый черновик незачем, но и в разрез аналитики такой угол пускать
+    нельзя: таблица by_angle наполнится вариациями одного и того же повода."""
+    assert agent.normalize_angle("рассказал про отзывы",
+                                 frozenset({"site_no_pricing"})) == agent.OTHER_ANGLE
 
 
-def test_answer_is_a_legal_angle():
-    draft = Draft(text="Здравствуйте", angle="answer", next_stage="contact")
-    assert draft.angle == "answer"
+def test_known_angle_and_answer_survive():
+    pitchable = frozenset({"site_no_pricing"})
+
+    assert agent.normalize_angle("site_no_pricing", pitchable) == "site_no_pricing"
+    assert agent.normalize_angle("answer", pitchable) == "answer"
 ```
 
 В `backend/writer/tests/test_prompt.py`:
@@ -559,50 +606,26 @@ def test_system_prompt_carries_rules_of_current_stage_only():
 
 - [ ] **Step 2: Убедиться, что тесты падают**
 
-Запустить: `cd backend && uv run pytest writer/tests/test_schema.py writer/tests/test_prompt.py -v`
-Ожидание: FAIL — `Draft` не знает `next_stage`, `agent` не знает `system_prompt`.
+Запустить: `cd backend && uv run pytest writer/tests/test_prompt.py -v`
+Ожидание: FAIL — `agent` не знает ни `normalize_angle`, ни `system_prompt`.
 
 - [ ] **Step 3: Расширить `backend/writer/schemas/outreach.py`**
 
+Новых полей нет. `next_stage` в схему **не добавляется**: холодный агент пишет
+в тред, где лид ещё молчит, — этап там объективно `contact`, что бы модель ни
+вернула, а двигать состояние треда по мнению модели о неотправленном черновике
+значит записать в историю то, чего не произошло. Этап двигает факт ответа лида
+(Task 6).
+
+Меняется только описание `angle` — модель видит список поводов в человеческом
+сообщении, и от неё требуется машинный тип, а не фраза:
+
 ```python
-from writer.services import stages
-
-# Углы, которые вообще бывают. Свободная строка здесь означала бы, что разрез
-# аналитики by_angle наполнится вариациями одного и того же повода — «отзывы»,
-# «жалоба в отзывах», «неотвеченный отзыв» — и перестанет отвечать на вопрос,
-# какой повод работает.
-ANSWER = "answer"
-
-
-class Draft(LLMSchema):
-    ...
     angle: str = Field(description=(
-        "чем цепляем: ровно один тип сигнала из списка поводов выше или"
-        f" '{ANSWER}', если это ответ на реплику лида"
+        "чем цепляем: ровно один тип сигнала из блока «Сигналы» выше или"
+        " 'answer', если это ответ на реплику лида. Машинный тип, не описание"
+        " сообщения фразой"
     ))
-    next_stage: str = Field(stages.FIRST, description=(
-        "этап переписки после этого сообщения: тот же или следующий из"
-        f" {', '.join(stages.STAGES)}"
-    ))
-
-    @field_validator("angle")
-    @classmethod
-    def known_angle(cls, angle: str) -> str:
-        allowed = set(ALLOWED_ANGLES.get() or ()) | {ANSWER}
-        if angle not in allowed:
-            raise ValueError(
-                f"угол {angle!r} не из списка поводов: {sorted(allowed)}."
-                " Угол — машинный тип сигнала, а не описание сообщения фразой"
-            )
-        return angle
-```
-
-Список допустимых углов приходит из конфига, а схема — модуль без конфига, поэтому передаём его контекстной переменной рядом со схемой:
-
-```python
-from contextvars import ContextVar
-
-ALLOWED_ANGLES: ContextVar[frozenset[str] | None] = ContextVar("allowed_angles", default=None)
 ```
 
 - [ ] **Step 4: Пересобрать системный промпт блоками в `backend/writer/services/agent.py`**
@@ -633,17 +656,31 @@ SYSTEM = """# Роль
 # Формат
 - 3-5 коротких предложений, заканчивай одним вопросом, на который легко
   ответить «да» или «нет».
-- angle — машинный тип повода из данных, а не описание сообщения фразой.
-- next_stage — этот же этап или следующий."""
+- angle — машинный тип повода из данных, а не описание сообщения фразой."""
 
 
 def system_prompt(offer: str, stage: str) -> str:
     return SYSTEM.format(offer=offer, stage_rules=stages.rules_for(stage))
 ```
 
-В `draft()` заменить сборку `messages` и обернуть вызов контекстом углов:
+В `draft()` заменить сборку `messages` и нормализовать угол у готового ответа:
 
 ```python
+ANSWER_ANGLE = "answer"
+OTHER_ANGLE = "other"
+
+
+def normalize_angle(angle: str, pitchable: frozenset[str]) -> str:
+    """Угол, которого нет среди поводов, схлопывается в один «other».
+
+    Ронять готовый черновик из-за неудачного слова незачем, но и пускать
+    свободную фразу в разрез by_angle нельзя: таблица наполнится вариациями
+    одного повода — «отзывы», «жалоба в отзывах», «неотвеченный отзыв» — и
+    перестанет отвечать на вопрос, какой повод работает.
+    """
+    return angle if angle in pitchable or angle == ANSWER_ANGLE else OTHER_ANGLE
+
+
 def draft(llm, seed, history, task, *, session_id, name, offer="", model_name="",
           stage=stages.FIRST, pitchable=frozenset()):
     handler = observability.langfuse_handler()
@@ -651,21 +688,17 @@ def draft(llm, seed, history, task, *, session_id, name, offer="", model_name=""
         ("system", system_prompt(offer, stage)),
         ("human", prompt(seed, history, task)),
     ]
-    token = outreach.ALLOWED_ANGLES.set(frozenset(pitchable))
-    try:
-        ...  # существующий цикл ретраев без изменений
-    finally:
-        outreach.ALLOWED_ANGLES.reset(token)
+    ...  # существующий цикл ретраев без изменений, только успешная ветка:
+            checked = result.model_copy(
+                update={"angle": normalize_angle(result.angle, pitchable)})
+            return Attempt(draft=checked, prompt=messages, model=model_name)
 ```
+
+`model_copy`, а не присваивание в поле: ответ модели — улика, и править её на месте значит потерять то, что она на самом деле вернула, ещё до того, как это попадёт в Langfuse.
 
 - [ ] **Step 5: Передать этап и углы из операции**
 
-`backend/writer/services/operations.py` — в вызове `agent.draft`: `stage=stages.FIRST, pitchable=rules.pitchable`. После получения черновика двигать этап:
-
-```python
-                thread_store.set_stage(threads, lead["thread_id"],
-                                       stages.stage_after(stages.FIRST, proposal.draft.next_stage))
-```
+`backend/writer/services/operations.py` — в вызове `agent.draft` добавить `stage=stages.FIRST, pitchable=rules.pitchable`. Этап треда операция не двигает: первое сообщение уходит в тред, где лид ещё не отвечал, и `contact` — это правда о нём до самого ответа.
 
 - [ ] **Step 6: Прогнать тесты**
 
@@ -677,7 +710,7 @@ def draft(llm, seed, history, task, *, session_id, name, offer="", model_name=""
 ```bash
 git add backend/writer/schemas/outreach.py backend/writer/services/agent.py \
         backend/writer/services/operations.py backend/writer/tests/
-git commit -m "feat(writer): системный промпт по RIC, правила этапа и перечислимый угол"
+git commit -m "feat(writer): системный промпт по RIC и правила текущего этапа"
 ```
 
 ---
@@ -899,15 +932,40 @@ def prompt(seed: dict, history: list[dict], stage: str) -> str:
 
 - [ ] **Step 4: Двигать этап на тике**
 
-`backend/sender/services/incoming.py` — в `handle_one` читать этап из треда и передавать в `_ask`; после успешного ответа (ветка, где `reply.text` не пуст) двигать:
+`backend/sender/services/incoming.py`. Три вещи, каждая — ловушка:
+
+**Этап берётся из `thread_store`, а не из `thread`.** Переменная `thread` в `handle_one` — это `conversation.get()`, чей `SELECT` перечисляет фиксированный список колонок системы 3; `stage` в него не входит, и `thread.get("stage")` вернул бы `None` молча, оставив все треды в `contact` навсегда. Читать нужно оттуда же, откуда уже читается `seed`:
 
 ```python
-    stage = thread.get("stage") or stages.FIRST
-    ...
-    thread_store.set_stage(db, thread["thread_id"], stages.stage_after(stage, "probing"))
+        record = thread_store.thread(db, thread["thread_id"])
+        seed, stage = record["seed"], record["stage"]
+        history = thread_store.history(db, thread["thread_id"])
+        reply = await asyncio.to_thread(_ask, _seller(), seed, history,
+                                        thread["thread_id"], stage)
 ```
 
-Продавец свободного текста не возвращает `next_stage` (у него нет структурированного вывода), поэтому ответ в диалоге двигает этап ровно на один шаг вперёд — это и есть «разговорить»: лид ответил, значит контакт состоялся.
+**Этап и оффер уезжают в `_ask` готовыми значениями.** Соединение принадлежит потоку цикла, и любой поход в базу внутри `_ask` даст `ProgrammingError` — об этом прямо сказано в его докстроке. Сигнатура:
+
+```python
+def _ask(agent, seed: dict, history: list[dict], thread_id: str, stage: str):
+    """Ровно поход в сеть — его и уносит to_thread. Базы здесь нет и быть не
+    может: соединение принадлежит потоку цикла."""
+    config = writer_config.load()
+    return seller.respond(agent, seed, history,
+                          offers.variant_of(thread_id, config)["text"],
+                          session_id=thread_id, stage=stage)
+```
+
+Оффер — вариант этого треда, а не общий `["offer"]["text"]`: иначе первое сообщение аргументирует вариант A, ответы в диалоге — другой текст, и разрез `by_offer` припишет встречу формулировке, которая её не приносила.
+
+**Этап двигается после успешного ответа** — в `_answer`, где текст уже прошёл гейты и лёг в очередь:
+
+```python
+    thread_store.set_stage(db, thread["thread_id"],
+                           stages.stage_after(stage, stages.advance(stage)))
+```
+
+`stage` передаётся в `_answer` параметром (он уже принимает `thread`, `row`, `text`, `now`, `config` — шестым идёт `stage`). Именно `advance`, а не фиксированный `"probing"`: иначе тред застрял бы на втором этапе навсегда и никогда не дошёл бы до `offer` и `closing`. `stage_after` вокруг `advance` не тавтология — он остаётся единственной дверью, через которую этап меняется, и защищает от чужого кода, который однажды передаст сюда не то.
 
 - [ ] **Step 5: Прогнать тесты**
 
@@ -980,12 +1038,29 @@ OUTCOMES: tuple[str, ...] = ("meeting_agreed", "meeting_held", "refused", "lost"
 
 def set_outcome(db, thread_id: str, outcome: str, at: str | None = None) -> None:
     """Исход треда. meeting_held — единица оплаты, поэтому значение проверяется
-    здесь: опечатка в исходе стоит денег, а не строки в журнале."""
+    здесь: опечатка в исходе стоит денег, а не строки в журнале.
+
+    meeting_at заполняется только у встреч: колонка с таким именем, хранящая
+    момент отказа, врала бы всякому, кто прочитает её через полгода.
+    """
     if outcome not in OUTCOMES:
         raise ValueError(f"исход {outcome!r} не из {OUTCOMES}")
+    moment = (at or now()) if outcome.startswith("meeting_") else None
     db.execute("UPDATE threads SET outcome = ?, meeting_at = ? WHERE thread_id = ?",
-               (outcome, at or now(), thread_id))
+               (outcome, moment, thread_id))
     db.commit()
+```
+
+Дописать в тест Step 1 проверку:
+
+```python
+def test_refusal_leaves_meeting_time_empty():
+    db = thread_store.connect(":memory:")
+    thread_store.open_thread(db, "+77010000001", "c_ok", {"name": "Ромашка"})
+
+    thread_store.set_outcome(db, "+77010000001", "refused")
+
+    assert thread_store.thread(db, "+77010000001")["meeting_at"] is None
 ```
 
 `thread()` возвращает `outcome` и `meeting_at`.
@@ -1158,6 +1233,17 @@ def test_diagnosis_stays_silent_on_a_small_sample(state):
 
     assert analytics.report()["diagnosis"] == "ok", \
         "диагноз по одному ответу — шум, из-за которого странице перестанут верить"
+
+
+def test_missing_state_db_gives_an_empty_funnel(tmp_path):
+    """Чистая установка: переписки ещё нет. Страница обязана показать нули, а
+    не пятисотку от sqlite3, который в режиме ro не создаёт файл."""
+    analytics.use(tmp_path / "нет-такой.db")
+
+    report = analytics.report()
+
+    assert [row["count"] for row in report["funnel"]] == [0] * len(analytics.STEPS)
+    assert report["diagnosis"] == "ok"
 ```
 
 - [ ] **Step 2: Убедиться, что тест падает**
@@ -1209,6 +1295,12 @@ def use(state_db: Path | None, leads_db: Path | None = None) -> None:
 def report(days: int = 30) -> dict:
     if _state is None:
         raise RuntimeError("analytics.use() не вызван: путь к state.db неизвестен")
+    if not Path(_state).exists():
+        # На чистой установке переписки ещё нет, а sqlite3 в режиме ro на
+        # отсутствующем файле бросает — и страница отвечала бы 500 вместо
+        # пустой воронки. activity.py этой беды не знает: он открывает базу на
+        # запись и создаёт её сам, а аналитика писать не имеет права.
+        return _empty(days)
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
     with closing(_connect()) as db:
         rows = _funnel(db, since)
@@ -1221,6 +1313,12 @@ def report(days: int = 30) -> dict:
             "edited_share": _edited_share(db, since),
             "diagnosis": diagnose(rows),
         }
+
+
+def _empty(days: int) -> dict:
+    return {"days": days, "funnel": [{"step": step, "count": 0} for step in STEPS],
+            "by_offer": [], "by_angle": [], "by_segment": [],
+            "edited_share": 0.0, "diagnosis": "ok"}
 
 
 def diagnose(funnel: list[dict]) -> str:
@@ -1371,15 +1469,22 @@ git commit -m "feat(analytics): воронка тредами и разрезы 
 В `backend/collector/tests/test_analytics.py`:
 
 ```python
-def test_endpoint_answers_with_the_full_report(state, monkeypatch):
+def test_endpoint_answers_with_the_full_report(state):
+    """Роутер поднимается отдельным приложением, а не collector.api: импорт
+    боевого app зовёт analytics.use(store.STATE) на своих путях и тянет за
+    собой lifespan трёх систем — тест роутера не должен от этого зависеть."""
+    from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from collector import api
+
+    from collector.routes import analytics as analytics_routes
 
     db, path = state
     _thread(db, "+77010000001", replied=True)
     analytics.use(path)
 
-    response = TestClient(api.app).get("/api/analytics?days=7")
+    app = FastAPI()
+    app.include_router(analytics_routes.router)
+    response = TestClient(app).get("/api/analytics?days=7")
 
     assert response.status_code == 200
     body = response.json()
