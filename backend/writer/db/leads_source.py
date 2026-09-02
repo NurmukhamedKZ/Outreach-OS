@@ -25,7 +25,7 @@ MIN_PHONE_DIGITS = 10
 
 CANDIDATES = (
     "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm), c.city,"
-    "       d.summary, d.hooks, d.pains, d.approach, d.sources"
+    "       d.summary, d.decision_maker, d.hooks, d.pains, d.approach, d.sources"
     " FROM companies c JOIN scores s USING (company_id)"
     " LEFT JOIN company_links l ON l.company_id = c.company_id AND l.rule = 'self'"
     " LEFT JOIN orgs o ON o.branch_id = l.branch_id"
@@ -82,7 +82,7 @@ def candidates(db, rules: PitchRules, limit: int | None = None) -> list[dict]:
     suppressed = suppression_handles(db)
     channels = channels_by_company(db)
     found = []
-    for (company_id, name, city, summary, hooks, pains, approach,
+    for (company_id, name, city, summary, decision_maker, hooks, pains, approach,
          sources) in db.execute(CANDIDATES + WITH_INTENT):
         if limit is not None and len(found) == limit:
             break
@@ -98,6 +98,7 @@ def candidates(db, rules: PitchRules, limit: int | None = None) -> list[dict]:
                 "city": city,
                 "dossier": {
                     "summary": summary,
+                    "decision_maker": decision_maker,
                     "hooks": json.loads(hooks or "[]"),
                     "pains": json.loads(pains or "[]"),
                     "approach": approach,
@@ -154,7 +155,7 @@ def seed_of(db, company_id, rules: PitchRules | None = None):
     row = db.execute(CANDIDATES + ONE_COMPANY, (company_id,)).fetchone()
     if not row:
         return None
-    _, name, city, summary, hooks, pains, approach, sources = row
+    _, name, city, summary, decision_maker, hooks, pains, approach, sources = row
     if rules is None:
         rows = db.execute(
             "SELECT type, quote, url, observed_at FROM signals WHERE company_id = ?"
@@ -171,6 +172,7 @@ def seed_of(db, company_id, rules: PitchRules | None = None):
         "name": name, "city": city,
         "dossier": {
             "summary": summary,
+            "decision_maker": decision_maker,
             "hooks": json.loads(hooks or "[]"),
             "pains": json.loads(pains or "[]"),
             "approach": approach,

@@ -112,3 +112,26 @@ def test_draft_gives_up_after_max_transport_retries(monkeypatch):
         agent.draft(flaky, seed, [], agent.FIRST, session_id="thread-1", name="writer.first")
 
     assert flaky.calls == agent.TRANSPORT_RETRIES
+
+
+def test_prompt_names_decision_maker_when_known():
+    seed = {
+        "name": "Ромашка", "city": "almaty",
+        "dossier": {"summary": "бухгалтерия", "hooks": [], "pains": [],
+                    "approach": "заходить через рост", "sources": [],
+                    "decision_maker": "Айгуль, основатель"},
+        "signals": [],
+    }
+    assert "Кто решает: Айгуль, основатель" in agent.prompt(seed, [], TASK)
+
+
+def test_prompt_stays_silent_about_unknown_decision_maker():
+    seed = {
+        "name": "Ромашка", "city": "almaty",
+        "dossier": {"summary": "бухгалтерия", "hooks": [], "pains": [],
+                    "approach": "заходить через рост", "sources": [],
+                    "decision_maker": None},
+        "signals": [],
+    }
+    assert "Кто решает" not in agent.prompt(seed, [], TASK), \
+        "пустая строка про ЛПР — приглашение модели выдумать имя"

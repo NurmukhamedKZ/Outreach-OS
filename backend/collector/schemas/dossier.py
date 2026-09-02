@@ -24,6 +24,11 @@ class Dossier(LLMSchema):
     hooks: list[Hook] = Field(default_factory=list)
     pains: list[Pain] = Field(default_factory=list, max_length=4)
     approach: str = Field(description="как заходить, включая как коснуться боли")
-    decision_maker_hint: str | None = Field(None)
+    decision_maker_hint: str | None = Field(None, description=(
+        "имя и роль человека, принимающего решение, если они названы прямо в"
+        " данных: страница «Команда», био инстаграма, подпись под ответом на"
+        " отзыв. Формат «Айгуль, основатель». Не выдумывать и не выводить из"
+        " названия компании — не названо, значит null"
+    ))
     sources: list[str] = Field(default_factory=list)
     confidence: float = Field(description="уверенность, 0..1")

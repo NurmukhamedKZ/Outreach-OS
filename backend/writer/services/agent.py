@@ -165,6 +165,8 @@ def prompt(seed, history, task):
     ]
     if dossier.get("summary"):
         parts.append(f"Чем занимается: {dossier['summary']}")
+    if dossier.get("decision_maker"):
+        parts.append(f"Кто решает: {dossier['decision_maker']}")
     if dossier.get("approach"):
         parts.append(f"Как заходить: {dossier['approach']}")
     if dossier.get("hooks"):

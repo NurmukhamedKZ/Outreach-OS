@@ -144,3 +144,16 @@ def test_candidates_without_limit_returns_everyone(leads_db):
     found = leads_source.candidates(db, RULES)
     assert [row["company_id"] for row in found] == ["c_ok", "c_phone"]
     db.close()
+
+
+def test_seed_carries_decision_maker(leads_db):
+    db = leads_db
+    _seed(db)
+    db.execute("UPDATE dossiers_all SET decision_maker = 'Айгуль, основатель'"
+               " WHERE company_id = 'c_ok'")
+    db.commit()
+
+    lead = next(l for l in leads_source.candidates(db, RULES) if l["company_id"] == "c_ok")
+
+    assert lead["seed"]["dossier"]["decision_maker"] == "Айгуль, основатель", \
+        "имя ЛПР собрано системой 1, но до системы 2 не доехало"
