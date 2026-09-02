@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS threads (
   thread_id  TEXT PRIMARY KEY,   -- номер WhatsApp, +7XXXXXXXXXX
   company_id TEXT NOT NULL,
   seed       TEXT NOT NULL,      -- json: контекст лида из системы 1 на момент открытия
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  stage      TEXT NOT NULL DEFAULT 'contact'  -- contact | probing | offer | closing
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -42,19 +43,23 @@ CREATE INDEX IF NOT EXISTS messages_thread ON messages (thread_id, message_id);
 def connect(path):
     db = sqlite3.connect(path)
     db.executescript(SCHEMA)
-    _ensure_prompt_columns(db)
+    _ensure_columns(db)
     return db
 
 
-def _ensure_prompt_columns(db):
+def _ensure_columns(db):
     """CREATE TABLE IF NOT EXISTS не трогает существующую таблицу, а базы
     переписки у всех давно созданы. Колонки владельца доливает владелец:
     полагаться на то, что до него добежит migrate системы 3, значит уронить
     writer везде, где система 3 не стартовала."""
-    existing = {row[1] for row in db.execute("PRAGMA table_info(messages)")}
-    for column in ("prompt", "model"):
-        if column not in existing:
-            db.execute(f"ALTER TABLE messages ADD COLUMN {column} TEXT")
+    for table, columns in (
+        ("messages", (("prompt", "TEXT"), ("model", "TEXT"))),
+        ("threads", (("stage", "TEXT NOT NULL DEFAULT 'contact'"),)),
+    ):
+        existing = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+        for column, definition in columns:
+            if column not in existing:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     db.commit()
 
 
@@ -78,13 +83,18 @@ def open_thread(db, thread_id, company_id, seed):
 
 def thread(db, thread_id):
     row = db.execute(
-        "SELECT thread_id, company_id, seed, created_at FROM threads WHERE thread_id = ?",
+        "SELECT thread_id, company_id, seed, created_at, stage FROM threads WHERE thread_id = ?",
         (thread_id,),
     ).fetchone()
     if not row:
         return None
     return {"thread_id": row[0], "company_id": row[1],
-            "seed": json.loads(row[2]), "created_at": row[3]}
+            "seed": json.loads(row[2]), "created_at": row[3], "stage": row[4]}
+
+
+def set_stage(db, thread_id: str, stage: str) -> None:
+    db.execute("UPDATE threads SET stage = ? WHERE thread_id = ?", (stage, thread_id))
+    db.commit()
 
 
 def inbox(db):
