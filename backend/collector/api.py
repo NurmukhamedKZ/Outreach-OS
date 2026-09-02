@@ -21,7 +21,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import activity
-from collector.routes import (activity as activity_routes, events, jobs, leads,
+import analytics
+from collector.routes import (activity as activity_routes, analytics as analytics_routes, events, jobs, leads,
                               operations, pipeline, runs, stats, suppression)
 from collector.services import events as bus
 from collector.services import jobs as queue
@@ -59,6 +60,7 @@ sender_refusal.use(_write_refusal)
 # Тот же шов, что подключает отказ: где лежит state.db, знает сборщик
 # приложения, а журнал — модуль верхнего уровня — не знает ни одной из систем.
 activity.use(store.STATE)
+analytics.use(store.STATE, store.DERIVED)
 
 # next dev занимает следующий свободный порт, если 3000 занят чем-то другим
 # (в докере, например) — фиксированный список origins тогда молча ломает SSE
@@ -98,6 +100,7 @@ app.add_middleware(
 )
 app.include_router(leads.router)
 app.include_router(activity_routes.router)
+app.include_router(analytics_routes.router)
 app.include_router(pipeline.router)
 app.include_router(operations.router)
 app.include_router(runs.router)

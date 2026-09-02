@@ -333,6 +333,22 @@ export function setThreadOutcome(companyId: string, outcome: ThreadOutcome) {
   );
 }
 
+export type FunnelStep = { step: string; count: number };
+export type Breakdown = { key: string; sent: number; replied: number; meetings: number };
+export type AnalyticsReport = {
+  days: number;
+  funnel: FunnelStep[];
+  by_offer: Breakdown[];
+  by_angle: Breakdown[];
+  by_segment: Breakdown[];
+  edited_share: number;
+  diagnosis: "ok" | "reply_rate_low" | "icp_mismatch";
+};
+
+export function fetchAnalytics(days = 30) {
+  return json<AnalyticsReport>(`/api/analytics?days=${days}`);
+}
+
 // ---- Система 3: пул номеров ----
 
 export type SenderNumber = {

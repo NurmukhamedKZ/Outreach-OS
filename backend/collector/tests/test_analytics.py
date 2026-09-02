@@ -96,3 +96,27 @@ def test_missing_state_db_gives_an_empty_funnel(tmp_path):
 
     assert [row["count"] for row in report["funnel"]] == [0] * len(analytics.STEPS)
     assert report["diagnosis"] == "ok"
+
+
+def test_endpoint_answers_with_the_full_report(state):
+    """Роутер поднимается отдельным приложением, а не collector.api: импорт
+    боевого app зовёт analytics.use(store.STATE) на своих путях и тянет за
+    собой lifespan трёх систем — тест роутера не должен от этого зависеть."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from collector.routes import analytics as analytics_routes
+
+    db, path = state
+    _thread(db, "+77010000001", replied=True)
+    analytics.use(path)
+
+    app = FastAPI()
+    app.include_router(analytics_routes.router)
+    response = TestClient(app).get("/api/analytics?days=7")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["days"] == 7
+    assert [row["step"] for row in body["funnel"]] == list(analytics.STEPS)
+    assert "diagnosis" in body
