@@ -12,9 +12,10 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+import paths
+
 DATA = Path(__file__).resolve().parent.parent / "data"
 DERIVED = DATA / "derived.db"
-STATE = DATA / "state.db"
 
 SCHEMA = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
 
@@ -50,8 +51,12 @@ def connect():
     state.db: его DDL без префикса (`CREATE TABLE IF NOT EXISTS suppression`)
     иначе создал бы таблицы в derived (главной базе текущего соединения), и
     `state.suppression` не существовал бы.
+
+    Какой это файл — боевой или прогон песочницы — решает paths, а не эта
+    функция: путь к невосстановимому слою один на три системы.
     """
-    state_db = sqlite3.connect(STATE)
+    state = paths.state_db()
+    state_db = sqlite3.connect(state)
     state_db.executescript(_schema("STATE"))
     state_db.commit()
     state_db.close()
@@ -60,10 +65,17 @@ def connect():
     db.row_factory = sqlite3.Row
     db.executescript(_schema("DERIVED"))
     db.execute("PRAGMA journal_mode=WAL")
-    db.execute("ATTACH DATABASE ? AS state", (str(STATE),))
+    db.execute("ATTACH DATABASE ? AS state", (str(state),))
     db.execute("PRAGMA state.journal_mode=WAL")
     db.commit()
     return db
+
+
+def state_schema() -> str:
+    """STATE-блок schema.sql для того, кто создаёт свою базу невосстановимого
+    слоя (песочница). Публичный, потому что альтернатива — вторая копия DDL.
+    """
+    return _schema("STATE")
 
 
 def new_run(db, note=None):

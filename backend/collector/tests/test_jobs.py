@@ -10,6 +10,8 @@ import logging
 import sys
 from pathlib import Path
 
+import paths
+
 from collector.services import events, jobs, metrics
 
 
@@ -105,15 +107,15 @@ def test_frontend_contract(stores):
     assert snapshot["sender"]["status"] == "live"
     assert set(snapshot["sender"]) == {"status", "numbers", "queue", "threads", "heartbeat"}
 
-    assert metrics.threads_db_path().name == "state.db", \
-        "путь state.db разошёлся с config.toml системы 2"
+    assert paths.state_db().name == "state.db", \
+        "путь к невосстановимому слою разошёлся с paths.PRODUCTION_STATE"
 
     from sender.routes import sender
 
     assert sender.router.prefix == "/api/sender"
-    paths = {route.path for route in sender.router.routes}
+    mounted = {route.path for route in sender.router.routes}
     assert {"/api/sender", "/api/sender/numbers", "/api/sender/queue",
-            "/api/sender/autopilot"} <= paths, paths
+            "/api/sender/autopilot"} <= mounted, mounted
 
 def test_publish_from_worker_thread_reaches_subscriber():
     """Событие из рабочего потока доходит до ждущего подписчика сразу.

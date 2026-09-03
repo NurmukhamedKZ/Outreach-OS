@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 import logctx
+import paths
 from config import settings
 from writer.services import agent, config, followup, offers, seller, stages
 from writer.db import leads_source, thread_store
@@ -188,7 +189,7 @@ def require_api_key():
 
 def open_stores():
     return (leads_source.connect(CONFIG["leads_db"]),
-            thread_store.connect(CONFIG["threads_db"]))
+            thread_store.connect(paths.state_db()))
 
 
 def channel_of(leads, company_id):

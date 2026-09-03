@@ -5,6 +5,7 @@
 существовании collector'а.
 """
 
+import paths
 from config import settings
 from writer.services import agent, config, offers, stages
 from writer.db import leads_source, thread_store
@@ -18,7 +19,7 @@ def open_new_threads(ctx):
     require_api_key()
     limit = CONFIG["llm"]["top_n"]
     leads = leads_source.connect(CONFIG["leads_db"])
-    threads = thread_store.connect(CONFIG["threads_db"])
+    threads = thread_store.connect(paths.state_db())
     try:
         rules = leads_source.pitch_rules(CONFIG)
         fresh = leads_source.candidates(leads, rules, limit,

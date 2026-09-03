@@ -4,24 +4,20 @@
 один ответ, чтобы фронт обновлял экран одним запросом — и получал то же самое
 снапшотом при подключении к /api/events.
 
-Путь до state.db (переписка) читается из writer/config.toml, а не импортом
-модулей writer'а: у системы 2 свои зависимости, и тащить их в collector ради
-одного пути — значит падать от чужого requirements. Расхождение путей ловит
-test_frontend_contract в tests/test_jobs.py.
+Путь до невосстановимого слоя приходит из backend/paths.py — единственного
+владельца: у системы 2 свои зависимости, и тащить их в collector ради одного
+пути значило бы падать от чужого requirements.
 """
 
 import sqlite3
-import tomllib
 from contextlib import closing
 from datetime import datetime, timezone
-from pathlib import Path
 
 import activity
+import paths
 from collector.db import lead as store
 from collector.services import jobs
 from collector.services import leads as leads_service
-
-WRITER_HOME = Path(__file__).resolve().parent.parent.parent / "writer"
 RECENT_JOBS = 5
 
 
@@ -43,7 +39,7 @@ def snapshot():
 
 
 def writer_stats():
-    db_path = threads_db_path()
+    db_path = paths.state_db()
     if not db_path.exists():
         return {"threads": 0, "drafts": 0, "sent": 0, "replies": 0}
     with closing(sqlite3.connect(db_path)) as db:
@@ -63,7 +59,7 @@ def sender_stats():
     версии главного симптома аварии.
     """
     from sender.db import conversation, outbox
-    db_path = threads_db_path()
+    db_path = paths.state_db()
     if not db_path.exists():
         return {"status": "live", "numbers": {}, "queue": {},
                 "threads": {"waiting": 0, "escalated": 0}, "heartbeat": None}
@@ -96,8 +92,3 @@ def _worker_heartbeat() -> str | None:
 
 def counted(db, condition):
     return db.execute(f"SELECT count(*) FROM messages WHERE {condition}").fetchone()[0]
-
-
-def threads_db_path():
-    config = tomllib.loads((WRITER_HOME / "config.toml").read_text(encoding="utf-8"))
-    return WRITER_HOME / config["threads_db"]

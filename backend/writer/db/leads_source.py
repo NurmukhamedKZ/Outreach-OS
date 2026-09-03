@@ -15,7 +15,8 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
+
+import paths
 
 CHANNEL_PRIORITY = ("whatsapp", "phone")
 
@@ -36,10 +37,11 @@ ONE_COMPANY = " WHERE c.company_id = ?"
 
 
 def connect(path):
-    """Только чтение: derived.db + ATTACH state.db для фильтра отказов."""
+    """Только чтение: derived.db + ATTACH невосстановимого слоя для фильтра
+    отказов. Какой это файл, решает paths: в песочнице suppression пустой, и
+    выдумывать его имя рядом с derived.db нельзя — базы лежат врозь."""
     db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    state = Path(path).parent / "state.db"
-    db.execute(f"ATTACH DATABASE 'file:{state}?mode=ro' AS state", ())
+    db.execute(f"ATTACH DATABASE 'file:{paths.state_db()}?mode=ro' AS state", ())
     return db
 
 

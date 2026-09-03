@@ -3,7 +3,6 @@
 # writer/ (uv run -m scripts.write), и из collector/ (uvicorn монтирует роутер).
 
 leads_db = "../collector/data/derived.db"
-threads_db = "../collector/data/state.db"
 
 [llm]
 # Та же модель, что у classify: проверена на русских текстах и дёшева.

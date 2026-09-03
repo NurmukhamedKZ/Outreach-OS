@@ -16,6 +16,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 import activity
+import paths
 from config import settings
 from sender import notify
 from sender.db import conversation, migrate, numbers, outbox
@@ -89,7 +90,7 @@ def stopword(text: str, settings: dict) -> str | None:
 
 
 def connect() -> sqlite3.Connection:
-    return migrate.connect(config.load()["state_db"])
+    return migrate.connect(paths.state_db())
 
 
 def now() -> datetime:

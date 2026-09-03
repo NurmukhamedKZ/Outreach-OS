@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import activity
 import analytics
+import paths
 from collector.routes import (activity as activity_routes, analytics as analytics_routes, events, jobs, leads,
                               operations, pipeline, runs, stats, suppression)
 from collector.services import events as bus
@@ -60,8 +61,8 @@ sender_refusal.use(_write_refusal)
 
 # Тот же шов, что подключает отказ: где лежит state.db, знает сборщик
 # приложения, а журнал — модуль верхнего уровня — не знает ни одной из систем.
-activity.use(store.STATE)
-analytics.use(store.STATE, store.DERIVED)
+activity.use(paths.state_db())
+analytics.use(paths.state_db(), store.DERIVED)
 
 # next dev занимает следующий свободный порт, если 3000 занят чем-то другим
 # (в докере, например) — фиксированный список origins тогда молча ломает SSE
@@ -79,7 +80,7 @@ async def lifespan(_app: FastAPI):
     # строк). Здесь же, а не в самом sender'е, по той же причине, по которой
     # здесь живут остальные швы: api.py — единственное место, где системы
     # видят друг друга.
-    thread_store.connect(store.STATE).close()
+    thread_store.connect(paths.state_db()).close()
     queue.fail_orphans()
     worker = asyncio.create_task(queue.worker_loop())
     monitor = asyncio.create_task(sender.monitor_numbers())

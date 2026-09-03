@@ -23,7 +23,6 @@ OVERRIDE = HOME / "autopilot"
 
 def load() -> dict:
     config = tomllib.loads((HOME / "config.toml").read_text(encoding="utf-8"))
-    config["state_db"] = (HOME / config["state_db"]).resolve()
     return config
 
 

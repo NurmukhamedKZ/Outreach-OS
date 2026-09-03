@@ -1,17 +1,8 @@
 """Конфиг системы 3: единственное место порогов, пути от каталога sender/."""
 
-from pathlib import Path
-
 import pytest
 
 from sender.services import config
-
-
-def test_load_resolves_state_db_to_absolute_path():
-    loaded = config.load()
-    assert isinstance(loaded["state_db"], Path)
-    assert loaded["state_db"].is_absolute()
-    assert loaded["state_db"].name == "state.db"
 
 
 def test_load_carries_warmup_calendar_from_spec():

@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 import activity
+import paths
 from sender.db import conversation, migrate, numbers, outbox
 from sender.services import config, health, pool, queue, warmup, worker
 from sender.transport import build as build_transport
@@ -45,7 +46,7 @@ class AutopilotRequest(BaseModel):
 
 
 def connect() -> sqlite3.Connection:
-    return migrate.connect(config.load()["state_db"])
+    return migrate.connect(paths.state_db())
 
 
 def now() -> datetime:

@@ -55,7 +55,10 @@ def test_rebuild_import_graph_has_no_network():
     modules = reachable_modules(rebuild.__file__)
     assert modules, "обход графа импортов не дошёл ни до одного модуля — walker сломан"
     for m in modules:
-        rel = m.relative_to(COLLECTOR).as_posix()
+        try:
+            rel = m.relative_to(COLLECTOR).as_posix()
+        except ValueError:
+            rel = m.relative_to(BACKEND_ROOT).as_posix()
         assert not any(bad in rel for bad in FORBIDDEN), \
             f"rebuild тянет сеть через {rel}"
 

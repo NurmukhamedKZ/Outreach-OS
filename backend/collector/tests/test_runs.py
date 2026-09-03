@@ -15,6 +15,7 @@ import pytest
 
 import collector.services.storage as storage
 import collector.services.store as engine
+import paths
 from collector.services.pipeline import rebuild
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"   # collector/fixtures
@@ -147,7 +148,7 @@ def test_two_runs_identical(tmp_path, monkeypatch):
     raw = _snapshot(tmp_path)
     monkeypatch.setattr(storage, "RAW", raw)
     monkeypatch.setattr(engine, "DERIVED", tmp_path / "derived.db")
-    monkeypatch.setattr(engine, "STATE", tmp_path / "state.db")
+    monkeypatch.setattr(paths, "PRODUCTION_STATE", tmp_path / "state.db")
 
     db = engine.connect()
     rebuild.run(CONTEXT)

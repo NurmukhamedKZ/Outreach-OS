@@ -10,6 +10,7 @@ import pytest
 import activity
 import collector.services.store as engine
 import collector.services.storage as storage
+import paths
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"   # collector/fixtures
 
@@ -18,7 +19,7 @@ FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"   # collector/fix
 def stores(tmp_path, monkeypatch):
     """Две временные базы + соединение, подменяющие боевые data/."""
     monkeypatch.setattr(engine, "DERIVED", tmp_path / "derived.db")
-    monkeypatch.setattr(engine, "STATE", tmp_path / "state.db")
+    monkeypatch.setattr(paths, "PRODUCTION_STATE", tmp_path / "state.db")
     activity.use(tmp_path / "state.db")          # журнал пишет в ту же state.db
     db = engine.connect()
     yield db
