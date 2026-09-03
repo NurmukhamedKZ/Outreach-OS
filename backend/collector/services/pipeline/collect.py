@@ -329,15 +329,23 @@ def ig_profile(ctx):
 
 
 def posts_with_comments():
-    """(media_pk, username) постов с comment_count > 0 из сырья лент в raw/."""
+    """(media_pk, username) постов с comment_count > 0 из сырья лент в raw/.
+
+    Срез тот же, что берёт analyze.instagram_targets: в ленте 12 постов
+    (IG_POST_COUNT входит в адрес, а значит в ключ кэша страницы, и менять
+    его нельзя), а в промпт уходят первые posts_limit. Комментарии к
+    остальным не читает никто — на живом raw/ это 221 запрос из 1441,
+    по шесть секунд каждый.
+    """
     from collector.services.pipeline import rebuild
+    limit = tomllib.loads(CONFIG.read_text(encoding="utf-8"))["instagram"]["posts_limit"]
     out = []
     for page in rebuild.load_pages():
         if "feed/user/" not in page["url"]:
             continue
         feed = sources.parse_ig_feed(rebuild.html_of(page))
         username = feed["username"] or page["url"].split("feed/user/", 1)[1].split("/", 1)[0]
-        for post in feed["posts"]:
+        for post in feed["posts"][:limit]:
             if post.get("comments") and post.get("pk"):
                 out.append((post["pk"], username))
     return out

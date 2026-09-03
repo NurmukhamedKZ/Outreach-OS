@@ -15,6 +15,8 @@ import collector.services.storage as storage
 from collector.services import sources
 from collector.services.pipeline import collect, rebuild
 
+FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"   # collector/fixtures
+
 RUBRIC_URL = re.compile(r"2gis\.kz/([a-z]+)/rubric/(\d+)(?:/page/(\d+))?$")
 
 
@@ -210,3 +212,30 @@ def test_pacing_config_keeps_2gis_faster_than_unknown_hosts():
     pacer = collect.default_pacer()
     assert pacer.interval_for("2gis.kz") < pacer.default
     assert pacer.interval_for("public-api.reviews.2gis.com") < pacer.default
+
+
+def test_comments_are_asked_only_for_posts_the_model_will_see(tmp_path, monkeypatch):
+    """Комментарии запрашиваются к тем же постам, что уйдут в промпт.
+
+    В эталонной ленте 12 постов, и единственный пост с комментариями —
+    одиннадцатый. Анализ берёт первые posts_limit (10) и до него не доходит,
+    значит запрос за его комментариями оплачивается риском бана и
+    выбрасывается. По живому raw/ таких запросов 221 из 1441.
+    """
+    import gzip
+    import hashlib
+    import json
+
+    url = collect.IG_FEED.format(username="adalservice__", count=collect.IG_POST_COUNT)
+    sha = hashlib.sha1(url.encode()).hexdigest()
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    with gzip.open(FIXTURES / "ig_feed.html.gz", "rb") as src, \
+         gzip.open(raw / f"{sha}.html.gz", "wb") as dst:
+        dst.write(src.read())
+    (raw / f"{sha}.json").write_text(json.dumps(
+        {"url": url, "final_url": url, "status": 200,
+         "fetched_at": "2026-08-20T09:00:00Z"}, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(storage, "RAW", raw)
+
+    assert collect.posts_with_comments() == []
