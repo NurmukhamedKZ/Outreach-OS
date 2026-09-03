@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 import clock
 import paths
-from sandbox import faults, node, runs
+from sandbox import chat, faults, node, runs
 
 router = APIRouter(prefix="/api/sandbox")
 log = logging.getLogger(__name__)
@@ -99,6 +99,13 @@ async def set_faults(body: NewFaults) -> dict:
         return faults.update(**body.model_dump()).__dict__
     except ValueError as error:
         raise HTTPException(422, str(error)) from None
+
+
+@router.get("/chat")
+async def read_chat() -> dict:
+    thread_id = thread_of_active_run()
+    with closing(sqlite3.connect(paths.state_db())) as db:
+        return chat.view(db, thread_id)
 
 
 @router.post("/incoming")
