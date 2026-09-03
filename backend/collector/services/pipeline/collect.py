@@ -417,6 +417,9 @@ class Pacer:
 
 
 _PACER = None
+# Собственный лок, а не Pacer.lock: тот сторожит карту слотов и появляется
+# вместе с экземпляром, а сторожить надо как раз его создание.
+_PACER_LOCK = Lock()
 
 
 def default_pacer():
@@ -442,11 +445,17 @@ def default_pacer():
     global _PACER
     pacing = dict(tomllib.loads(CONFIG.read_text(encoding="utf-8"))["pacing"])
     default = pacing.pop("default")
-    if _PACER is None:
-        _PACER = Pacer(pacing, default)
-    else:
-        _PACER.recalibrate(pacing, default)
-    return _PACER
+    # Проверка и присваивание — под локом: дорожки одной стадии строят свои
+    # Budget одновременно, и без него обе успевали в окно между «is None» и
+    # присваиванием. Каждая уносила свой Pacer со своей картой слотов — то
+    # есть по своему лимиту на один хост, ровно то, что этот экземпляр и
+    # существует, чтобы не допустить.
+    with _PACER_LOCK:
+        if _PACER is None:
+            _PACER = Pacer(pacing, default)
+        else:
+            _PACER.recalibrate(pacing, default)
+        return _PACER
 
 
 class Budget:

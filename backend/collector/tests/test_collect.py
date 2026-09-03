@@ -239,3 +239,25 @@ def test_comments_are_asked_only_for_posts_the_model_will_see(tmp_path, monkeypa
     monkeypatch.setattr(storage, "RAW", raw)
 
     assert collect.posts_with_comments() == []
+
+
+def test_default_pacer_is_one_instance_under_concurrent_lanes(monkeypatch):
+    """Две дорожки строят Budget одновременно — это и есть стадия discover.
+
+    Между проверкой «_PACER is None» и присваиванием есть окно, и обе успевали
+    в него: каждая уносила свой Pacer со своей картой занятых слотов, то есть
+    по своему лимиту на один и тот же хост. Окно расширено намеренно — в бою
+    его открывает обычное переключение потоков.
+    """
+    collect._PACER = None
+    real_init = collect.Pacer.__init__
+
+    def slow_init(self, intervals, default):
+        time.sleep(0.05)
+        real_init(self, intervals, default)
+
+    monkeypatch.setattr(collect.Pacer, "__init__", slow_init)
+    with ThreadPoolExecutor(2) as pool:
+        first, second = list(pool.map(lambda _: collect.default_pacer(), range(2)))
+
+    assert first is second, "дорожки получили разные Pacer — темп хоста удвоится"
