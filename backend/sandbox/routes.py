@@ -92,8 +92,7 @@ async def activate_run(run_id: str) -> dict:
 async def move_clock(body: ClockMove) -> dict:
     # Прогон проверяется до разбора пресета: без него «непонятный сдвиг» —
     # не та причина отказа, которую надо показать оператору.
-    if runs.active() is None:
-        raise HTTPException(409, "активного прогона нет: сначала создайте его")
+    _require_scenario()
     run = runs.shift(_seconds(body))
     return {"offset_seconds": int(run.offset.total_seconds()),
             "now": clock.now().isoformat(timespec="seconds")}
@@ -148,10 +147,26 @@ async def incoming(body: NewIncoming) -> dict:
                  " процесс") from None
 
 
+def _require_scenario() -> runs.Run:
+    """Активный прогон-сценарий, а не холостая заглушка.
+
+    `_idle` существует, чтобы песочница с первой секунды процесса не смотрела
+    в боевую базу, — но сценарием он не является. С тех пор как mount() зовёт
+    activate_latest(), active() под SANDBOX=1 никогда не пуст, и проверка «is
+    None» перестала что-либо ловить: на свежей установке часы двигались,
+    сдвигая окно отправки, календарь прогрева и таймеры follow-up всему
+    процессу — и переживали перезапуск, потому что смещение ложится в мету
+    `_idle` и читается обратно активацией.
+    """
+    run = runs.active()
+    if run is None or run.run_id == runs.IDLE_RUN:
+        raise HTTPException(409, "активного прогона нет: сначала создайте его")
+    return run
+
+
 def thread_of_active_run() -> str:
     """Тред прогона — он один: прогон заводится на одного лида."""
-    if runs.active() is None:
-        raise HTTPException(409, "активного прогона нет: сначала создайте его")
+    _require_scenario()
     with closing(sqlite3.connect(paths.state_db())) as db:
         row = db.execute("SELECT thread_id FROM threads"
                          " ORDER BY created_at LIMIT 1").fetchone()
@@ -179,14 +194,26 @@ def _to_window() -> int:
 
     Целимся не в саму границу, а на полчаса внутрь: гейт сравнивает час
     строго, и «ровно 10:00» после джиттера снова оказалось бы «не время».
+
+    У закрывающего края ноль не годится: в 17:50 окно формально открыто, но
+    джиттер выносит отправку за 18:00, гейт переносит её на завтра, и кнопка
+    выглядит сломанной ровно на той границе, ради которой она есть. Открытым
+    окно считается, только если до закрытия остаётся больше самого длинного
+    джиттера.
     """
     from sender.services import config as sender_config
 
-    window = sender_config.load()["window"]
+    settings = sender_config.load()
+    window = settings["window"]
     weekdays = window["weekdays"]
     opens, closes = window["hours"]
+    # Джиттер живёт в [pace], а не в [window]: он защищает номер, а не покой
+    # лида, — но именно он решает, успеет ли отправка до закрытия.
+    longest_jitter = timedelta(minutes=max(settings["pace"]["jitter_minutes"]))
     local = clock.now().astimezone(ZoneInfo(window["timezone"]))
-    if local.isoweekday() in weekdays and opens <= local.hour < closes:
+    closing_at = local.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=closes)
+    if (local.isoweekday() in weekdays and opens <= local.hour < closes
+            and closing_at - local > longest_jitter):
         return 0
     target = local.replace(hour=opens, minute=30, second=0, microsecond=0)
     for _ in range(WINDOW_SEARCH_DAYS):

@@ -165,3 +165,46 @@ def test_window_preset_does_not_hang_on_a_broken_config(monkeypatch):
     with pytest.raises(HTTPException) as failure:
         routes._to_window()
     assert failure.value.status_code == 500
+
+
+async def test_clock_refuses_to_move_the_idle_run():
+    """`_idle` — не сценарий, а место, куда песочница смотрит, пока сценария
+    нет. activate_latest() делает active() всегда непустым, и проверка «нет
+    активного прогона» стала мёртвой: часы двигались на свежей установке,
+    сдвигая окно отправки, календарь прогрева и таймеры follow-up всему
+    процессу — без прогона, который бы за это отвечал. И переживали
+    перезапуск: смещение ложится в мету `_idle`."""
+    runs.activate_latest()
+    assert runs.active().run_id == runs.IDLE_RUN
+
+    with pytest.raises(HTTPException) as failure:
+        await routes.move_clock(routes.ClockMove(preset="hour"))
+
+    assert failure.value.status_code == 409
+    assert clock.offset() == timedelta(), "часы процесса уехали на холостом прогоне"
+
+
+async def test_chat_of_the_idle_run_blames_the_run(monkeypatch):
+    """Та же мёртвая проверка в thread_of_active_run: на свежей установке
+    оператор получал «треда ещё нет» вместо «прогона ещё нет»."""
+    runs.activate_latest()
+    with pytest.raises(HTTPException) as failure:
+        routes.thread_of_active_run()
+    assert failure.value.status_code == 409
+    assert "прогон" in failure.value.detail
+
+
+def test_window_preset_crosses_the_closing_edge(monkeypatch):
+    """Среда, 17:50 в Алматы: окно формально открыто, и пресет возвращал ноль.
+
+    Дальше джиттер в 2–15 минут выносит отправку за 18:00, гейт переносит её
+    на завтра, и кнопка «к открытию окна» выглядит сломанной ровно на той
+    границе, ради которой она есть.
+    """
+    edge = datetime(2026, 9, 2, 12, 50, tzinfo=timezone.utc)     # 17:50 в Алматы
+    monkeypatch.setattr(clock, "now", lambda: edge)
+    seconds = routes._to_window()
+    assert seconds > 0, "у края окна пресет не сдвинул ничего"
+    landed = (edge + timedelta(seconds=seconds)).astimezone(ZoneInfo("Asia/Almaty"))
+    assert landed.isoweekday() == 4
+    assert 10 <= landed.hour < 18
