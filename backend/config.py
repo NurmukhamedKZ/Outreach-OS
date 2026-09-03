@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     langfuse_secret_key: str | None = None
     langfuse_host: str | None = None
     sender_node_url: str = "http://127.0.0.1:8788"
+    # Куда песочница шлёт события самой себе. Отдельной переменной, а не
+    # склейкой из uvicorn_host: адрес вебхука должен переживать смену хоста
+    # бэкенда (докер слушает 0.0.0.0, а ходить туда по 0.0.0.0 нельзя).
+    sandbox_self_url: str = "http://127.0.0.1:8787"
     # `uv run python main.py` и `uv run uvicorn main:app --reload` обязаны
     # биндиться на один и тот же адрес: иначе случайный повторный запуск не
     # падает с "address already in use", а тихо слушает недостижимый wildcard
