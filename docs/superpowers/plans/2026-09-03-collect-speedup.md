@@ -10,14 +10,25 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-03-collect-speedup-design.md`
 
-**Проверено до написания плана.** Код `Pacer`, `plan_steps`, `_set_step` и
-исполнитель стадий собраны в песочнице и прогнаны ровно теми тестами, что
-записаны ниже: 16 из 16 зелёные. Проверены отдельно `json_set` по индексу шага
-(кириллица в подписи прогресса цела), разбор новой секции `[pacing]` в
-`config.toml` (соседние секции не задеты), раскладка `discover` по стадиям и
-дорожкам и тест задачи 3 на настоящей фикстуре `ig_feed.html.gz` — он падает
-до правки и проходит после. Один тест ревью забраковало и заменило: см.
-задачу 4, `test_next_step_of_a_lane_does_not_start_after_a_sibling_failed`.
+**Проверено исполнением, дважды.** Код `Pacer`, `plan_steps`, `_set_step` и
+исполнитель стадий собраны в отдельной песочнице и прогнаны ровно теми
+тестами, что записаны ниже: 18 из 18 зелёные. Проверены отдельно `json_set`
+по индексу шага (кириллица в подписи прогресса цела), разбор новой секции
+`[pacing]` в `config.toml` (соседние секции не задеты), раскладка `discover`
+по стадиям и дорожкам и тест задачи 3 на настоящей фикстуре
+`ig_feed.html.gz` — он падает до правки и проходит после.
+
+Второй прогон — уже после того, как в дерево приехала песочница аутрича
+(коммиты `d94641e`…`316b138`). Ни одна ссылка на файл или строку не
+разъехалась; `services/jobs.py`, `routes/pipeline.py`, `pipeline/__init__.py`,
+`collect.py`, `llm.py` и `collector/config.toml` песочница не трогала вовсе, а
+во фронтенде она дописала свои типы в хвост `api.ts` (строка 459) и свои
+классы в хвост `globals.css` — ниже всего, что правит этот план.
+
+Три вещи ревью забраковало и заменило: неверный тест в задаче 4
+(`test_next_step_of_a_lane_does_not_start_after_a_sibling_failed`), отдельный
+`Pacer` на каждый `Budget` в задаче 2 (см. `default_pacer` — теперь один на
+процесс) и мёртвое поле `progress` в ответе `as_job` после задачи 5 (шаг 6).
 
 ## Global Constraints
 
@@ -31,14 +42,14 @@
 - `data/raw/`, `data/state.db` — невосстановимые слои. Ни один шаг плана ничего в них не удаляет.
 - Комментарии в коде объясняют «почему», а не «что»; сообщения коммитов — на русском.
 - **`Pacer` меряет время `time.monotonic()` и никогда — `clock.now()`.** Параллельно идёт план песочницы (`docs/superpowers/plans/2026-09-03-outreach-sandbox.md`), который вводит `backend/clock.py` — «сейчас» продукта, двигаемое машиной времени на трое суток вперёд. Выглядит это как общий шов для всякого времени в проекте, и перевести на него `Pacer` кажется наведением порядка. Это выпустило бы весь пул в 2GIS и Instagram одним залпом при первом же переводе часов: интервалы обнулились бы разом. Темп сети и время продукта — разные величины, и совпадение в слове «время» их не роднит.
-- **`uv run pytest -q` сегодня мигает.** Два полных прогона подряд на одном дереве: 516 passed + 1 failed, затем 517 passed. Падает `writer/tests/test_agent.py::test_draft_logs_langfuse_trace_when_handler_present` — `agent.draft` пишет трейс из демон-потока (`writer/services/agent.py:136`), а тест читает список сразу после вызова, и под нагрузкой полного прогона поток не успевает. К этому плану флак отношения не имеет. Увидев его на шаге «Expected: PASS», перезапустить прогон, а не чинить свою правку.
+- **`uv run pytest -q` изредка мигает.** Текущая база после приезда песочницы — **566 passed за 79 секунд**. Но один из трёх полных прогонов на неизменном дереве упал: `writer/tests/test_agent.py::test_draft_logs_langfuse_trace_when_handler_present`. `agent.draft` пишет трейс из демон-потока (`writer/services/agent.py:136`), а тест читает список сразу после вызова — под нагрузкой полного прогона поток не успевает. В одиночку тест проходит всегда. К этому плану флак отношения не имеет: увидев его на шаге «Expected: PASS», перезапустить прогон, а не чинить свою правку.
 
 ---
 
 ### Task 1: Пул анализа — 16 потоков вместо восьми
 
 **Files:**
-- Modify: `backend/collector/services/pipeline/llm.py:57-60`
+- Modify: `backend/collector/services/pipeline/llm.py:61-63`
 
 **Interfaces:**
 - Consumes: ничего.
@@ -103,8 +114,8 @@ git commit -m "perf(analyze): пул 16 потоков вместо восьми
 **Interfaces:**
 - Consumes: `collect.Budget(cap)` — уже существующий конструктор, вызывается семь раз из операций `collect.*` с единственным аргументом.
 - Produces:
-  - `collect.Pacer(intervals: dict[str, float], default: float)` с методами `wait(url: str) -> None` и `interval_for(host: str) -> float`, атрибут `default: float`;
-  - `collect.default_pacer() -> Pacer` — читает `[pacing]` из `config.toml`;
+  - `collect.Pacer(intervals: dict[str, float], default: float)` с методами `wait(url: str) -> None`, `interval_for(host: str) -> float`, `recalibrate(intervals, default) -> None`; атрибуты `default: float`, `free_at: dict[str, float]`;
+  - `collect.default_pacer() -> Pacer` — **один и тот же экземпляр на процесс**, интервалы перечитываются из `[pacing]` на каждый вызов, занятые слоты переживают;
   - `collect.Budget(cap, pacer=None)` — второй аргумент необязателен, по умолчанию `default_pacer()`;
   - `collect.MAX_WORKERS = 16`;
   - константы `PAUSE_SECONDS` больше нет.
@@ -190,6 +201,33 @@ def test_budget_paces_only_network_requests(monkeypatch):
     budget.get("https://example.kz/fresh")
 
     assert asked == ["https://example.kz/fresh"]
+
+
+def test_two_budgets_share_one_host_limit(monkeypatch):
+    """Две операции, идущие разными дорожками в один хост, не должны удвоить
+    темп: Pacer один на процесс, потому что темп принадлежит хосту, а не
+    операции. До дорожек операции шли по очереди, и это было безразлично."""
+    collect._PACER = None
+    monkeypatch.setattr(collect.fetch, "is_cached", lambda url: False)
+    monkeypatch.setattr(collect.fetch, "get", lambda url, **kw: "<html></html>")
+
+    first, second = collect.Budget(None), collect.Budget(None)
+    assert first.pacer is second.pacer, \
+        "у каждой операции свой Pacer — лимит хоста удвоится молча"
+
+
+def test_recalibration_keeps_taken_slots():
+    """Правка config.toml меняет интервалы, но не забывает занятые слоты:
+    обнулить их значило бы выпустить пул залпом ровно в тот момент, когда
+    оператор крутит ручку из-за капчи."""
+    pacer = collect.Pacer({"one.kz": 0.05}, 0.0)
+    pacer.wait("https://one.kz/")
+    taken = dict(pacer.free_at)
+
+    pacer.recalibrate({"one.kz": 0.9}, 0.0)
+
+    assert pacer.interval_for("one.kz") == 0.9
+    assert pacer.free_at == taken
 
 
 def test_pacing_config_keeps_2gis_faster_than_unknown_hosts():
@@ -279,6 +317,11 @@ class Pacer:
         self.free_at = {}
         self.lock = Lock()
 
+    def recalibrate(self, intervals, default):
+        """Новые темпы из конфига. Карта занятых слотов не трогается — она и
+        есть состояние темпа, а не его настройка."""
+        self.intervals, self.default = intervals, default
+
     def interval_for(self, host):
         """Самое длинное совпадение: точное имя, иначе самый длинный подходящий
         суффикс, иначе умолчание. Длинное выигрывает у короткого, чтобы
@@ -300,16 +343,37 @@ class Pacer:
             time.sleep(delay)
 
 
+_PACER = None
+
+
 def default_pacer():
     """Темпы из config.toml. Значения — калибровочная ручка: источник ответил
     капчей — поднимают их, а не правят код.
 
+    Pacer один на процесс, а не один на Budget. Каждая операция строит свой
+    Budget, и до задачи 4 это было безразлично — операции шли по очереди. С
+    дорожками две операции идут одновременно, и по своему Pacer у каждой
+    означало бы по своему лимиту на один и тот же хост: темп удвоился бы
+    молча, ровно в той правке, которая дорожки и вводит. Темп принадлежит
+    хосту — значит и карта занятых слотов одна на процесс.
+
+    Интервалы перечитываются на каждый вызов: config.toml — ручка, и правка
+    не должна ждать перезапуска бэкенда. А занятые слоты переживают
+    перечитывание: они и есть состояние темпа, и обнулить их значило бы
+    выпустить пул залпом ровно в тот момент, когда оператор крутит ручку
+    из-за капчи.
+
     default вынимается отдельной строкой: «default» — не имя домена, и в карте
     хостов ему места нет.
     """
+    global _PACER
     pacing = dict(tomllib.loads(CONFIG.read_text(encoding="utf-8"))["pacing"])
     default = pacing.pop("default")
-    return Pacer(pacing, default)
+    if _PACER is None:
+        _PACER = Pacer(pacing, default)
+    else:
+        _PACER.recalibrate(pacing, default)
+    return _PACER
 
 
 class Budget:
@@ -1151,7 +1215,9 @@ function statusLabel(job: { status: string; step: number; step_count: number }) 
 
 - [ ] **Step 5: Убрать дублирующую запись прогресса в колонку джобы**
 
-Фронт больше не читает `job.progress` — вторая запись на каждый тик прогресса перестала быть нужной. В `backend/collector/services/jobs.py::make_context` заменить `progress`:
+`JobMonitor.tsx` — единственный читатель `job.progress` во всём проекте (проверено: `grep -rn "\.progress" frontend/app frontend/components`), и шаг 2 только что забрал у него эту роль. Вторая запись на каждый тик перестала быть нужной.
+
+В `backend/collector/services/jobs.py::make_context` заменить `progress`:
 
 ```python
     def progress(current, total, label):
@@ -1159,22 +1225,49 @@ function statusLabel(job: { status: string; step: number; step_count: number }) 
                   progress={"current": current, "total": total, "label": label})
 ```
 
-- [ ] **Step 6: Прогнать тесты бэкенда**
+- [ ] **Step 6: Убрать мёртвое поле `progress` из ответа и из типа**
+
+Без этого шага `as_job` продолжал бы отдавать `"progress": null` на каждой джобе, а `Job` в TypeScript — обещать поле, которого больше не бывает. Мёртвое поле в контракте хуже отсутствующего: следующий читатель поверит обещанию.
+
+В `backend/collector/services/jobs.py::as_job` убрать последнюю строку словаря:
+
+```python
+        "log_lines": log.count("\n") + 1 if log else 0,
+    }
+```
+
+и дописать в докстринг `as_job` абзацем:
+
+```
+    Прогресс живёт в шагах, а не в джобе: у стадии с двумя дорожками их два.
+    Колонка state.jobs.progress больше не заполняется и осталась в схеме
+    мёртвой — как step и exit_code. Миграции ради трёх мёртвых колонок не
+    затевается: state.db невосстановима, и ALTER на ней стоит дороже, чем
+    строка в докстринге.
+```
+
+В `frontend/app/api.ts` убрать из типа `Job` строку 152:
+
+```ts
+  progress: { label?: string; current?: number; total?: number } | null;
+```
+
+- [ ] **Step 7: Прогнать тесты бэкенда**
 
 Run: `cd backend && uv run pytest -q`
 Expected: PASS. Тест `test_step_progress_lands_in_its_own_step` из задачи 4 продолжает проверять прогресс — он читает шаг, а не колонку.
 
-- [ ] **Step 7: Собрать фронтенд**
+- [ ] **Step 8: Собрать фронтенд**
 
 Run: `cd frontend && npx tsc --noEmit && npm run build`
 Expected: обе команды без ошибок.
 
-- [ ] **Step 8: Проверить вживую параллельную стадию**
+- [ ] **Step 9: Проверить вживую параллельную стадию**
 
 Run: `cd backend && uv run python main.py`, в соседнем терминале `cd frontend && npm run dev`, открыть `http://localhost:3000/activity`, нажать «Поиск новых лидов».
 Expected: два шага одновременно подсвечены как текущие, под списком две полосы прогресса с разными подписями («карточки 2GIS» и «ленты инстаграма»), «прервать» останавливает обе ветки.
 
-- [ ] **Step 9: Коммит**
+- [ ] **Step 10: Коммит**
 
 ```bash
 cd /Users/nurma/vscode_projects/Scrapling-Test
