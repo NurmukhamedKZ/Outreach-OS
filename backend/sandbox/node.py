@@ -120,6 +120,16 @@ async def health() -> dict:
     return {SANDBOX_NUMBER: {"state": faults.current().number, "reconnects": 0}}
 
 
+def self_url() -> str:
+    """Адрес, по которому песочница стучится сама в себя.
+
+    Функцией, а не константой: так `settings` читается на каждом вызове, и
+    диагностика в routes называет тот адрес, который действует сейчас, — а не
+    тот, что был на импорте.
+    """
+    return settings.sandbox_self_url
+
+
 async def deliver(payload: dict) -> bool:
     """Событие в свой же вебхук — тем же HTTP и с тем же заголовком, что у
     настоящего Node. Короткого пути (прямого вызова функции) здесь нет
@@ -127,7 +137,7 @@ async def deliver(payload: dict) -> bool:
     headers = ({"x-sender-secret": settings.sender_webhook_secret}
                if settings.sender_webhook_secret else {})
     async with httpx.AsyncClient() as client:
-        response = await client.post(f"{settings.sandbox_self_url}/api/sender/webhook",
+        response = await client.post(f"{self_url()}/api/sender/webhook",
                                      json=payload, headers=headers, timeout=30)
     response.raise_for_status()
     return bool(response.json().get("handled"))
@@ -143,4 +153,6 @@ async def _status_later(number: str, provider_id: str, status: int) -> None:
         except httpx.HTTPError as error:
             log.warning("статус %s не доставлен (попытка %s): %s",
                         provider_id, attempt + 1, error)
-    log.error("статус %s так и не нашёл строку очереди", provider_id)
+    log.error("статус %s так и не нашёл строку очереди. Если вебхук вовсе не"
+              " отвечает, дело в SANDBOX_SELF_URL (%s): тумблер «доставлено»"
+              " тогда неотличим от «тишины»", provider_id, self_url())

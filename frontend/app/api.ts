@@ -82,13 +82,25 @@ export type Stats = {
   cities: string[];
 };
 
+/** Ошибка запроса вместе с кодом состояния: словами объясняет отказ `detail`,
+ *  а отличить «состояние» (409) от «авария» (500) можно только по коду. */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   if (!response.ok) {
     // detail из HTTPException объясняет отказ словами («прогон не завершён»),
     // а код состояния — нет. Тела может и не быть: тогда остаётся код.
     const detail = await response.json().then((body) => body?.detail).catch(() => null);
-    throw new Error(detail ?? `${init?.method ?? "GET"} ${url} — ${response.status}`);
+    throw new ApiError(
+      detail ?? `${init?.method ?? "GET"} ${url} — ${response.status}`,
+      response.status,
+    );
   }
   return response.json();
 }
@@ -181,6 +193,9 @@ export type DashboardStats = {
   writer: { threads: number; drafts: number; sent: number; replies: number };
   sender: { status: string; numbers: Record<string, number> };
   jobs: { active: Job | null; recent: Job[] };
+  /** Режим стенда решает бэкенд: без него сайдбар рисовал бы «Песочницу»,
+   *  ручек которой в приложении нет. */
+  sandbox: boolean;
 };
 
 export function fetchStats() {

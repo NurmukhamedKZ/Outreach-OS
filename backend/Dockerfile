@@ -12,6 +12,9 @@ COPY config.py llm_schema.py logctx.py logging_setup.py observability.py \
 COPY collector/ collector/
 COPY writer/ writer/
 COPY sender/ sender/
+# Песочница едет в образ, потому что collector/api.py импортирует её
+# безусловно; ручек без SANDBOX=1 она всё равно не монтирует.
+COPY sandbox/ sandbox/
 
 # scrapling[fetchers] качает свой Chromium отдельно от pip-пакета — без этого
 # шага collect.* и probe.* падают при первом обращении к сети.

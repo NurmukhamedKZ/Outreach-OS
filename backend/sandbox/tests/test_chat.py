@@ -122,3 +122,10 @@ def test_bubbles_are_in_the_order_they_happened(db):
     _message(db, draft_text="второе")
     assert [bubble["role"] for bubble in chat.view(db, THREAD)["bubbles"]] == \
         ["outgoing", "incoming", "outgoing"]
+
+
+def test_missing_thread_is_an_error_not_a_crash(db):
+    """Прогон переключили в другой вкладке между выбором треда и чтением
+    ленты. `dict(None)` дал бы TypeError вместо внятного ответа."""
+    with pytest.raises(chat.UnknownThreadError):
+        chat.view(db, "+79990000000")

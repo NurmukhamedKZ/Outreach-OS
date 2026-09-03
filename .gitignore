@@ -34,6 +34,9 @@ backend/collector/data/state.db
 backend/collector/data/state.db-wal
 backend/collector/data/state.db-shm
 
+# Базы прогонов песочницы: тот же невосстановимый слой, только тестовый
+backend/collector/data/sandbox/
+
 # Устаревшие пути (удаляются при миграции)
 backend/collector/db/leads.db
 backend/collector/db/ops.db

@@ -102,7 +102,8 @@ def test_frontend_contract(stores):
     """Контракт фронтенда: снапшот счётчиков знает все три системы, у системы 3
     есть живой пул номеров на своём адресе."""
     snapshot = metrics.snapshot()
-    assert set(snapshot) == {"sourcing", "writer", "sender", "jobs"}, sorted(snapshot)
+    assert set(snapshot) == {"sourcing", "writer", "sender", "jobs", "sandbox"}, \
+        sorted(snapshot)
     assert set(snapshot["writer"]) == {"threads", "drafts", "sent", "replies"}
     assert snapshot["sender"]["status"] == "live"
     assert set(snapshot["sender"]) == {"status", "numbers", "queue", "threads", "heartbeat"}

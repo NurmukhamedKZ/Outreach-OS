@@ -53,3 +53,31 @@ def test_the_seam_reaches_the_conversation_stamp():
     clock.use(timedelta(days=3))
     stamped = datetime.fromisoformat(thread_store.now())
     assert stamped - datetime.now(timezone.utc) > timedelta(days=2, hours=23)
+
+
+def test_the_seam_reaches_the_dashboard(tmp_path, monkeypatch):
+    """Счётчики очереди на /api/stats считаются по тем же часам, что тик
+    воркера. Иначе после сдвига дашборд показывает ноль просроченных, пока
+    воркер их разгребает, и два числа на одном экране спорят друг с другом.
+    """
+    import paths
+    from collector.services import metrics
+    from sender.db import migrate
+    from writer.db import thread_store
+
+    path = tmp_path / "state.db"
+    thread_store.connect(path).close()
+    db = migrate.connect(path)
+    ripe = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat(
+        timespec="seconds")
+    db.execute("INSERT INTO outbox (thread_id, our_number, send_after, status,"
+               " attempts, created_at, updated_at)"
+               " VALUES ('+77010000001', '+77000000001', ?, 'pending', 0, ?, ?)",
+               (ripe, ripe, ripe))
+    db.commit()
+    db.close()
+    monkeypatch.setattr(paths, "PRODUCTION_STATE", path)
+
+    assert metrics.sender_stats()["queue"]["overdue"] == 0
+    clock.use(timedelta(days=1))
+    assert metrics.sender_stats()["queue"]["overdue"] == 1

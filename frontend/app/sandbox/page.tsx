@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  ApiError,
   activateSandboxRun,
   createSandboxRun,
   fetchActivity,
@@ -68,13 +69,24 @@ export default function SandboxPage() {
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [pool, setPool] = useState<SenderStatus | null>(null);
+  const [sandboxNow, setSandboxNow] = useState<string | null>(null);
   const [journal, setJournal] = useState<ActivityEvent[]>([]);
 
   const reload = useCallback(() => {
     fetchSandboxRuns().then((data) => setRuns(data.runs)).catch(report);
     fetchSandboxFaults().then(setFaults).catch(report);
-    // Треда может ещё не быть — это не ошибка, а состояние «сначала черновик».
-    fetchSandboxChat().then(setChat).catch(() => setChat(null));
+    // 409 — это не ошибка, а состояние «сначала черновик». Всё остальное
+    // (500, обрыв) обязано доехать до баннера: молчащая лента выглядела бы
+    // ровно так же, как пустая.
+    fetchSandboxChat()
+      .then(setChat)
+      .catch((error: unknown) => {
+        if (error instanceof ApiError && error.status === 409) {
+          setChat(null);
+          return;
+        }
+        report(error as Error);
+      });
     fetchSender().then(setPool).catch(report);
     fetchActivity(20).then((data) => setJournal(data.events)).catch(report);
   }, []);
@@ -246,7 +258,8 @@ export default function SandboxPage() {
           <section className="card">
             <h2 className="card-sub">Часы</h2>
             <p className="note mono">
-              сдвиг: {Math.round((active?.offset_seconds ?? 0) / 3600)} ч
+              сдвиг: {shiftOf(active?.offset_seconds ?? 0)}
+              {sandboxNow && ` · сейчас ${WHEN.format(new Date(sandboxNow))}`}
             </p>
             <div className="controls">
               {SHIFTS.map(({ preset, label }) => (
@@ -254,7 +267,12 @@ export default function SandboxPage() {
                   key={preset}
                   className="btn-quiet"
                   disabled={busy || !active}
-                  onClick={() => act(() => moveSandboxClock(preset))}
+                  onClick={() =>
+                    act(async () => {
+                      const moved = await moveSandboxClock(preset);
+                      setSandboxNow(moved.now);
+                    })
+                  }
                 >
                   {label}
                 </button>
@@ -351,6 +369,18 @@ export default function SandboxPage() {
       </div>
     </>
   );
+}
+
+/** Сдвиг часов словами. Округление до часов прятало бы пресет «+15 мин»:
+ *  три нажатия подряд показывали бы «0 ч», и кнопка выглядела бы сломанной. */
+function shiftOf(seconds: number): string {
+  if (seconds === 0) return "нет";
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.round((seconds % 3600) / 60);
+  return [days && `${days} д`, hours && `${hours} ч`, minutes && `${minutes} мин`]
+    .filter(Boolean)
+    .join(" ");
 }
 
 /** Судьба строки очереди словами. Словарь бэкенда — статусы outbox. */

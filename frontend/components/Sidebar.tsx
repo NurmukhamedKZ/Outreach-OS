@@ -29,7 +29,10 @@ const NAV = [
 
 export default function Sidebar() {
   const pathname = usePathname();
-  const { active, connected } = useLive();
+  const { active, connected, stats } = useLive();
+  // «Песочница» живёт только при SANDBOX=1: иначе страница встречала бы
+  // оператора баннером «GET /api/sandbox/runs — 404» над пустым экраном.
+  const nav = NAV.filter((item) => item.href !== "/sandbox" || stats?.sandbox);
 
   return (
     <aside className="sidebar">
@@ -44,7 +47,7 @@ export default function Sidebar() {
       </Link>
 
       <nav className="nav">
-        {NAV.map(({ href, label, icon: Icon }) => (
+        {nav.map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
             href={href}

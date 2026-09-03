@@ -10,8 +10,10 @@ import logging
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 import sqlite3
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -25,6 +27,11 @@ log = logging.getLogger(__name__)
 # Часовой пояс окна отправки живёт в sender/config.toml; здесь он нужен только
 # для пресета «к открытию окна», и берётся оттуда же — см. _to_window.
 PRESETS = {"jitter": 15 * 60, "hour": 3600, "day": 86400}
+
+# Сколько дней вперёд ищется открытие окна. Восемь, а не «пока не найдём»:
+# пустой или перевранный weekdays в конфиге иначе вешает не запрос, а весь
+# цикл событий — ручка асинхронная.
+WINDOW_SEARCH_DAYS = 8
 
 PERSONAL_JID = "@s.whatsapp.net"
 
@@ -61,7 +68,11 @@ async def create_run(body: NewRun) -> dict:
     # Системное время, а не clock.now(): id прогона и дата регистрации номера
     # не должны наследовать сдвиг прошлого прогона — иначе новый прогон
     # рождается в будущем и его календарь прогрева врёт с первого дня.
-    run = runs.create(body.company_id, body.warmed, datetime.now(timezone.utc))
+    try:
+        run = runs.create(body.company_id, body.warmed, datetime.now(timezone.utc))
+    except runs.RunExistsError as error:
+        raise HTTPException(409, f"прогон {error} уже есть — начните его заново"
+                                 " кнопкой активации") from None
     runs.activate(run.run_id)
     node.forget_keys()
     return {"run": _card(run, run)}
@@ -79,11 +90,11 @@ async def activate_run(run_id: str) -> dict:
 
 @router.post("/clock")
 async def move_clock(body: ClockMove) -> dict:
-    seconds = _seconds(body)
-    try:
-        run = runs.shift(seconds)
-    except runs.UnknownRunError:
-        raise HTTPException(409, "активного прогона нет: сначала создайте его") from None
+    # Прогон проверяется до разбора пресета: без него «непонятный сдвиг» —
+    # не та причина отказа, которую надо показать оператору.
+    if runs.active() is None:
+        raise HTTPException(409, "активного прогона нет: сначала создайте его")
+    run = runs.shift(_seconds(body))
     return {"offset_seconds": int(run.offset.total_seconds()),
             "now": clock.now().isoformat(timespec="seconds")}
 
@@ -105,7 +116,14 @@ async def set_faults(body: NewFaults) -> dict:
 async def read_chat() -> dict:
     thread_id = thread_of_active_run()
     with closing(sqlite3.connect(paths.state_db())) as db:
-        return chat.view(db, thread_id)
+        try:
+            return chat.view(db, thread_id)
+        except chat.UnknownThreadError:
+            # Тред исчез между выбором и чтением: прогон переключили в другой
+            # вкладке. Это состояние, а не авария, и отвечать на него надо тем
+            # же кодом, что и на «треда ещё нет».
+            raise HTTPException(409, "треда ещё нет: сначала черновик"
+                                     " первого письма") from None
 
 
 @router.post("/incoming")
@@ -117,7 +135,17 @@ async def incoming(body: NewIncoming) -> dict:
                "from": f"{thread_id.lstrip('+')}{PERSONAL_JID}",
                "provider_id": f"SBXIN{uuid4().hex[:10].upper()}",
                "text": body.text}
-    return {"handled": await node.deliver(payload)}
+    try:
+        return {"handled": await node.deliver(payload)}
+    except httpx.HTTPError as error:
+        # Песочница стучится сама в себя, и промах по адресу — единственная
+        # причина этой ошибки. Трассировка назвала бы httpx, а не SANDBOX_SELF_URL,
+        # хотя чинится ровно он: тот же промах молча гасит и статусы доставки,
+        # превращая тумблер «доставлено» в неотличимый от «тишины».
+        raise HTTPException(
+            502, f"песочница не достучалась до себя по {node.self_url()}: {error}."
+                 " Проверьте SANDBOX_SELF_URL — он должен указывать на этот же"
+                 " процесс") from None
 
 
 def thread_of_active_run() -> str:
@@ -143,23 +171,31 @@ def _seconds(body: ClockMove) -> int:
 
 
 def _to_window() -> int:
-    """Секунды до 10:00 ближайшего рабочего дня по времени окна отправки.
+    """Секунды до открытия окна отправки. Ноль, если окно уже открыто.
 
-    Пресет обязан попадать ВНУТРЬ окна, а не на его границу: гейт сравнивает
-    час строго, и «ровно 10:00» после джиттера снова оказалось бы «не время».
+    Ноль, а не сутки: «к открытию окна», нажатое в рабочий полдень, иначе
+    сжигало бы день календаря прогрева и каденции за сдвиг, которого никто не
+    просил.
+
+    Целимся не в саму границу, а на полчаса внутрь: гейт сравнивает час
+    строго, и «ровно 10:00» после джиттера снова оказалось бы «не время».
     """
     from sender.services import config as sender_config
 
-    settings = sender_config.load()["window"]
-    zone = timezone(timedelta(hours=5)) if settings["timezone"] == "Asia/Almaty" \
-        else timezone.utc
-    local = clock.now().astimezone(zone)
-    opens, _ = settings["hours"]
+    window = sender_config.load()["window"]
+    weekdays = window["weekdays"]
+    opens, closes = window["hours"]
+    local = clock.now().astimezone(ZoneInfo(window["timezone"]))
+    if local.isoweekday() in weekdays and opens <= local.hour < closes:
+        return 0
     target = local.replace(hour=opens, minute=30, second=0, microsecond=0)
-    while target <= local or target.isoweekday() not in settings["weekdays"]:
-        target += timedelta(days=1)
-        target = target.replace(hour=opens, minute=30, second=0, microsecond=0)
-    return int((target - local).total_seconds())
+    for _ in range(WINDOW_SEARCH_DAYS):
+        if target > local and target.isoweekday() in weekdays:
+            return int((target - local).total_seconds())
+        target = (target + timedelta(days=1)).replace(
+            hour=opens, minute=30, second=0, microsecond=0)
+    raise HTTPException(500, "за неделю вперёд окно ни разу не открывается:"
+                             " проверьте [window] в sender/config.toml")
 
 
 def _card(run: runs.Run, active: runs.Run | None) -> dict:

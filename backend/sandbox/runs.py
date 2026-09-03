@@ -30,11 +30,20 @@ RUNS_DIR = Path(__file__).resolve().parent.parent / "collector" / "data" / "sand
 # количеством SIM, и второй номер добавил бы только выбор в гейте.
 SANDBOX_NUMBER = "+77000000001"
 
+# Холостая база: песочница указывает на неё, пока не создан ни один прогон.
+IDLE_RUN = "_idle"
+
 META = "CREATE TABLE IF NOT EXISTS sandbox_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
 
 
 class UnknownRunError(Exception):
     """Прогона с таким id нет — или ни один не активен."""
+
+
+class RunExistsError(Exception):
+    """Прогон с таким id уже есть. Создавать поверх нельзя: `_write_meta`
+    затёр бы его часы, а таблицы остались бы от прошлого сценария — то есть
+    получился бы ровно тот грязный контекст, ради которого прогон и файл."""
 
 
 @dataclass(frozen=True)
@@ -60,9 +69,11 @@ def create(company_id: str, warmed: bool, moment: datetime) -> Run:
     прогретого номера первый же прогон упёрся бы в календарь прогрева и не
     отправил бы ничего, а без нового номера нельзя проверить сам прогрев.
     """
-    run = Run(run_id=f"{moment:%Y%m%d-%H%M}-{company_id}", company_id=company_id,
+    run = Run(run_id=f"{moment:%Y%m%d-%H%M%S}-{company_id}", company_id=company_id,
               created_at=moment.isoformat(timespec="seconds"), warmed=warmed,
               offset=timedelta())
+    if run.path.exists():
+        raise RunExistsError(run.run_id)
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     _apply_schemas(run.path)
     _write_meta(run.path, {"company_id": company_id, "created_at": run.created_at,
@@ -74,14 +85,19 @@ def create(company_id: str, warmed: bool, moment: datetime) -> Run:
 
 
 def all() -> list[Run]:
-    """Новые сверху: список прогонов читается как список чатов."""
+    """Новые сверху: список прогонов читается как список чатов.
+
+    Служебные базы (имя с подчёркивания) в список не попадают: холостая
+    `_idle` — не сценарий, а место, куда указывает песочница, пока сценария
+    ещё нет.
+    """
     if not RUNS_DIR.exists():
         return []
     # Файл без меты — прогон, чьё создание оборвалось между схемой и метой.
     # Пропускается, а не роняет список: иначе одна такая крошка навсегда
     # убила бы страницу, и починить её было бы нечем, кроме shell.
     found = [run for run in (_read_or_none(path) for path in RUNS_DIR.glob("*.db"))
-             if run is not None]
+             if run is not None and not run.run_id.startswith("_")]
     return sorted(found, key=lambda run: run.run_id, reverse=True)
 
 
@@ -110,6 +126,32 @@ def activate(run_id: str) -> Run:
     clock.use(run.offset)
     _active = run_id
     return run
+
+
+def activate_latest() -> Run:
+    """Прогон, на который песочница смотрит с первой секунды процесса.
+
+    Без этого вызова `paths.state_db()` до первого клика в интерфейсе
+    возвращает боевую базу — и фоновые задачи (прогрев, обработка входящего,
+    очередь) работают с настоящей перепиской через подменный транспорт:
+    строки помечаются отправленными, лимиты боевых номеров тратятся, а лид
+    не получает ничего. Предохранитель `mount()` ловит зеркальную ошибку —
+    боевой транспорт при включённой песочнице, — а эта не ловилась ничем.
+    """
+    existing = all()
+    return activate(existing[0].run_id if existing else _ensure_idle().run_id)
+
+
+def _ensure_idle() -> Run:
+    """Пустая база на случай «песочница включена, сценариев ещё нет»."""
+    path = RUNS_DIR / f"{IDLE_RUN}.db"
+    if path.exists():
+        return _read(path)
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    _apply_schemas(path)
+    _write_meta(path, {"company_id": "", "created_at": "",
+                       "warmed": "1", "offset_seconds": "0"})
+    return _read(path)
 
 
 def deactivate() -> None:

@@ -11,13 +11,15 @@
 
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
 
 import activity
+import clock
 import paths
 from collector.db import lead as store
 from collector.services import jobs
 from collector.services import leads as leads_service
+from config import settings
+
 RECENT_JOBS = 5
 
 
@@ -31,6 +33,9 @@ def snapshot():
         "sourcing": system1,
         "writer": writer_stats(),
         "sender": sender_stats(),
+        # Режим стенда — состояние бэкенда, а не догадка фронта: сайдбар не
+        # имеет права рисовать «Песочницу», ручек которой в приложении нет.
+        "sandbox": settings.sandbox,
         "jobs": {
             "active": jobs.active(),
             "recent": jobs.recent(RECENT_JOBS),
@@ -68,7 +73,7 @@ def sender_stats():
         try:
             rows = db.execute(
                 "SELECT status, count(*) FROM numbers GROUP BY status").fetchall()
-            queue = outbox.counters(db, datetime.now(timezone.utc))
+            queue = outbox.counters(db, clock.now())
             threads = conversation.counters(db)
         except sqlite3.OperationalError:
             return {"status": "live", "numbers": {}, "queue": {},

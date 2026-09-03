@@ -7,6 +7,11 @@
 
 import sqlite3
 
+
+class UnknownThreadError(Exception):
+    """Треда с таким номером в базе прогона нет."""
+
+
 FIELDS = ("message_id, role, draft_text, queued_text, sent_text, created_at,"
           " sent_at")
 
@@ -18,6 +23,8 @@ def view(db: sqlite3.Connection, thread_id: str) -> dict:
     thread = db.execute(
         "SELECT thread_id, company_id, stage, status, touch_no, next_touch_at"
         " FROM threads WHERE thread_id = ?", (thread_id,)).fetchone()
+    if thread is None:
+        raise UnknownThreadError(thread_id)
     rows = db.execute(f"SELECT {FIELDS} FROM messages WHERE thread_id = ?"
                       " ORDER BY message_id", (thread_id,)).fetchall()
     return {**dict(thread),

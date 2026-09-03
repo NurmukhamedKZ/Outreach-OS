@@ -26,7 +26,12 @@ def mount(app: FastAPI, settings) -> None:
         raise SandboxMisconfigured(
             f"SANDBOX=1, но SENDER_NODE_URL={settings.sender_node_url} — это боевой"
             f" транспорт. Пропишите {SANDBOX_NODE_PATH} или выключите песочницу.")
-    from sandbox import node, routes
+    from sandbox import node, routes, runs
 
+    # До этой строки paths.state_db() — боевая база, а транспорт уже подменён:
+    # фоновые задачи (прогрев, обработка входящего, очередь) успели бы
+    # поработать с настоящей перепиской через фейк. Активируется свежайший
+    # прогон, а если сценариев ещё нет — пустая холостая база.
+    runs.activate_latest()
     app.include_router(routes.router)
     app.include_router(node.router)

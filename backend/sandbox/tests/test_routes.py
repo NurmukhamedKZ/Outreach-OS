@@ -6,6 +6,7 @@ Node: стоп-слова, дедуп и гашение расписания о�
 
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import HTTPException
@@ -113,3 +114,54 @@ async def test_everything_needs_an_active_run():
         with pytest.raises(HTTPException) as failure:
             await call
         assert failure.value.status_code == 409
+
+
+async def test_creating_over_an_existing_run_answers_409(monkeypatch):
+    """Секунда в id разводит прогоны одной компании, но два запроса в одну
+    секунду всё равно возможны. Оператор обязан увидеть «уже есть», а не 500
+    из-за PRIMARY KEY на номере пула."""
+    def occupied(*_args, **_kwargs):
+        raise runs.RunExistsError("20260903-090000-c_romashka")
+
+    monkeypatch.setattr(runs, "create", occupied)
+    with pytest.raises(HTTPException) as failure:
+        await routes.create_run(routes.NewRun(company_id="c_romashka", warmed=True))
+    assert failure.value.status_code == 409
+
+
+async def test_clock_without_a_run_blames_the_run_not_the_preset():
+    """Без прогона «непонятный сдвиг» — не та причина отказа, которую надо
+    показать оператору."""
+    with pytest.raises(HTTPException) as failure:
+        await routes.move_clock(routes.ClockMove(preset="чепуха"))
+    assert failure.value.status_code == 409
+
+
+def test_window_preset_is_zero_when_the_window_is_already_open(monkeypatch):
+    """Среда, 14:00 в Алматы. Сутки вперёд сожгли бы день календаря прогрева и
+    каденции за сдвиг, которого никто не просил."""
+    monkeypatch.setattr(clock, "now",
+                        lambda: datetime(2026, 9, 2, 9, 0, tzinfo=timezone.utc))
+    assert routes._to_window() == 0
+
+
+def test_window_preset_lands_inside_the_window_from_outside(monkeypatch):
+    saturday = datetime(2026, 9, 5, 9, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(clock, "now", lambda: saturday)
+    landed = (saturday + timedelta(seconds=routes._to_window())).astimezone(
+        ZoneInfo("Asia/Almaty"))
+    assert landed.isoweekday() == 1
+    assert 10 <= landed.hour < 18
+
+
+def test_window_preset_does_not_hang_on_a_broken_config(monkeypatch):
+    """Пустой weekdays вешал бы не запрос, а весь цикл событий: ручка
+    асинхронная, а цикл поиска был безграничным."""
+    from sender.services import config as sender_config
+
+    broken = dict(sender_config.load())
+    broken["window"] = {**broken["window"], "weekdays": []}
+    monkeypatch.setattr(sender_config, "load", lambda: broken)
+    with pytest.raises(HTTPException) as failure:
+        routes._to_window()
+    assert failure.value.status_code == 500

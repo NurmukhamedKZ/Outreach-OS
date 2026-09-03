@@ -40,9 +40,39 @@ def test_create_seeds_one_number_warmed_or_new():
 
 def test_run_id_carries_the_company_and_the_moment():
     run = runs.create("c_romashka", warmed=True, moment=MOMENT)
-    assert run.run_id == "20260903-0900-c_romashka"
+    assert run.run_id == "20260903-090000-c_romashka"
     assert run.company_id == "c_romashka"
     assert run.warmed is True
+
+
+def test_creating_over_an_existing_run_is_refused():
+    """Создание поверх затёрло бы мету старого прогона (часы — в ноль), а
+    таблицы оставило бы от прошлого сценария: ровно тот грязный контекст,
+    ради которого прогон и сделан файлом."""
+    runs.create("c_romashka", warmed=True, moment=MOMENT)
+    with pytest.raises(runs.RunExistsError):
+        runs.create("c_romashka", warmed=True, moment=MOMENT)
+
+
+def test_activate_latest_takes_the_newest_run():
+    runs.create("c_one", warmed=True, moment=MOMENT)
+    new = runs.create("c_two", warmed=True, moment=MOMENT + timedelta(minutes=1))
+    assert runs.activate_latest().run_id == new.run_id
+
+
+def test_activate_latest_without_runs_lands_on_the_idle_base():
+    """Песочница обязана смотреть на свою базу с первой секунды процесса:
+    иначе фоновые задачи работают с боевой перепиской через подменный
+    транспорт."""
+    run = runs.activate_latest()
+    assert run.run_id == runs.IDLE_RUN
+    assert paths.state_db() == run.path
+    assert paths.state_db() != paths.PRODUCTION_STATE
+
+
+def test_idle_base_is_not_a_scenario():
+    runs.activate_latest()
+    assert runs.all() == []
 
 
 def test_two_runs_of_one_company_do_not_share_history():

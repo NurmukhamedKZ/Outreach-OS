@@ -5,7 +5,18 @@ from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI
 
+import paths
 import sandbox
+from sandbox import runs
+
+
+@pytest.fixture(autouse=True)
+def sandbox_runs(tmp_path, monkeypatch):
+    """mount() активирует прогон, а значит создаёт файлы: без подмены каталога
+    холостая база осела бы в репозитории."""
+    monkeypatch.setattr(runs, "RUNS_DIR", tmp_path / "sandbox")
+    yield
+    runs.deactivate()
 
 
 def _settings(sandbox_on: bool, node_url: str):
@@ -42,3 +53,18 @@ def test_on_with_the_real_transport_refuses_to_start():
     with pytest.raises(sandbox.SandboxMisconfigured) as failure:
         sandbox.mount(FastAPI(), _settings(True, "http://127.0.0.1:8788"))
     assert "SENDER_NODE_URL" in str(failure.value)
+
+
+def test_mount_points_the_backend_away_from_the_production_database():
+    """Транспорт подменён с первой секунды процесса — база обязана быть
+    подменена тогда же. Иначе прогрев, обработка входящего и очередь успевают
+    поработать с настоящей перепиской через фейк: строки помечаются
+    отправленными, лимиты боевых номеров тратятся, лид не получает ничего."""
+    sandbox.mount(FastAPI(), _settings(True, "http://127.0.0.1:8787/api/sandbox/node"))
+    assert paths.state_db() != paths.PRODUCTION_STATE
+    assert runs.active() is not None
+
+
+def test_mount_without_the_flag_leaves_the_production_database():
+    sandbox.mount(FastAPI(), _settings(False, "http://127.0.0.1:8788"))
+    assert paths.state_db() == paths.PRODUCTION_STATE

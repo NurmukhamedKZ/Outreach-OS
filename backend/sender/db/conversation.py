@@ -267,9 +267,6 @@ def now_stamp() -> str:
     return clock.now().isoformat(timespec="seconds")
 
 
-def now() -> str:
-    return clock.now().isoformat(timespec="seconds")
-
 
 def _has_table(db: sqlite3.Connection, table: str) -> bool:
     return db.execute(
