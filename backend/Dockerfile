@@ -8,7 +8,7 @@ RUN uv sync --frozen --no-dev
 # Корневые модули (config.py и т.д.) — общая точка входа для всех трёх систем,
 # collector/writer/sender импортируют их напрямую (`from config import settings`).
 COPY config.py llm_schema.py logctx.py logging_setup.py observability.py \
-     activity.py analytics.py paths.py main.py ./
+     activity.py analytics.py clock.py paths.py main.py ./
 COPY collector/ collector/
 COPY writer/ writer/
 COPY sender/ sender/

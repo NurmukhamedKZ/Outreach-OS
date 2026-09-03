@@ -9,9 +9,10 @@
 import asyncio
 import logging
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import activity
+import clock
 from sender import notify
 from sender.db import conversation, numbers, outbox
 from sender.services import (config as sender_config, followup, gates, incoming,
@@ -334,4 +335,4 @@ async def loop(db_factory, transport_factory, publish=None) -> None:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return clock.now()

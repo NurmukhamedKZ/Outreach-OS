@@ -12,7 +12,9 @@ CREATE TABLE IF NOT EXISTS, а не DROP. leads.db пересобирается 
 
 import json
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import date, datetime
+
+import clock
 
 # Этап новорождённого треда. Живёт здесь, а не берётся из services.stages:
 # слой базы не зависит от слоя сервисов, и та же строка уже стоит дефолтом в
@@ -72,7 +74,7 @@ def _ensure_columns(db):
 
 
 def now():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return clock.now().isoformat(timespec="seconds")
 
 
 def open_thread(db, thread_id, company_id, seed):

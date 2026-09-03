@@ -7,7 +7,7 @@ config.toml. Три вещи, в которых календарь строже 
 """
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from enum import StrEnum
 
 import asyncio
@@ -16,6 +16,7 @@ import random
 import sqlite3
 
 import activity
+import clock
 from sender.db import numbers
 
 log = logging.getLogger(__name__)
@@ -258,4 +259,4 @@ def _config() -> dict:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return clock.now()

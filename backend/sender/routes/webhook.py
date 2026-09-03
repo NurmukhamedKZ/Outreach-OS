@@ -9,13 +9,14 @@ import logging
 import re
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime
 from functools import lru_cache
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 import activity
+import clock
 import paths
 from config import settings
 from sender import notify
@@ -94,7 +95,7 @@ def connect() -> sqlite3.Connection:
 
 
 def now() -> datetime:
-    return datetime.now(timezone.utc)
+    return clock.now()
 
 
 @router.post("/webhook")

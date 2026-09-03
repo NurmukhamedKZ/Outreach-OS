@@ -11,7 +11,9 @@
 
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+
+import clock
 
 STATUSES = ("queued", "active", "exhausted", "escalated", "unreachable",
             "closed_refused", "closed_junk", "blocked_channel")
@@ -262,7 +264,11 @@ def counters(db: sqlite3.Connection) -> dict:
 def now_stamp() -> str:
     """Момент записи сообщения. Формат — тот же, что у thread_store: таблица
     одна, и две формы штампа в ней сломали бы сортировку истории."""
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return clock.now().isoformat(timespec="seconds")
+
+
+def now() -> str:
+    return clock.now().isoformat(timespec="seconds")
 
 
 def _has_table(db: sqlite3.Connection, table: str) -> bool:

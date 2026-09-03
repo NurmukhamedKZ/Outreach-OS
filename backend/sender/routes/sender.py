@@ -8,7 +8,9 @@ import asyncio
 import logging
 import sqlite3
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime
+
+import clock
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -50,7 +52,7 @@ def connect() -> sqlite3.Connection:
 
 
 def now() -> datetime:
-    return datetime.now(timezone.utc)
+    return clock.now()
 
 
 def _heartbeat() -> str | None:
