@@ -59,8 +59,17 @@ class NewIncoming(BaseModel):
 
 @router.get("/runs")
 async def list_runs() -> dict:
+    """Прогоны и время стенда.
+
+    Часы отдаются здесь, а не хранятся во фронте: там они писались только
+    кнопками сдвига и не сбрасывались ни перезагрузкой, ни сменой прогона —
+    подвинув часы прогона A и переключившись на B, оператор видел время A
+    рядом с «сдвиг нет». Экран не придумывает состояние, и время не
+    исключение.
+    """
     active = runs.active()
-    return {"runs": [_card(run, active) for run in runs.all()]}
+    return {"runs": [_card(run, active) for run in runs.all()],
+            "now": clock.now().isoformat(timespec="seconds")}
 
 
 @router.post("/runs", status_code=201)

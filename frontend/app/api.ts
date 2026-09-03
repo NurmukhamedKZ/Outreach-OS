@@ -523,7 +523,7 @@ export type SandboxChat = {
 };
 
 export function fetchSandboxRuns() {
-  return json<{ runs: SandboxRun[] }>("/api/sandbox/runs");
+  return json<{ runs: SandboxRun[]; now: string }>("/api/sandbox/runs");
 }
 
 export function createSandboxRun(companyId: string, warmed: boolean) {

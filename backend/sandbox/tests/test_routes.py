@@ -208,3 +208,21 @@ def test_window_preset_crosses_the_closing_edge(monkeypatch):
     landed = (edge + timedelta(seconds=seconds)).astimezone(ZoneInfo("Asia/Almaty"))
     assert landed.isoweekday() == 4
     assert 10 <= landed.hour < 18
+
+
+async def test_runs_listing_carries_the_stand_clock():
+    """Время стенда приезжает с бэкендом, а не хранится во фронте.
+
+    Фронт держал его в состоянии, писал только кнопками сдвига и не сбрасывал
+    ни при перезагрузке, ни при смене прогона: подвинув часы прогона A и
+    переключившись на B, оператор видел время A рядом с «сдвиг нет» — два
+    противоречащих числа на одной карточке."""
+    run = await routes.create_run(routes.NewRun(company_id="c_romashka", warmed=True))
+    await routes.move_clock(routes.ClockMove(preset="day"))
+
+    listing = await routes.list_runs()
+
+    assert "now" in listing, "во фронте нечем показать время стенда, кроме памяти"
+    moved = datetime.fromisoformat(listing["now"])
+    assert moved - datetime.now(timezone.utc) > timedelta(hours=23)
+    assert listing["runs"][0]["run_id"] == run["run"]["run_id"]

@@ -37,6 +37,7 @@ import {
   type SenderStatus,
 } from "../api";
 import { useLive } from "@/components/live";
+import Link from "next/link";
 
 const WHEN = new Intl.DateTimeFormat("ru", {
   day: "2-digit",
@@ -175,7 +176,14 @@ export default function SandboxPage() {
   const [sandboxNow, setSandboxNow] = useState<string | null>(null);
 
   const reload = useCallback(() => {
-    fetchSandboxRuns().then((data) => setRuns(data.runs)).catch(report);
+    // Время стенда приезжает с прогонами, а не живёт в состоянии: иначе оно
+    // переживало бы смену прогона и исчезало бы при перезагрузке.
+    fetchSandboxRuns()
+      .then((data) => {
+        setRuns(data.runs);
+        setSandboxNow(data.now);
+      })
+      .catch(report);
     fetchSandboxFaults().then(setFaults).catch(report);
     // 409 — это не ошибка, а состояние «сначала черновик». Всё остальное
     // (500, обрыв) обязано доехать до баннера: молчащая лента выглядела бы
@@ -318,6 +326,15 @@ export default function SandboxPage() {
           <header className="cold-head">
             <b className="row-name">Чат с лидом</b>
             {chat && <span className="ghost mono">{chat.thread_id}</span>}
+            {active && (
+              <Link
+                className="ghost"
+                href={`/leads/${encodeURIComponent(active.company_id)}`}
+                target="_blank"
+              >
+                карточка лида
+              </Link>
+            )}
           </header>
 
           <ol className="thread-log">
@@ -355,7 +372,12 @@ export default function SandboxPage() {
             <div className="composer-actions">
               <button
                 className={step === 1 ? "btn" : "btn-secondary"}
-                disabled={busy || !active || step > 1}
+                // step > 2, а не > 1: перекатить неудачный черновик — это и
+                // есть основной цикл стенда, и запирать его на шаге «черновик
+                // есть, в очередь не поставлен» значит требовать новый прогон
+                // ради второй попытки. С шага «в очереди» кнопка молчит: там
+                // ход уже сделан.
+                disabled={busy || !active || step > 2}
                 onClick={() => act(() => requestDraft(active!.company_id, "first"))}
               >
                 {busy && step === 1 ? "Пишу письмо…" : "Написать первое письмо"}
@@ -445,10 +467,11 @@ export default function SandboxPage() {
                   disabled={busy || !active}
                   title={why}
                   onClick={() =>
-                    act(async () => {
-                      const moved = await moveSandboxClock(preset);
-                      setSandboxNow(moved.now);
-                    })
+                    // Своего setSandboxNow здесь нет: reload() в finally у
+                    // act() перечитает часы с бэкенда. Две записи одного
+                    // значения — это два источника правды, и один из них
+                    // однажды отстанет.
+                    act(() => moveSandboxClock(preset))
                   }
                 >
                   {label}
