@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import json
 import logging
 import sys
 from pathlib import Path
@@ -21,7 +22,7 @@ def test_pipelines_catalogue_consistent(stores):
 
 def test_context_carries_job_id(stores):
     job_id = jobs.enqueue_steps("custom", "Тест job_id", ["export"])
-    ctx, _state = jobs.make_context(job_id)
+    ctx, _state = jobs.make_context(job_id, 0)
     assert ctx.job_id == job_id
 
 
@@ -225,3 +226,188 @@ def test_job_context_carries_job_id_during_step(stores):
         assert logctx.current_job_id() is None, "контекст не сброшен после джобы"
     finally:
         OPERATIONS.pop("_probe_test", None)
+
+
+def test_plan_steps_lays_out_stages_and_lanes():
+    """Строка — стадия из одной дорожки; кортеж кортежей — одна стадия, где
+    дорожки идут рядом. Порядок списка — (стадия, дорожка), как в объявлении."""
+    steps = jobs.plan_steps(["one", (("a", "b"), ("c",)), "last"])
+    assert [(s["name"], s["stage"], s["lane"]) for s in steps] == [
+        ("one", 0, 0),
+        ("a", 1, 0), ("b", 1, 0),
+        ("c", 1, 1),
+        ("last", 2, 0),
+    ]
+    assert all(s["status"] == "pending" and s["progress"] is None for s in steps)
+
+
+def test_lanes_of_one_stage_run_side_by_side(stores):
+    """Две дорожки одной стадии идут одновременно: каждая ждёт события соседа.
+    При последовательном исполнении обе не дождутся и тест упадёт."""
+    import threading
+    from collector.services.pipeline import OPERATIONS
+
+    left_started, right_started = threading.Event(), threading.Event()
+
+    def left(ctx):
+        left_started.set()
+        assert right_started.wait(timeout=5), "правая дорожка не стартовала"
+        return {}
+
+    def right(ctx):
+        right_started.set()
+        assert left_started.wait(timeout=5), "левая дорожка не стартовала"
+        return {}
+
+    OPERATIONS["_left_test"], OPERATIONS["_right_test"] = left, right
+    try:
+        job_id = jobs.enqueue_steps("custom", "Две дорожки",
+                                    [(("_left_test",), ("_right_test",))])
+        asyncio.run(jobs.run_pending())
+        record = jobs.job(job_id)
+        assert record["status"] == "done", record["error"]
+        assert {s["status"] for s in record["steps"]} == {"done"}
+    finally:
+        OPERATIONS.pop("_left_test", None)
+        OPERATIONS.pop("_right_test", None)
+
+
+def test_steps_of_one_lane_run_in_order(stores):
+    """Внутри дорожки — строго по очереди: ig_comments читает то, что положила
+    в raw/ collect.instagram, и обогнать её не имеет права."""
+    from collector.services.pipeline import OPERATIONS
+
+    order = []
+    OPERATIONS["_first_test"] = lambda ctx: order.append("first") or {}
+    OPERATIONS["_second_test"] = lambda ctx: order.append("second") or {}
+    try:
+        job_id = jobs.enqueue_steps("custom", "Одна дорожка",
+                                    [(("_first_test", "_second_test"),)])
+        asyncio.run(jobs.run_pending())
+        assert jobs.job(job_id)["status"] == "done"
+        assert order == ["first", "second"]
+    finally:
+        OPERATIONS.pop("_first_test", None)
+        OPERATIONS.pop("_second_test", None)
+
+
+def test_failed_lane_stops_its_neighbour_before_the_job_finishes(stores):
+    """asyncio.to_thread не прерывается извне, поэтому упавшая дорожка не имеет
+    права уронить джобу, пока соседка ещё в сети: осиротевший поток продолжал
+    бы качать страницы и писать лог в уже завершённую джобу."""
+    import time
+    from collector.services.pipeline import OPERATIONS
+
+    def boom(ctx):
+        time.sleep(0.1)          # дать соседке начать
+        raise ValueError("ветка упала")
+
+    def patient(ctx):
+        while True:
+            ctx.check_cancelled()
+            time.sleep(0.02)
+
+    OPERATIONS["_boom_lane_test"], OPERATIONS["_patient_lane_test"] = boom, patient
+    try:
+        job_id = jobs.enqueue_steps("custom", "Падение ветки",
+                                    [(("_boom_lane_test",), ("_patient_lane_test",))])
+        asyncio.run(asyncio.wait_for(jobs.run_pending(), timeout=10))
+        record = jobs.job(job_id)
+        assert record["status"] == "failed"
+        assert "ветка упала" in record["error"], record["error"]
+        statuses = {s["name"]: s["status"] for s in record["steps"]}
+        assert statuses["_boom_lane_test"] == "failed", statuses
+        assert statuses["_patient_lane_test"] == "cancelled", \
+            "соседняя ветка осталась бегущей после того, как джоба помечена упавшей"
+    finally:
+        OPERATIONS.pop("_boom_lane_test", None)
+        OPERATIONS.pop("_patient_lane_test", None)
+
+
+def test_next_step_of_a_lane_does_not_start_after_a_sibling_failed(stores):
+    """Отмена — флаг на джобе, а не только на уже созданных контекстах.
+
+    Сторожить надо именно СЛЕДУЮЩИЙ шаг дорожки: первые шаги обеих дорожек
+    стартуют одновременно, это замысел, и помешать соседке начать нельзя.
+    А вот collect.ig_comments не имеет права уйти в сеть после того, как
+    ветка сайтов уже упала, — иначе падение стоило бы лишних минут запросов.
+    """
+    import threading
+    import time
+    from collector.services.pipeline import OPERATIONS
+
+    ran = []
+    started = threading.Event()
+
+    def slow_then_ok(ctx):
+        started.set()
+        time.sleep(0.2)
+        return {}
+
+    def boom(ctx):
+        assert started.wait(timeout=5)
+        raise ValueError("сосед упал")
+
+    OPERATIONS["_slow_ok_test"] = slow_then_ok
+    OPERATIONS["_must_not_run_test"] = lambda ctx: ran.append("second") or {}
+    OPERATIONS["_boom_neighbour_test"] = boom
+    try:
+        job_id = jobs.enqueue_steps(
+            "custom", "Поздний шаг",
+            [(("_slow_ok_test", "_must_not_run_test"), ("_boom_neighbour_test",))])
+        asyncio.run(asyncio.wait_for(jobs.run_pending(), timeout=10))
+
+        assert jobs.job(job_id)["status"] == "failed"
+        assert ran == [], "второй шаг дорожки стартовал уже после падения соседки"
+        statuses = {s["name"]: s["status"] for s in jobs.job(job_id)["steps"]}
+        assert statuses["_slow_ok_test"] == "done", statuses
+        assert statuses["_must_not_run_test"] == "pending", statuses
+    finally:
+        for name in ("_slow_ok_test", "_must_not_run_test", "_boom_neighbour_test"):
+            OPERATIONS.pop(name, None)
+
+
+def test_old_jobs_with_plain_string_steps_still_render(stores):
+    """В истории лежат джобы, чьи steps — массив строк. Показать их надо, а не
+    уронить страницу «Процессы» на первой же старой записи."""
+    job_id = jobs.enqueue_steps("custom", "Старая", ["export"])
+    jobs._update(job_id, steps=json.dumps(["export", "rebuild"], ensure_ascii=False))
+    record = jobs.job(job_id)
+    assert [s["name"] for s in record["steps"]] == ["export", "rebuild"]
+    assert {s["status"] for s in record["steps"]} == {"done"}
+    assert record["step_count"] == 2
+
+
+def test_step_progress_lands_in_its_own_step(stores):
+    """Прогресс пишется в свой шаг: две ветки пишут в одну json-колонку
+    одновременно, и цикл «прочитать-склеить-записать» терял бы правку соседа."""
+    from collector.services.pipeline import OPERATIONS
+
+    def reporting(ctx):
+        ctx.progress(3, 7, "рубрики 2GIS")
+        return {}
+
+    OPERATIONS["_progress_test"] = reporting
+    try:
+        job_id = jobs.enqueue_steps("custom", "Прогресс", ["_progress_test"])
+        asyncio.run(jobs.run_pending())
+        step = jobs.job(job_id)["steps"][0]
+        assert step["progress"] == {"current": 3, "total": 7, "label": "рубрики 2GIS"}
+    finally:
+        OPERATIONS.pop("_progress_test", None)
+
+
+def test_discover_runs_instagram_beside_the_rest():
+    """Объявление discover: Instagram идёт своей дорожкой рядом с 2GIS и
+    сайтами, а rebuild — отдельной стадией после всего сбора."""
+    steps = jobs.plan_steps(jobs.PIPELINES["discover"]["steps"])
+    by_name = {s["name"]: s for s in steps}
+
+    assert by_name["collect.instagram"]["stage"] == by_name["collect.sites"]["stage"]
+    assert by_name["collect.instagram"]["lane"] != by_name["collect.sites"]["lane"]
+    assert by_name["collect.ig_comments"]["lane"] == by_name["collect.instagram"]["lane"]
+    assert by_name["collect.site_pages"]["lane"] == by_name["collect.sites"]["lane"]
+
+    collecting = max(s["stage"] for s in steps if s["name"].startswith("collect."))
+    assert by_name["rebuild"]["stage"] > collecting, \
+        "rebuild обязан идти один и после всего сбора — он пересобирает derived прогоном"

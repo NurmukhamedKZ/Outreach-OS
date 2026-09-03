@@ -24,9 +24,17 @@ OPERATIONS = {
 }
 
 PIPELINES = {
+    # Две дорожки сбора идут рядом: они не делят ни одного хоста и ни одного
+    # файла — сбор кладёт страницы в raw/ (имя файла sha1 адреса) и читает
+    # выдачу прошлого прогона только на чтение. Instagram платит шесть секунд
+    # за запрос и тянется почти три часа; 2GIS с сайтами укладываются в сорок
+    # минут и раньше просто ждали своей очереди. Инвариант «один воркер»
+    # касается rebuild, который пересобирает derived прогоном, — он и остаётся
+    # отдельной стадией после всего сбора.
     "discover": {"title": "Поиск новых лидов", "steps": (
-        "collect.gis", "collect.sites", "collect.site_pages", "collect.reviews",
-        "collect.instagram", "collect.ig_comments", "collect.ig_profile",
+        "collect.gis",
+        (("collect.reviews", "collect.sites", "collect.site_pages"),
+         ("collect.instagram", "collect.ig_comments", "collect.ig_profile")),
         "rebuild", "export")},
     "classify": {"title": "Анализ и досье", "steps": (
         "analyze.reviews", "analyze.site", "analyze.instagram", "analyze.dossier",

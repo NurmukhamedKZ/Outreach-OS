@@ -21,7 +21,8 @@ router = APIRouter(prefix="/api/pipeline")
 @router.get("")
 def catalogue():
     return {
-        "pipelines": [{"kind": k, "title": p["title"], "steps": list(p["steps"])}
+        "pipelines": [{"kind": k, "title": p["title"],
+                       "steps": [s["name"] for s in jobs.plan_steps(p["steps"])]}
                       for k, p in jobs.PIPELINES.items()],
         "operations": sorted(jobs.OPERATIONS),
     }
