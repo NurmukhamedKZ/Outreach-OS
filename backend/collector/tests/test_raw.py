@@ -6,6 +6,9 @@ check_raw, но без боевых гигабайтов.
 
 import gzip
 import json
+import pathlib
+
+import pytest
 
 import collector.services.storage as storage
 
@@ -41,3 +44,70 @@ def test_snapshot_pages_match_fixture_urls(raw_snapshot):
         "https://2gis.kz/almaty/firm/70000001017502602",
         "https://2gis.kz/almaty/rubric/653",
     ], urls
+
+def test_sidecar_never_appears_half_written(tmp_path, monkeypatch):
+    """Обрыв посреди записи сайдкара не оставляет пустой файл на его месте.
+
+    Дорожка Instagram (ig_comments, ig_profile) сканирует все сайдкары raw/
+    через iter_pages, пока дорожка сайтов пишет их же — эти две идут одной
+    стадией discover. Читатель обязан увидеть «сайдкара нет» (страница
+    недокачана, возьмётся заново), а не «сайдкар пуст» — то есть
+    JSONDecodeError посреди трёхчасового прогона.
+    """
+    monkeypatch.setattr(storage, "RAW", tmp_path)
+    url = "https://example.kz/"
+    sidecar = tmp_path / f"{storage.sha_of(url)}.json"
+    original = storage.Path.replace
+
+    def fail_on_sidecar(self, target):
+        if pathlib.Path(target) == sidecar:
+            raise OSError("обрыв ровно на подмене сайдкара")
+        return original(self, target)
+
+    monkeypatch.setattr(storage.Path, "replace", fail_on_sidecar)
+    with pytest.raises(OSError):
+        storage.put(url, "<html>тело</html>",
+                    {"url": url, "final_url": url, "status": 200,
+                     "fetched_at": "2026-09-03T10:00:00Z"})
+
+    assert not sidecar.exists(), "на месте сайдкара остался обрывок"
+    assert not storage.exists(url), "страница без сайдкара обязана считаться недокачанной"
+
+
+def test_iter_pages_survives_a_half_written_sidecar(tmp_path, monkeypatch):
+    """Соседняя дорожка застала сайдкар в момент записи — снимок читается
+    дальше без него, а не падает целиком: страница вернётся на следующем
+    прогоне, а прогон уже идёт третий час."""
+    monkeypatch.setattr(storage, "RAW", tmp_path)
+    for name in ("good", "torn"):
+        url = f"https://{name}.kz/"
+        storage.put(url, "<html></html>",
+                    {"url": url, "final_url": url, "status": 200,
+                     "fetched_at": "2026-09-03T10:00:00Z"})
+    torn = tmp_path / f"{storage.sha_of('https://torn.kz/')}.json"
+    torn.write_text("", encoding="utf-8")          # ровно то, что видит читатель
+
+    pages = storage.iter_pages()
+
+    assert [p["url"] for p in pages] == ["https://good.kz/"]
+
+
+def test_iter_pages_survives_a_sidecar_deleted_mid_scan(tmp_path, monkeypatch):
+    """storage.discard снёс пару между проверкой страницы и чтением сайдкара —
+    это состояние гонки, а не порча снимка."""
+    monkeypatch.setattr(storage, "RAW", tmp_path)
+    url = "https://vanishing.kz/"
+    storage.put(url, "<html></html>",
+                {"url": url, "final_url": url, "status": 200,
+                 "fetched_at": "2026-09-03T10:00:00Z"})
+    sidecar = tmp_path / f"{storage.sha_of(url)}.json"
+    original = storage.Path.read_text
+
+    def vanish(self, *args, **kwargs):
+        if self == sidecar:
+            sidecar.unlink()
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(storage.Path, "read_text", vanish)
+
+    assert storage.iter_pages() == []

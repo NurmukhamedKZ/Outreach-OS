@@ -27,18 +27,27 @@ def _paths(url):
 
 
 def put(url, body, meta):
-    """Записать страницу + сайдкар. Страница пишется во временный файл и
-    переименовывается атомарно: обрыв процесса посреди gzip.write оставлял бы
-    страницу, которая existence-проверкой считается готовой, а при чтении
-    падает BadGzipFile. Сайдкар пишется последним: страница без него считается
-    недокачанной и берётся заново (иначе потерялся бы final_url)."""
+    """Записать страницу + сайдкар. Оба — через временный файл и атомарную
+    подмену: обрыв посреди gzip.write оставлял бы страницу, которая
+    existence-проверкой считается готовой, а при чтении падает BadGzipFile.
+
+    Сайдкар пишется последним и тоже атомарно. Читателей у него больше одного
+    одновременно: дорожка Instagram сканирует все сайдкары через iter_pages,
+    пока дорожка сайтов пишет их же — обе идут одной стадией discover.
+    Обычный write_text усекает файл до записи, и читатель, попавший в это
+    окно, получал бы не «сайдкара нет», а «сайдкар пуст», то есть
+    JSONDecodeError посреди трёхчасового прогона. Страница без сайдкара
+    считается недокачанной и берётся заново — это состояние предусмотрено,
+    пустой сайдкар не предусмотрен ничем."""
     page_path, sidecar_path = _paths(url)
     RAW.mkdir(parents=True, exist_ok=True)
     tmp_path = page_path.with_suffix(page_path.suffix + ".tmp")
     with gzip.open(tmp_path, "wt", encoding="utf-8") as fh:
         fh.write(body)
     tmp_path.replace(page_path)
-    sidecar_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    sidecar_tmp = sidecar_path.with_suffix(".json.tmp")
+    sidecar_tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    sidecar_tmp.replace(sidecar_path)
     return sha_of(url)
 
 
@@ -73,7 +82,15 @@ def meta(url):
 
 
 def iter_pages():
-    """Сайдкары снимка, отсортированные: порядок вставки задаёт содержимое дампа."""
+    """Сайдкары снимка, отсортированные: порядок вставки задаёт содержимое дампа.
+
+    Нечитаемый сайдкар пропускается, а не роняет снимок. Причина не в порче
+    сырья, а в одновременности: сбор пишет в raw/, пока другая дорожка той же
+    стадии его читает, и storage.discard сносит пару из-под сканирования на
+    повреждённом gzip. Файл, исчезнувший между glob и чтением, — это гонка, а
+    не потеря: страница вернётся следующим прогоном, а падение здесь стоило бы
+    трёх часов уже сделанной работы.
+    """
     pages = []
     for sidecar in sorted(RAW.glob("*.json")):
         if sidecar.name.count(".") != 1:
@@ -82,7 +99,10 @@ def iter_pages():
         page = RAW / f"{sha}.html.gz"
         if not page.exists():
             continue
-        meta = json.loads(sidecar.read_text(encoding="utf-8"))
+        try:
+            meta = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
         meta["sha"] = sha
         pages.append(meta)
     return sorted(pages, key=lambda p: (p["url"], p["sha"]))
