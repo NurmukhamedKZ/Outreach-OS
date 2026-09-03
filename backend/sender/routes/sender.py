@@ -19,7 +19,7 @@ import activity
 import paths
 from sender.db import conversation, migrate, numbers, outbox
 from sender.services import config, health, pool, queue, warmup, worker
-from sender.transport import build as build_transport
+from sender.transport import TransportError, build as build_transport
 
 router = APIRouter(prefix="/api/sender")
 log = logging.getLogger(__name__)
@@ -255,6 +255,13 @@ async def monitor_numbers() -> None:
                 activity.record("sender.monitor", "healthy")
             # Ретенция журнала едет на часовом тике монитора, своего таймера не заводим.
             activity.prune()
+        except TransportError as error:
+            # Транспорт молчит — это не авария монитора, а состояние Node, и
+            # «crashed» в журнале сказал бы оператору, что сломались мы. Первый
+            # тик приходится на старт процесса, когда сокет ещё не слушает, и
+            # каждый запуск иначе начинался бы с ложной тревоги.
+            log.warning("транспорт не ответил на опросе здоровья: %s", error)
+            activity.record("sender.monitor", "transport_down", detail=str(error))
         except Exception:
             log.exception("монитор здоровья номеров упал на тике")
             activity.record_crash("sender.monitor")

@@ -684,6 +684,13 @@ a.nav-item:hover {
   align-items: start;
 }
 
+/* Песочница переворачивает пропорции: главное здесь — переписка, а пульт
+   читается взглядом сбоку. Своя сетка, а не правка .split: инбокс и «холодные»
+   устроены наоборот, и общий класс сломал бы обе страницы. */
+.split-chat {
+  grid-template-columns: 1fr minmax(300px, 400px);
+}
+
 @media (max-width: 1100px) {
   .split {
     grid-template-columns: 1fr;
@@ -1445,6 +1452,110 @@ a.nav-item:hover {
   white-space: nowrap;
 }
 
+/* Шаги: где оператор сейчас и что будет дальше. Полоска, а не мастер —
+   вернуться на предыдущий шаг здесь законно (переставить в очередь, ответить
+   ещё раз), и запирать переходы значило бы мешать проверять. */
+.sandbox-steps {
+  display: flex;
+  gap: 8px;
+  list-style: none;
+  padding: 0;
+  margin: 0 0 8px;
+  flex-wrap: wrap;
+}
+
+.sandbox-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.sandbox-step[aria-current="step"] {
+  border-color: var(--ink);
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.sandbox-step[data-done] {
+  color: var(--ink);
+}
+
+.sandbox-step-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--surface-strong);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sandbox-step[aria-current="step"] .sandbox-step-no {
+  background: var(--ink);
+  color: var(--canvas);
+}
+
+.sandbox-step[data-done] .sandbox-step-no {
+  background: var(--ink);
+  color: var(--canvas);
+  opacity: 0.45;
+}
+
+/* Подсказка шага: одна строка, которая отвечает на «что теперь». */
+.sandbox-hint {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Поле с видимой подписью: плейсхолдер вместо подписи исчезает при вводе. */
+.sandbox-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 220px;
+  flex: 1 1 220px;
+}
+
+.sandbox-field-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.sandbox-setup {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.sandbox-clock {
+  margin: 8px 0;
+  font-size: 15px;
+}
+
+/* Пульт — узкая колонка: подпись пресета, разорванная на две строки, читается
+   как две кнопки. */
+.sandbox-shifts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sandbox-shifts .btn-quiet {
+  white-space: nowrap;
+}
+
 .sandbox-runs {
   display: flex;
   gap: 8px;
@@ -1463,11 +1574,10 @@ a.nav-item:hover {
 
 .sandbox-switch {
   display: flex;
-  gap: 8px;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 4px;
   font-size: 13px;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 
 .sandbox-facts {

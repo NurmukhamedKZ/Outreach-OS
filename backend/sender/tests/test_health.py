@@ -253,3 +253,29 @@ def test_reply_rate_counts_leads_not_touches(db, sent_messages):
     # получилось бы 3.3%, то есть карантин за результат вдвое выше порога.
     assert await_check(db, report={number: {"state": "open", "reconnects": 0}}) == [], \
         "порог reply rate оказался втрое строже написанного в config.toml"
+
+
+async def test_monitor_calls_a_silent_transport_by_its_name(db, monkeypatch):
+    """«crashed» в журнале говорит оператору, что сломались мы. Молчащий Node —
+    это состояние транспорта, и первый тик всегда приходится на старт процесса,
+    когда сокет ещё не слушает: каждый запуск иначе начинался бы с ложной
+    тревоги."""
+    import activity
+    from sender.routes import sender as routes
+    from sender.transport import TransportError
+
+    class Silent:
+        async def health(self):
+            raise TransportError("GET /health: All connection attempts failed")
+
+    monkeypatch.setattr(routes, "build_transport", lambda: Silent())
+    monkeypatch.setattr(routes, "connect", lambda: db)
+    monkeypatch.setattr(routes, "MONITOR_INTERVAL_SECONDS", 0)
+
+    task = asyncio.create_task(routes.monitor_numbers())
+    await asyncio.sleep(0.05)
+    task.cancel()
+
+    outcomes = {event["outcome"] for event in activity.recent()}
+    assert "transport_down" in outcomes
+    assert "crashed" not in outcomes
