@@ -22,7 +22,7 @@ dev = ["pytest>=8", "pytest-asyncio>=1.0"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-testpaths = ["collector/tests", "writer/tests", "sender/tests"]
+testpaths = ["collector/tests", "writer/tests", "sender/tests", "sandbox/tests"]
 asyncio_mode = "auto"
 # Тесты в collector/tests и writer/tests совпадают по базовым именам
 # (test_schema, test_leads, test_operations) и не являются пакетами — без
