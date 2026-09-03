@@ -7,7 +7,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { CheckCircleIcon, SpinnerIcon, StopCircleIcon } from "@phosphor-icons/react";
-import { cancelJob, startPipeline, type Pipeline } from "@/app/api";
+import { cancelJob, startPipeline, type JobStep, type Pipeline } from "@/app/api";
 import { useLive } from "./live";
 
 export function PipelineActions({ pipelines }: { pipelines: Pipeline[] }) {
@@ -72,18 +72,9 @@ export function JobMonitor() {
       </header>
 
       <ol className="jobSteps">
-        {active.steps.map((step, index) => (
-          <li
-            key={step.name}
-            className={
-              index < active.step || (index === active.step && finished(active))
-                ? "is-done"
-                : index === active.step
-                  ? "is-current"
-                  : ""
-            }
-          >
-            {index < active.step || (index === active.step && finished(active)) ? (
+        {active.steps.map((step) => (
+          <li key={`${step.stage}-${step.lane}-${step.name}`} className={stepClass(step)}>
+            {step.status === "done" ? (
               <CheckCircleIcon size={14} weight="fill" />
             ) : (
               <span className="step-index" />
@@ -93,20 +84,24 @@ export function JobMonitor() {
         ))}
       </ol>
 
-      {active.progress && active.progress.total ? (
-        <div className="jobProgress">
-          <div className="jobProgress-track">
-            <div
-              className="jobProgress-fill"
-              style={{ width: `${Math.round(((active.progress.current ?? 0) / active.progress.total) * 100)}%` }}
-            />
+      {active.steps
+        .filter((step) => step.status === "running" && step.progress?.total)
+        .map((step) => (
+          <div className="jobProgress" key={`${step.stage}-${step.lane}-${step.name}`}>
+            <div className="jobProgress-track">
+              <div
+                className="jobProgress-fill"
+                style={{
+                  width: `${Math.round(((step.progress?.current ?? 0) / (step.progress?.total ?? 1)) * 100)}%`,
+                }}
+              />
+            </div>
+            <span className="mono">
+              {step.progress?.current ?? 0} / {step.progress?.total}
+              {step.progress?.label ? ` · ${step.progress.label}` : ""}
+            </span>
           </div>
-          <span className="mono">
-            {active.progress.current ?? 0} / {active.progress.total}
-            {active.progress.label ? ` · ${active.progress.label}` : ""}
-          </span>
-        </div>
-      ) : null}
+        ))}
 
       {log.length > 0 && (
         <pre className="log-stream mono" ref={logRef}>
@@ -117,12 +112,15 @@ export function JobMonitor() {
   );
 }
 
-function finished(job: { status: string }) {
-  return job.status === "done";
+function stepClass(step: JobStep) {
+  if (step.status === "done") return "is-done";
+  if (step.status === "running") return "is-current";
+  if (step.status === "failed" || step.status === "cancelled") return "is-failed";
+  return "";
 }
 
 function statusLabel(job: { status: string; step: number; step_count: number }) {
-  if (job.status === "running") return `шаг ${job.step + 1} из ${job.step_count}`;
+  if (job.status === "running") return `готово ${job.step} из ${job.step_count}`;
   return (
     { queued: "в очереди", done: "готово", failed: "не прошёл", cancelled: "прервано" } as Record<string, string>
   )[job.status] ?? job.status;

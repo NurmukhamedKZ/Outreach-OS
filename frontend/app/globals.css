@@ -535,6 +535,14 @@ a.nav-item:hover {
   font-weight: 500;
 }
 
+.jobSteps .is-failed {
+  color: var(--error);
+}
+
+.is-failed .step-index {
+  background: var(--error);
+}
+
 .step-index {
   width: 6px;
   height: 6px;

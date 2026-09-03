@@ -22,7 +22,7 @@ export default function RunBar() {
         {active.title}
       </span>
       <span className="runbar-step mono">
-        {active.status === "running" ? `шаг ${active.step + 1} из ${active.step_count}` : active.status}
+        {active.status === "running" ? `готово ${active.step} из ${active.step_count}` : active.status}
       </span>
       <Link href="/activity" className="runbar-link">
         лог

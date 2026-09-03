@@ -159,6 +159,12 @@ def as_job(row):
     дорожками текущих шагов два, и одним индексом это не выражается. Колонка
     state.jobs.step больше не заполняется и осталась в схеме мёртвой, как
     exit_code от эпохи subprocess.
+
+    Прогресс живёт в шагах, а не в джобе: у стадии с двумя дорожками их два.
+    Колонка state.jobs.progress больше не заполняется и осталась в схеме
+    мёртвой — как step и exit_code. Миграции ради трёх мёртвых колонок не
+    затевается: state.db невосстановима, и ALTER на ней стоит дороже, чем
+    строка в докстринге.
     """
     record = dict(row)
     steps = [as_step(entry) for entry in json.loads(record.pop("steps") or "[]")]
@@ -169,7 +175,6 @@ def as_job(row):
         "step": sum(1 for step in steps if step["status"] == "done"),
         "step_count": len(steps),
         "log_lines": log.count("\n") + 1 if log else 0,
-        "progress": json.loads(record["progress"]) if record["progress"] else None,
     }
 
 
@@ -256,11 +261,8 @@ def make_context(job_id, step_index):
             raise _Cancelled()
 
     def progress(current, total, label):
-        payload = {"current": current, "total": total, "label": label}
-        _set_step(job_id, step_index, progress=payload)
-        # Колонка джобы держится ради фронтенда, который пока читает одну
-        # полосу на джобу. Уходит вместе с ним — задача 5.
-        _update(job_id, progress=json.dumps(payload, ensure_ascii=False))
+        _set_step(job_id, step_index,
+                  progress={"current": current, "total": total, "label": label})
 
     def log(message):
         _append_log(job_id, [message])

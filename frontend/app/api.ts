@@ -151,7 +151,14 @@ export function activateRun(runId: number) {
   return json<{ run_id: number }>(`/api/runs/${runId}/activate`, { method: "POST" });
 }
 
-export type JobStep = { name: string; command: string };
+export type JobStep = {
+  name: string;
+  command: string;
+  stage: number;
+  lane: number;
+  status: "pending" | "running" | "done" | "failed" | "cancelled";
+  progress: { label?: string; current?: number; total?: number } | null;
+};
 
 export type Job = {
   id: number;
@@ -161,7 +168,6 @@ export type Job = {
   step: number;
   steps: JobStep[];
   step_count: number;
-  progress: { label?: string; current?: number; total?: number } | null;
   log_lines: number;
   error: string | null;
   created_at: string;
