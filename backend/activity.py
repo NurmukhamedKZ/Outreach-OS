@@ -90,21 +90,30 @@ def record(actor: str, outcome: str, subject: str | None = None,
     return event
 
 
-def record_crash(actor: str, detail: str = "см. логи процесса") -> None:
-    """Запись из обработчика аварии демона — единственное место, где журнал
+def record_quietly(actor: str, outcome: str, subject: str | None = None,
+                   detail: str | None = None) -> None:
+    """Запись из обработчика ошибки демона — единственное место, где журнал
     молчит о собственной беде.
 
     Обычный record() шумит намеренно: потерянное событие — это та самая
     невидимая работа, которую журнал и заводился показывать. Но в `except`
-    цикла демона исключение отсюда вылетело бы наружу while и убило бы
-    asyncio-задачу — ровно тот отказ, ради которого этот `except` и стоит.
-    Между «не записали аварию» и «после аварии некому работать» выбор
-    очевиден.
+    цикла демона исключение отсюда не ловится соседним `except` — оно уходит
+    из всего try, из while и убивает asyncio-задачу, ровно тот отказ, ради
+    которого этот `except` и стоит. Между «не записали событие» и «после
+    ошибки некому работать» выбор очевиден.
+
+    Любая запись из `except` демона обязана идти сюда, а не в record(): вид
+    события ничего не меняет, значение имеет только то, откуда его пишут.
     """
     try:
-        record(actor, "crashed", detail=detail)
+        record(actor, outcome, subject=subject, detail=detail)
     except Exception:
-        log.exception("журнал не смог записать аварию %s", actor)
+        log.exception("журнал не смог записать %s у %s", outcome, actor)
+
+
+def record_crash(actor: str, detail: str = "см. логи процесса") -> None:
+    """Авария демона — частный случай записи из `except`. См. record_quietly."""
+    record_quietly(actor, "crashed", detail=detail)
 
 
 def recent(limit: int = 200, actor: str | None = None) -> list[dict]:

@@ -261,7 +261,12 @@ async def monitor_numbers() -> None:
             # тик приходится на старт процесса, когда сокет ещё не слушает, и
             # каждый запуск иначе начинался бы с ложной тревоги.
             log.warning("транспорт не ответил на опросе здоровья: %s", error)
-            activity.record("sender.monitor", "transport_down", detail=str(error))
+            # record_quietly, а не record: мы уже внутри except, и исключение
+            # отсюда соседний `except Exception` не поймает — оно уйдёт из
+            # while и убьёт монитор насовсем. Node не поднялся, база занята
+            # сбором — и часовой цикл, единственный, кто замечает бан номера,
+            # исчезает с одной строкой в логе.
+            activity.record_quietly("sender.monitor", "transport_down", detail=str(error))
         except Exception:
             log.exception("монитор здоровья номеров упал на тике")
             activity.record_crash("sender.monitor")

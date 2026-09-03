@@ -6,6 +6,7 @@ delivered и reply rate констатируют задним числом; ча
 """
 
 import asyncio
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -279,3 +280,43 @@ async def test_monitor_calls_a_silent_transport_by_its_name(db, monkeypatch):
     outcomes = {event["outcome"] for event in activity.recent()}
     assert "transport_down" in outcomes
     assert "crashed" not in outcomes
+
+
+async def test_monitor_survives_a_journal_that_cannot_write(db, monkeypatch):
+    """Запись в журнал стояла ВНУТРИ except TransportError, и её собственное
+    исключение соседним `except Exception` не ловится — оно уходит из всего
+    try, из while, и убивает monitor_numbers на всю жизнь процесса.
+
+    Сценарий — тот самый, что описан в обработчике: Node не поднялся на старте,
+    state.db занята джобой сбора, запись падает по таймауту. И часовой монитор,
+    единственное, что замечает забаненный номер, исчезает с одной строкой в
+    логе."""
+    import activity
+    from sender.routes import sender as routes
+    from sender.transport import TransportError
+
+    class Silent:
+        async def health(self):
+            raise TransportError("GET /health: All connection attempts failed")
+
+    ticks = []
+    real_record = activity.record
+
+    def locked(actor, outcome, subject=None, detail=None):
+        if outcome == "transport_down":
+            ticks.append(outcome)
+            raise sqlite3.OperationalError("database is locked")
+        return real_record(actor, outcome, subject=subject, detail=detail)
+
+    monkeypatch.setattr(activity, "record", locked)
+    monkeypatch.setattr(routes, "build_transport", lambda: Silent())
+    monkeypatch.setattr(routes, "connect", lambda: db)
+    monkeypatch.setattr(routes, "MONITOR_INTERVAL_SECONDS", 0)
+
+    task = asyncio.create_task(routes.monitor_numbers())
+    await asyncio.sleep(0.05)
+    alive = not task.done()
+    task.cancel()
+
+    assert len(ticks) > 1, "монитор не пережил первый же отказ журнала"
+    assert alive, "задача монитора умерла"

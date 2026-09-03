@@ -183,8 +183,11 @@ async def _record_incoming(event: Event, moment: datetime) -> bool:
                 _settle(db, thread, message_id, moment, refused, bool(text))
         except conversation.DuplicateIncomingError:
             log.info("повтор события %s — уже записано", event.provider_id)
-            activity.record("webhook", "duplicate", subject=thread_id,
-                            detail=event.provider_id)
+            # Тоже из except, и по той же причине тихо: отказ журнала превратил
+            # бы безобидный дубль в 500, а Node на 500 повторяет — то есть
+            # дубль, который мы только что распознали, вернулся бы снова.
+            activity.record_quietly("webhook", "duplicate", subject=thread_id,
+                                    detail=event.provider_id)
             return False
         # После коммита, а не внутри: этап — не часть записи сообщения, и
         # держать ради него открытой транзакцию state.db, за которой стоит

@@ -49,3 +49,18 @@ class FakeTransport:
     async def check(self, number, to):
         self.checked.append((number, to))
         return self._has_whatsapp
+
+
+@pytest.fixture(autouse=True)
+def isolated_autopilot(tmp_path, monkeypatch):
+    """Kill switch — файл на машине оператора, и он не в git.
+
+    Тест, который его читает, зелёный ровно тогда, когда тумблер стоит в
+    нужном положении: полный прогон падал на test_status_lists_the_pool,
+    пока в backend/sender/autopilot лежало «full». Отводим путь в tmp —
+    режим берётся из config.toml, как на чистой установке, и ни один тест
+    больше не зависит от того, чем оператор занимался перед прогоном.
+    """
+    from sender.services import config
+
+    monkeypatch.setattr(config, "OVERRIDE", tmp_path / "autopilot")
