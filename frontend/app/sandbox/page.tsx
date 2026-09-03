@@ -66,7 +66,7 @@ const STAGE_LABELS: Record<string, string> = {
 };
 
 const THREAD_STATUS_LABELS: Record<string, string> = {
-  queued: "письмо ушло, ответа нет",
+  queued: "чат ещё не начался",
   active: "живой диалог",
   exhausted: "касания кончились",
   escalated: "передан человеку",
@@ -140,7 +140,7 @@ const STEPS = [
   {
     key: "draft",
     title: "Черновик",
-    hint: "Агент напишет первое письмо по досье лида. Это платный вызов модели.",
+    hint: "Агент напишет первое письмо по досье лида. Это платный вызов модели: десять-шестьдесят секунд.",
   },
   {
     key: "queue",
@@ -211,10 +211,14 @@ export default function SandboxPage() {
     setFailure(null);
     try {
       await action();
-      reload();
     } catch (error) {
       report(error as Error);
     } finally {
+      // Состояние перечитывается и после ошибки, а не только после успеха:
+      // вызов модели стоит денег и успевает записать черновик до того, как
+      // клиент увидит обрыв. Не перечитать здесь — значит показать оператору
+      // пустой чат рядом с красной строкой и заставить платить второй раз.
+      reload();
       setBusy(false);
     }
   }
@@ -354,7 +358,7 @@ export default function SandboxPage() {
                 disabled={busy || !active || step > 1}
                 onClick={() => act(() => requestDraft(active!.company_id, "first"))}
               >
-                Написать первое письмо
+                {busy && step === 1 ? "Пишу письмо…" : "Написать первое письмо"}
               </button>
               <button
                 className={step === 2 ? "btn" : "btn-secondary"}
