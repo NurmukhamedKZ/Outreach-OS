@@ -10,6 +10,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-03-collect-speedup-design.md`
 
+**Проверено до написания плана.** Код `Pacer`, `plan_steps`, `_set_step` и
+исполнитель стадий собраны в песочнице и прогнаны ровно теми тестами, что
+записаны ниже: 16 из 16 зелёные. Проверены отдельно `json_set` по индексу шага
+(кириллица в подписи прогресса цела), разбор новой секции `[pacing]` в
+`config.toml` (соседние секции не задеты), раскладка `discover` по стадиям и
+дорожкам и тест задачи 3 на настоящей фикстуре `ig_feed.html.gz` — он падает
+до правки и проходит после. Один тест ревью забраковало и заменило: см.
+задачу 4, `test_next_step_of_a_lane_does_not_start_after_a_sibling_failed`.
+
 ## Global Constraints
 
 - Все команды бэкенда запускаются из `backend/`: `uv run pytest`, `uv run python …`.
@@ -291,9 +300,14 @@ class Pacer:
 
 def default_pacer():
     """Темпы из config.toml. Значения — калибровочная ручка: источник ответил
-    капчей — поднимают их, а не правят код."""
+    капчей — поднимают их, а не правят код.
+
+    default вынимается отдельной строкой: «default» — не имя домена, и в карте
+    хостов ему места нет.
+    """
     pacing = dict(tomllib.loads(CONFIG.read_text(encoding="utf-8"))["pacing"])
-    return Pacer(pacing, pacing.pop("default"))
+    default = pacing.pop("default")
+    return Pacer(pacing, default)
 
 
 class Budget:
@@ -317,7 +331,9 @@ class Budget:
         return fetch.get(url, **kw)
 ```
 
-Внимание: `dict(...)` перед `pop` обязателен — `pop` на разобранном toml выбросил бы `default` из словаря, который потом переиспользуется, а `Pacer` получил бы `intervals` уже без него. Здесь `pop` идёт по копии и как раз убирает `default` из карты хостов: `"default"` — не имя домена.
+Внимание: `dict(...)` перед `pop` обязателен — без копии `pop` правил бы словарь, разобранный из toml, и следующий читатель конфига не нашёл бы `default`.
+
+Не сворачивать `default_pacer` в одну строку `Pacer(pacing, pacing.pop("default"))`: она работает — Python вычисляет аргументы слева направо, и `Pacer` получает уже изменённый словарь по ссылке, — но держится на порядке вычисления и алиасинге разом. Проверено, работает, и всё равно не стоит того: это ровно та строка, которую разбирают в три часа ночи.
 
 - [ ] **Step 5: Прогнать тесты сбора**
 
@@ -576,24 +592,47 @@ def test_failed_lane_stops_its_neighbour_before_the_job_finishes(stores):
         OPERATIONS.pop("_patient_lane_test", None)
 
 
-def test_lane_started_after_the_failure_does_not_run(stores):
-    """Отмена — флаг на джобе, а не только на уже созданных контекстах: иначе
-    дорожка, стартовавшая через миллисекунду после падения соседки, успела бы
-    уйти в сеть, не увидев отмены."""
+def test_next_step_of_a_lane_does_not_start_after_a_sibling_failed(stores):
+    """Отмена — флаг на джобе, а не только на уже созданных контекстах.
+
+    Сторожить надо именно СЛЕДУЮЩИЙ шаг дорожки: первые шаги обеих дорожек
+    стартуют одновременно, это замысел, и помешать соседке начать нельзя.
+    А вот collect.ig_comments не имеет права уйти в сеть после того, как
+    ветка сайтов уже упала, — иначе падение стоило бы лишних минут запросов.
+    """
+    import threading
+    import time
     from collector.services.pipeline import OPERATIONS
 
     ran = []
-    OPERATIONS["_instant_boom_test"] = lambda ctx: (_ for _ in ()).throw(ValueError("сразу"))
-    OPERATIONS["_late_test"] = lambda ctx: ran.append("late") or {}
+    started = threading.Event()
+
+    def slow_then_ok(ctx):
+        started.set()
+        time.sleep(0.2)
+        return {}
+
+    def boom(ctx):
+        assert started.wait(timeout=5)
+        raise ValueError("сосед упал")
+
+    OPERATIONS["_slow_ok_test"] = slow_then_ok
+    OPERATIONS["_must_not_run_test"] = lambda ctx: ran.append("second") or {}
+    OPERATIONS["_boom_neighbour_test"] = boom
     try:
-        job_id = jobs.enqueue_steps("custom", "Поздняя дорожка",
-                                    [(("_instant_boom_test",), ("_late_test",))])
+        job_id = jobs.enqueue_steps(
+            "custom", "Поздний шаг",
+            [(("_slow_ok_test", "_must_not_run_test"), ("_boom_neighbour_test",))])
         asyncio.run(asyncio.wait_for(jobs.run_pending(), timeout=10))
+
         assert jobs.job(job_id)["status"] == "failed"
-        assert ran == [], "дорожка стартовала уже после падения соседки"
+        assert ran == [], "второй шаг дорожки стартовал уже после падения соседки"
+        statuses = {s["name"]: s["status"] for s in jobs.job(job_id)["steps"]}
+        assert statuses["_slow_ok_test"] == "done", statuses
+        assert statuses["_must_not_run_test"] == "pending", statuses
     finally:
-        OPERATIONS.pop("_instant_boom_test", None)
-        OPERATIONS.pop("_late_test", None)
+        for name in ("_slow_ok_test", "_must_not_run_test", "_boom_neighbour_test"):
+            OPERATIONS.pop(name, None)
 
 
 def test_old_jobs_with_plain_string_steps_still_render(stores):
@@ -847,7 +886,14 @@ async def _run_lane(job_id, steps, indexes):
         _update(job_id, result=json.dumps(result, ensure_ascii=False))
 ```
 
-Два места, где легко ошибиться:
+Три места, где легко ошибиться:
+
+- `_update(job_id, result=...)` в конце шага пишет в одну колонку из обеих
+  дорожек: у джобы с ветками `result` — исход той дорожки, что финишировала
+  последней. Раньше это был исход последнего шага, то есть тоже не сумма.
+  Колонки нет ни в типе `Job` фронтенда, ни на одной странице, поэтому
+  сводить исходы веток в список сейчас незачем — но если она однажды
+  понадобится, начинать надо отсюда.
 
 - `remove(ctx)` в `finally` безопасен только потому, что список чистит
   единственный владелец — сама дорожка, и `_finish` до её выхода не зовётся.
@@ -1060,7 +1106,13 @@ function stepClass(step: JobStep) {
 }
 ```
 
-Импорт `JobStep` добавить к существующему импорту типов из `@/app/api`. Функцию `finished` удалить — её звал только вычисленный индекс, которого больше нет; проверить, что других её вызовов в файле не осталось.
+Строку 10 `frontend/components/JobMonitor.tsx` заменить на:
+
+```tsx
+import { cancelJob, startPipeline, type JobStep, type Pipeline } from "@/app/api";
+```
+
+Функцию `finished` удалить — её звал только вычисленный индекс, которого больше нет; проверить, что других её вызовов в файле не осталось.
 
 - [ ] **Step 3: Подпись состояния — «готово N из M»**
 
