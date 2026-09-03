@@ -12,6 +12,7 @@ import {
   BroadcastIcon,
   SquaresFourIcon,
   ChartLineUpIcon,
+  FlaskIcon,
 } from "@phosphor-icons/react";
 import { useLive } from "./live";
 
@@ -23,6 +24,7 @@ const NAV = [
   { href: "/analytics", label: "Аналитика", icon: ChartLineUpIcon },
   { href: "/sender", label: "Отправка", icon: BroadcastIcon },
   { href: "/activity", label: "Процессы", icon: PulseIcon },
+  { href: "/sandbox", label: "Песочница", icon: FlaskIcon },
 ];
 
 export default function Sidebar() {

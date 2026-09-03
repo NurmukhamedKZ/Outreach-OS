@@ -1436,3 +1436,43 @@ a.nav-item:hover {
   font-size: 13px;
   white-space: nowrap;
 }
+
+.sandbox-runs {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.sandbox-check {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.sandbox-switch {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.sandbox-facts {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+/* Судьба сообщения — не украшение ленты, а её содержание: набор мельче
+   текста, но не серее подписи автора. */
+.sandbox-fate {
+  font-size: 11px;
+  color: var(--muted);
+}

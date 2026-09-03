@@ -453,3 +453,89 @@ export const SIGNAL_LABELS: Record<string, string> = {
   inbound_widget: "Виджет входящих",
   service_catalog: "Каталог услуг с ценами",
 };
+
+// ---- Песочница: подменный транспорт и роль лида ----
+
+export type SandboxRun = {
+  run_id: string;
+  company_id: string;
+  created_at: string;
+  warmed: boolean;
+  offset_seconds: number;
+  active: boolean;
+};
+
+export type SandboxFaults = {
+  send: "ok" | "not_sent" | "unknown";
+  delivery: "delivered" | "read" | "silent";
+  number: "connected" | "loggedOut" | "stalled";
+  has_whatsapp: boolean;
+};
+
+/** Судьба нашего сообщения в очереди. У входящего её нет: лид ничего не ждёт. */
+export type SandboxFate = {
+  status: string;
+  attempts: number;
+  send_after: string;
+  delivered_at: string | null;
+  read_at: string | null;
+  error: string | null;
+};
+
+export type SandboxBubble = {
+  message_id: number;
+  role: "outgoing" | "incoming";
+  kind: "draft" | "queued" | "sent" | "incoming";
+  text: string;
+  at: string;
+  fate: SandboxFate | null;
+};
+
+export type SandboxChat = {
+  thread_id: string;
+  company_id: string;
+  stage: string;
+  status: string;
+  touch_no: number;
+  next_touch_at: string | null;
+  bubbles: SandboxBubble[];
+};
+
+export function fetchSandboxRuns() {
+  return json<{ runs: SandboxRun[] }>("/api/sandbox/runs");
+}
+
+export function createSandboxRun(companyId: string, warmed: boolean) {
+  return post<{ run: SandboxRun }>("/api/sandbox/runs", {
+    company_id: companyId,
+    warmed,
+  });
+}
+
+export function activateSandboxRun(runId: string) {
+  return post<{ run: SandboxRun }>(
+    `/api/sandbox/runs/${encodeURIComponent(runId)}/activate`,
+    {},
+  );
+}
+
+/** preset: jitter | hour | day | window. Что они значат, решает бэкенд. */
+export function moveSandboxClock(preset: string) {
+  return post<{ offset_seconds: number; now: string }>("/api/sandbox/clock", { preset });
+}
+
+export function fetchSandboxFaults() {
+  return json<SandboxFaults>("/api/sandbox/faults");
+}
+
+export function setSandboxFaults(change: Partial<SandboxFaults>) {
+  return post<SandboxFaults>("/api/sandbox/faults", change);
+}
+
+export function fetchSandboxChat() {
+  return json<SandboxChat>("/api/sandbox/chat");
+}
+
+export function sendSandboxIncoming(text: string) {
+  return post<{ handled: boolean }>("/api/sandbox/incoming", { text });
+}
