@@ -95,3 +95,118 @@ def test_in_parallel_propagates_job_id_and_isolates_entity_per_task(monkeypatch)
     for job, job_id, entity in seen:
         assert job_id == "outer-job-1", f"{job}: неверный job_id внутри потока — {job_id}"
         assert entity == job, f"{job}: чужая entity внутри потока — {entity}"
+
+
+import time
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+
+
+def test_pacer_spaces_repeat_requests_to_one_host():
+    """Второй запрос к тому же хосту ждёт интервал, первый — не ждёт ничего."""
+    pacer = collect.Pacer({}, 0.05)
+    started = time.monotonic()
+    for _ in range(3):
+        pacer.wait("https://example.kz/page")
+    assert time.monotonic() - started >= 0.10, "интервал между запросами к одному хосту не выдержан"
+
+
+def test_pacer_does_not_space_different_hosts():
+    """Три разных домена не ждут друг друга — ради этого пауза и переезжает
+    с воркера на хост: 2599 сайтов компаний живут на 2599 доменах."""
+    pacer = collect.Pacer({}, 0.05)
+    started = time.monotonic()
+    for host in ("a.kz", "b.kz", "c.kz"):
+        pacer.wait(f"https://{host}/")
+    assert time.monotonic() - started < 0.05, "разные хосты заставили друг друга ждать"
+
+
+def test_pacer_longest_match_wins():
+    """Точное имя сильнее суффикса, длинный суффикс — короткого: иначе
+    поддомен нельзя было бы выделить, не переписывая общее правило."""
+    pacer = collect.Pacer({"2gis.kz": 1.0, "catalog.2gis.kz": 2.0}, 0.5)
+    assert pacer.interval_for("catalog.2gis.kz") == 2.0
+    assert pacer.interval_for("sub.catalog.2gis.kz") == 2.0
+    assert pacer.interval_for("www.2gis.kz") == 1.0
+    assert pacer.interval_for("example.kz") == 0.5
+
+
+def test_pacer_holds_one_host_across_threads():
+    """Слот резервируется под локом: двадцать потоков в один хост дают
+    девятнадцать интервалов, а не двадцать одновременных запросов."""
+    pacer = collect.Pacer({}, 0.02)
+    started = time.monotonic()
+    with ThreadPoolExecutor(20) as pool:
+        list(pool.map(lambda _: pacer.wait("https://one.kz/"), range(20)))
+    assert time.monotonic() - started >= 0.02 * 19
+
+
+def test_pacer_lets_other_hosts_through_while_one_waits():
+    """Ожидание очереди к 2GIS не держит поток, идущий на чужой домен —
+    сон обязан быть вне общего лока, иначе правка бессмысленна."""
+    pacer = collect.Pacer({"slow.kz": 0.4}, 0.0)
+    pacer.wait("https://slow.kz/")            # занять слот
+    started = time.monotonic()
+
+    with ThreadPoolExecutor(2) as pool:
+        waiting = pool.submit(pacer.wait, "https://slow.kz/")   # будет спать 0.4
+        time.sleep(0.05)
+        quick_started = time.monotonic()
+        pool.submit(pacer.wait, "https://fast.kz/").result()
+        quick = time.monotonic() - quick_started
+        waiting.result()
+
+    assert quick < 0.1, f"запрос к чужому хосту прождал {quick:.2f} с — лок держится во время сна"
+    assert time.monotonic() - started >= 0.3
+
+
+def test_budget_paces_only_network_requests(monkeypatch):
+    """Страница из raw/ бесплатна и очереди к хосту не ждёт: на повторном
+    прогоне сбор не делает ни одного запроса и не должен ничего проспать."""
+    asked = []
+    pacer = SimpleNamespace(wait=asked.append)
+    monkeypatch.setattr(collect.fetch, "is_cached", lambda url: url.endswith("cached"))
+    monkeypatch.setattr(collect.fetch, "get", lambda url, **kw: "<html></html>")
+
+    budget = collect.Budget(None, pacer)
+    budget.get("https://example.kz/cached")
+    budget.get("https://example.kz/fresh")
+
+    assert asked == ["https://example.kz/fresh"]
+
+
+def test_two_budgets_share_one_host_limit(monkeypatch):
+    """Две операции, идущие разными дорожками в один хост, не должны удвоить
+    темп: Pacer один на процесс, потому что темп принадлежит хосту, а не
+    операции. До дорожек операции шли по очереди, и это было безразлично."""
+    collect._PACER = None
+    monkeypatch.setattr(collect.fetch, "is_cached", lambda url: False)
+    monkeypatch.setattr(collect.fetch, "get", lambda url, **kw: "<html></html>")
+
+    first, second = collect.Budget(None), collect.Budget(None)
+    assert first.pacer is second.pacer, \
+        "у каждой операции свой Pacer — лимит хоста удвоится молча"
+
+
+def test_recalibration_keeps_taken_slots():
+    """Правка config.toml меняет интервалы, но не забывает занятые слоты:
+    обнулить их значило бы выпустить пул залпом ровно в тот момент, когда
+    оператор крутит ручку из-за капчи."""
+    pacer = collect.Pacer({"one.kz": 0.05}, 0.0)
+    pacer.wait("https://one.kz/")
+    taken = dict(pacer.free_at)
+
+    pacer.recalibrate({"one.kz": 0.9}, 0.0)
+
+    assert pacer.interval_for("one.kz") == 0.9
+    assert pacer.free_at == taken
+
+
+def test_pacing_config_keeps_2gis_faster_than_unknown_hosts():
+    """Калибровка из config.toml: 2GIS — один хост на тысячи запросов, и его
+    интервал короче, чем у незнакомого домена, которому достанется пара
+    страниц. Ровно эта пропорция и была потеряна, пока пауза жила на воркере.
+    """
+    pacer = collect.default_pacer()
+    assert pacer.interval_for("2gis.kz") < pacer.default
+    assert pacer.interval_for("public-api.reviews.2gis.com") < pacer.default

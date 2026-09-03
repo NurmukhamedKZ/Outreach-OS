@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
 from threading import Lock
+from urllib.parse import urlsplit
 
 import logctx
 from collector.services import fetch
@@ -55,10 +56,11 @@ IG_FAILURES_IN_ROW = 3
 # Шестая страница запрашивается намеренно: на ней срабатывает проверка подмены,
 # и потолок оказывается пойманным, а не предположенным.
 PAGE_LIMIT = 6
-# Пауза на поток: 8 потоков без паузы — это 40 запросов в секунду, и 2GIS на такой
-# скорости отвечает капчей. Секунда на поток держит темп в пределах 4–8 запросов.
-PAUSE_SECONDS = 1.0
-MAX_WORKERS = 8
+# Шестнадцать, а не восемь: 6188 запросов боевого сбора шли 75 минут — это
+# 1,36 запроса в секунду при потолке восемь, то есть воркеры семь восьмых
+# времени ждут ответа сети. Темп источника держит не число воркеров, а
+# Pacer ниже, поэтому пул можно поднимать, не приближая капчу.
+MAX_WORKERS = 16
 
 
 class BudgetSpent(RuntimeError):
@@ -361,16 +363,93 @@ def instagram_user_ids():
     return out
 
 
-# --- бюджет ------------------------------------------------------------------
+class Pacer:
+    """Минимальный интервал между запросами к одному хосту.
+
+    Пауза принадлежит хосту, а не воркеру: капчей отвечает источник, а не наш
+    пул. Пока в работе одни страницы 2GIS, разницы нет, но в фазе сайтов те же
+    воркеры идут на 2599 разных доменов, и каждый платил секунду вежливости
+    хосту, который об этом никогда не узнает.
+
+    Слот резервируется под общим локом, а сон идёт вне его: иначе поток,
+    ждущий очереди к 2GIS, держал бы за собой всех, кто идёт на чужие домены,
+    — то есть ровно ту беду, ради которой пауза сюда и переехала.
+    """
+
+    def __init__(self, intervals, default):
+        self.intervals = intervals
+        self.default = default
+        self.free_at = {}
+        self.lock = Lock()
+
+    def recalibrate(self, intervals, default):
+        """Новые темпы из конфига. Карта занятых слотов не трогается — она и
+        есть состояние темпа, а не его настройка."""
+        self.intervals, self.default = intervals, default
+
+    def interval_for(self, host):
+        """Самое длинное совпадение: точное имя, иначе самый длинный подходящий
+        суффикс, иначе умолчание. Длинное выигрывает у короткого, чтобы
+        поддомен можно было выделить, не переписывая общее правило."""
+        if host in self.intervals:
+            return self.intervals[host]
+        matches = [(len(name), value) for name, value in self.intervals.items()
+                   if host.endswith(f".{name}")]
+        return max(matches)[1] if matches else self.default
+
+    def wait(self, url):
+        host = urlsplit(url).hostname or ""
+        interval = self.interval_for(host)
+        with self.lock:
+            start = max(time.monotonic(), self.free_at.get(host, 0.0))
+            self.free_at[host] = start + interval
+        delay = start - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+
+
+_PACER = None
+
+
+def default_pacer():
+    """Темпы из config.toml. Значения — калибровочная ручка: источник ответил
+    капчей — поднимают их, а не правят код.
+
+    Pacer один на процесс, а не один на Budget. Каждая операция строит свой
+    Budget, и до задачи 4 это было безразлично — операции шли по очереди. С
+    дорожками две операции идут одновременно, и по своему Pacer у каждой
+    означало бы по своему лимиту на один и тот же хост: темп удвоился бы
+    молча, ровно в той правке, которая дорожки и вводит. Темп принадлежит
+    хосту — значит и карта занятых слотов одна на процесс.
+
+    Интервалы перечитываются на каждый вызов: config.toml — ручка, и правка
+    не должна ждать перезапуска бэкенда. А занятые слоты переживают
+    перечитывание: они и есть состояние темпа, и обнулить их значило бы
+    выпустить пул залпом ровно в тот момент, когда оператор крутит ручку
+    из-за капчи.
+
+    default вынимается отдельной строкой: «default» — не имя домена, и в карте
+    хостов ему места нет.
+    """
+    global _PACER
+    pacing = dict(tomllib.loads(CONFIG.read_text(encoding="utf-8"))["pacing"])
+    default = pacing.pop("default")
+    if _PACER is None:
+        _PACER = Pacer(pacing, default)
+    else:
+        _PACER.recalibrate(pacing, default)
+    return _PACER
 
 
 class Budget:
-    """Потолок сетевых запросов. Страница из raw/ бесплатна и в потолок не входит."""
+    """Потолок сетевых запросов. Страница из raw/ бесплатна: она не входит ни
+    в потолок, ни в очередь к хосту."""
 
-    def __init__(self, cap):
+    def __init__(self, cap, pacer=None):
         self.cap = cap
         self.spent = 0
         self.lock = Lock()
+        self.pacer = pacer or default_pacer()
 
     def get(self, url, **kw):
         if fetch.is_cached(url):
@@ -379,7 +458,7 @@ class Budget:
             if self.cap is not None and self.spent >= self.cap:
                 raise BudgetSpent(f"потолок {self.cap} сетевых запросов исчерпан")
             self.spent += 1
-        time.sleep(PAUSE_SECONDS)
+        self.pacer.wait(url)
         return fetch.get(url, **kw)
 
 
