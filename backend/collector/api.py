@@ -23,6 +23,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import activity
 import analytics
 import paths
+import sandbox
+from config import settings
 from collector.routes import (activity as activity_routes, analytics as analytics_routes, events, jobs, leads,
                               operations, pipeline, runs, stats, suppression)
 from collector.services import events as bus
@@ -121,3 +123,7 @@ app.include_router(suppression.router)
 app.include_router(writer.router)
 app.include_router(sender.router)
 app.include_router(sender_webhook.router)
+
+# Песочница монтируется здесь по той же причине, по которой здесь живут
+# остальные швы: api.py — единственное место, где системы видят друг друга.
+sandbox.mount(app, settings)
