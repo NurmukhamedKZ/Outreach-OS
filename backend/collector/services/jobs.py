@@ -276,7 +276,7 @@ def make_context(job_id, step_index):
 
 
 async def _execute(job_id):
-    steps = json.loads(_raw_steps(job_id))
+    steps = _runnable_steps(job_id)
     with logctx.job(job_id):
         for stage in sorted({step["stage"] for step in steps}):
             lanes = {}
@@ -307,15 +307,53 @@ async def _execute(job_id):
     _finish(job_id, "done")
 
 
+def _runnable_steps(job_id):
+    """Шаги джобы в исполняемом виде.
+
+    Джоба, поставленная до стадий и дорожек, хранит steps списком имён, и
+    пережить перезапуск в очереди она имеет полное право: fail_orphans
+    намеренно не трогает queued. Разложить её формат сейчас стоит одной
+    строки, а не разложить — стоит воркера: TypeError отсюда уходит мимо всех
+    обработчиков в worker_loop, у которого нет ни одного except, и очередь
+    встаёт до перезапуска процесса.
+
+    Разложенное сразу ложится в базу: дальше по коду шаги адресуются индексом
+    (`json_set(steps, '$[i].status', …)`), и старый формат в колонке сделал бы
+    эту адресацию бессмысленной.
+    """
+    steps = json.loads(_raw_steps(job_id))
+    if not any(isinstance(entry, str) for entry in steps):
+        return steps
+    steps = plan_steps([entry["name"] if isinstance(entry, dict) else entry
+                        for entry in steps])
+    _update(job_id, steps=json.dumps(steps, ensure_ascii=False))
+    return steps
+
+
+def _already_finished(job_id):
+    """Джобу завершили извне, пока дорожка работала над предыдущим шагом.
+
+    Спрашиваем базу, а не только флаг в памяти: отмену ставит другое место
+    процесса, и после _finish флаг снят — дорожка шла бы дальше по списку,
+    пока интерфейс показывает «отменено». Один SELECT на шаг, а шаги отстоят
+    друг от друга на минуты.
+    """
+    record = job(job_id)
+    return bool(record) and record["status"] in TERMINAL
+
+
 async def _run_lane(job_id, steps, indexes):
     """Шаги одной дорожки — строго по очереди. Первая же ошибка выходит наружу:
     её ловит стадия и решает судьбу соседних дорожек."""
     for index in indexes:
         name = steps[index]["name"]
-        if job_id in _cancelled:
+        if job_id in _cancelled or _already_finished(job_id):
             raise _Cancelled()
         if name not in OPERATIONS:
-            raise KeyError(f"нет операции {name}")
+            # RuntimeError, а не KeyError: текст уезжает в state.jobs.error и
+            # оттуда оператору, а KeyError показывал бы ему repr — «KeyError:
+            # 'нет операции X'», с кавычками и именем класса.
+            raise RuntimeError(f"нет операции {name}")
         ctx, _state = make_context(job_id, index)
         _current_ctxs.setdefault(job_id, []).append(ctx)
         _set_step(job_id, index, status="running")
@@ -333,7 +371,13 @@ async def _run_lane(job_id, steps, indexes):
             _set_step(job_id, index, status="failed")
             raise
         finally:
-            _current_ctxs.get(job_id, []).remove(ctx)
+            # Не .remove() вслепую: реестр мог исчезнуть раньше дорожки —
+            # cancel() прочитал «queued», пока _claim уже перевёл в «running»,
+            # и _finish выбросил его. ValueError из finally съел бы настоящий
+            # исход шага и подменил его на «list.remove(x): x not in list».
+            contexts = _current_ctxs.get(job_id)
+            if contexts and ctx in contexts:
+                contexts.remove(ctx)
         _set_step(job_id, index, status="done")
         _update(job_id, result=json.dumps(result, ensure_ascii=False))
 
@@ -375,9 +419,21 @@ def _update(job_id, **fields):
     publish_job(job_id)
 
 
+TERMINAL = ("done", "failed", "cancelled")
+
+
 def _finish(job_id, status, error=None):
     """Кода возврата у операции нет: она возвращает dict или бросает исключение.
-    Колонка exit_code осталась от эпохи subprocess и больше не заполняется."""
+    Колонка exit_code осталась от эпохи subprocess и больше не заполняется.
+
+    Завершённая джоба не переписывается. Отмена приходит извне и может успеть
+    раньше, чем дорожка доработает свой шаг: без этой проверки финал _execute
+    воскрешал бы отменённую джобу в «готово» — оператор нажал «прервать»,
+    увидел «отменено» и через секунду получил бы «готово».
+    """
+    record = job(job_id)
+    if record and record["status"] in TERMINAL:
+        return
     _cancelled.discard(job_id)
     _current_ctxs.pop(job_id, None)
     _update(job_id, status=status, error=error, finished_at=now())

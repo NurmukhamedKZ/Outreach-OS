@@ -411,3 +411,114 @@ def test_discover_runs_instagram_beside_the_rest():
     collecting = max(s["stage"] for s in steps if s["name"].startswith("collect."))
     assert by_name["rebuild"]["stage"] > collecting, \
         "rebuild обязан идти один и после всего сбора — он пересобирает derived прогоном"
+
+
+def test_job_queued_before_stages_still_runs(stores, tmp_path, monkeypatch):
+    """Джоба, поставленная прошлой версией, пережила перезапуск в очереди.
+
+    fail_orphans намеренно не трогает queued, поэтому её забирает уже новый
+    воркер — и видит steps списком имён, а не объектов. Раньше это был
+    TypeError мимо всех обработчиков: он уходил из _execute в run_pending и
+    дальше в worker_loop, у которого нет ни одного except. Задача воркера
+    умирала, очередь вставала до перезапуска, а джоба навсегда оставалась
+    running.
+    """
+    from collector.services.pipeline import export as export_op
+    monkeypatch.setattr(export_op, "OUT", tmp_path / "leads.csv")
+
+    job_id = jobs.enqueue_steps("custom", "Поставлена до стадий", ["export"])
+    jobs._update(job_id, steps=json.dumps(["export"], ensure_ascii=False))
+
+    asyncio.run(jobs.run_pending())
+
+    record = jobs.job(job_id)
+    assert record["status"] == "done", record["error"]
+    assert [s["name"] for s in record["steps"]] == ["export"]
+    assert record["steps"][0]["status"] == "done"
+
+
+def test_missing_operation_reads_as_a_sentence(stores):
+    """Текст в state.jobs.error читает оператор, а не питонист: KeyError
+    приезжал в интерфейс как «KeyError: 'нет операции X'» — с кавычками и
+    именем класса."""
+    job_id = jobs.enqueue_steps("custom", "Провал", ["нет_такой_операции"])
+    asyncio.run(jobs.run_pending())
+    error = jobs.job(job_id)["error"]
+    assert "нет операции нет_такой_операции" in error, error
+    assert "KeyError" not in error, error
+    assert "'" not in error, error
+
+
+def test_finish_racing_a_running_lane_does_not_mask_the_outcome(stores):
+    """cancel() прочитал «queued», пока _claim уже перевёл в «running».
+
+    _finish выбрасывает реестр контекстов раньше, чем дорожка дойдёт до
+    finally, и .remove() падал ValueError прямо в finally — джоба
+    оканчивалась failed с «list.remove(x): x not in list» вместо cancelled.
+    """
+    import threading
+    from collector.services.pipeline import OPERATIONS
+
+    started, may_finish = threading.Event(), threading.Event()
+
+    def slow(ctx):
+        started.set()
+        assert may_finish.wait(timeout=5)
+        return {}
+
+    OPERATIONS["_racing_test"] = slow
+    try:
+        job_id = jobs.enqueue_steps("custom", "Гонка отмены", ["_racing_test"])
+
+        async def scenario():
+            task = asyncio.ensure_future(jobs.run_pending())
+            await asyncio.get_running_loop().run_in_executor(None, started.wait, 5)
+            jobs._finish(job_id, "cancelled")     # ровно то, что делает cancel() на queued
+            may_finish.set()
+            await asyncio.wait_for(task, timeout=10)
+
+        asyncio.run(scenario())
+        record = jobs.job(job_id)
+        assert record["status"] == "cancelled", f"{record['status']}: {record['error']}"
+    finally:
+        OPERATIONS.pop("_racing_test", None)
+
+
+def test_lane_stops_when_the_job_was_finished_from_outside(stores):
+    """Джобу завершили извне, пока дорожка работала над первым шагом.
+
+    Флаг отмены живёт в памяти процесса, а отменяет другое место — и после
+    _finish он оказывался снят. Дорожка шла дальше по списку: интерфейс
+    показывал «отменено», а сбор ещё три часа ходил в сеть.
+    """
+    import threading
+    from collector.services.pipeline import OPERATIONS
+
+    started, may_finish = threading.Event(), threading.Event()
+    ran = []
+
+    def slow(ctx):
+        started.set()
+        assert may_finish.wait(timeout=5)
+        return {}
+
+    OPERATIONS["_slow_first_test"] = slow
+    OPERATIONS["_must_not_run_after_test"] = lambda ctx: ran.append("second") or {}
+    try:
+        job_id = jobs.enqueue_steps(
+            "custom", "Завершена извне",
+            [(("_slow_first_test", "_must_not_run_after_test"),)])
+
+        async def scenario():
+            task = asyncio.ensure_future(jobs.run_pending())
+            await asyncio.get_running_loop().run_in_executor(None, started.wait, 5)
+            jobs._finish(job_id, "cancelled")
+            may_finish.set()
+            await asyncio.wait_for(task, timeout=10)
+
+        asyncio.run(scenario())
+        assert ran == [], "дорожка отработала шаг уже завершённой джобы"
+        assert jobs.job(job_id)["status"] == "cancelled"
+    finally:
+        OPERATIONS.pop("_slow_first_test", None)
+        OPERATIONS.pop("_must_not_run_after_test", None)
