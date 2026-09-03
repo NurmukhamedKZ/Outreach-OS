@@ -217,7 +217,7 @@ def connect(path):
     return db
 ```
 
-добавить `import paths`, убрать ставший ненужным импорт `Path`, если он больше нигде в файле не используется (проверить `grep -n "Path" backend/writer/db/leads_source.py`).
+добавить `import paths` и удалить строку `from pathlib import Path` (строка 18): после этой правки `Path` в файле больше не используется, и ruff покраснеет на неиспользованном импорте.
 
 - [ ] **Step 7: Перевести sender и metrics на `paths`**
 
@@ -233,7 +233,7 @@ def connect() -> sqlite3.Connection:
 
 добавить `import paths` в оба файла.
 
-В `backend/collector/services/metrics.py` удалить функцию `threads_db_path()` (строки 101-103), константу `WRITER_HOME` (строка 24) и импорт `tomllib` (строка 14); заменить оба вызова (`writer_stats`, `sender_stats`) на `db_path = paths.state_db()`, добавить `import paths`. Шапку модуля поправить — абзац про чтение пути из `writer/config.toml` больше не описывает код:
+В `backend/collector/services/metrics.py` удалить функцию `threads_db_path()` (строки 101-103), константу `WRITER_HOME` (строка 24) и импорты `tomllib` (строка 14) и `from pathlib import Path` (строка 17) — после правки оба перестают использоваться; заменить оба вызова (`writer_stats`, `sender_stats`) на `db_path = paths.state_db()`, добавить `import paths`. Шапку модуля поправить — абзац про чтение пути из `writer/config.toml` больше не описывает код:
 
 ```python
 Путь до невосстановимого слоя приходит из backend/paths.py — единственного
@@ -251,7 +251,7 @@ def connect() -> sqlite3.Connection:
 
 с `import paths` в шапке каждого файла (`engine.DERIVED` в тех же строках остаётся как было).
 
-`backend/collector/tests/test_jobs.py:108` проверял согласие путей через удалённую функцию. Заменить на проверку владельца — и **переименовать локальную переменную `paths` в строке 114**, иначе присваивание сделает имя локальным на всю функцию и строка 108 упадёт `UnboundLocalError`:
+`backend/collector/tests/test_jobs.py:108` проверял согласие путей через удалённую функцию. В `test_frontend_contract` заменить строки 108-118 целиком — и **обязательно переименовать локальную переменную `paths`**, иначе присваивание сделает имя локальным на всю функцию и строка 108 упадёт `UnboundLocalError`:
 
 ```python
     assert paths.state_db().name == "state.db", \
@@ -260,10 +260,12 @@ def connect() -> sqlite3.Connection:
     from sender.routes import sender
 
     assert sender.router.prefix == "/api/sender"
-    routes = {route.path for route in sender.router.routes}
+    mounted = {route.path for route in sender.router.routes}
+    assert {"/api/sender", "/api/sender/numbers", "/api/sender/queue",
+            "/api/sender/autopilot"} <= mounted, mounted
 ```
 
-Ниже в той же функции заменить оставшиеся обращения к переменной `paths` на `routes` (`grep -n "paths" backend/collector/tests/test_jobs.py`), добавить `import paths` в шапку файла.
+Добавить `import paths` в шапку файла.
 
 В `backend/sender/tests/test_config.py` удалить `test_load_resolves_state_db_to_absolute_path` целиком: ключа `state_db` в конфиге больше нет, а путь проверяет `collector/tests/test_paths.py`.
 
@@ -638,6 +640,7 @@ sandbox/tests/test_import_graph.py.
 не копия DDL: база прогона обязана отличаться от боевой только содержимым.
 """
 
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -694,8 +697,7 @@ def create(company_id: str, warmed: bool, moment: datetime) -> Run:
     _apply_schemas(run.path)
     _write_meta(run.path, {"company_id": company_id, "created_at": run.created_at,
                            "warmed": str(int(warmed)), "offset_seconds": "0"})
-    with sqlite3.connect(run.path) as db:
-        db.row_factory = sqlite3.Row
+    with closing(sqlite3.connect(run.path)) as db:
         numbers.register(db, SANDBOX_NUMBER, session_dir="sandbox", now=moment,
                          skip_warmup=warmed)
     return run
@@ -705,7 +707,11 @@ def all() -> list[Run]:
     """Новые сверху: список прогонов читается как список чатов."""
     if not RUNS_DIR.exists():
         return []
-    found = [_read(path) for path in RUNS_DIR.glob("*.db")]
+    # Файл без меты — прогон, чьё создание оборвалось между схемой и метой.
+    # Пропускается, а не роняет список: иначе одна такая крошка навсегда
+    # убила бы страницу, и починить её было бы нечем, кроме shell.
+    found = [run for run in (_read_or_none(path) for path in RUNS_DIR.glob("*.db"))
+             if run is not None]
     return sorted(found, key=lambda run: run.run_id, reverse=True)
 
 
@@ -764,25 +770,34 @@ def _apply_schemas(path: Path) -> None:
     создаёт система 2, и колонки состояния системы 3 доливаются в уже
     существующие таблицы — как и при боевом старте процесса."""
     thread_store.connect(path).close()
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db:
         db.executescript(store.state_schema())
         db.execute(META)
+        db.commit()
     migrate.connect(path).close()
 
 
 def _write_meta(path: Path, values: dict[str, str]) -> None:
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db:
         db.executemany("INSERT INTO sandbox_meta (key, value) VALUES (?, ?)"
                        " ON CONFLICT (key) DO UPDATE SET value = excluded.value",
                        list(values.items()))
+        db.commit()
 
 
 def _read(path: Path) -> Run:
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db:
         meta = dict(db.execute("SELECT key, value FROM sandbox_meta").fetchall())
     return Run(run_id=path.stem, company_id=meta["company_id"],
                created_at=meta["created_at"], warmed=meta["warmed"] == "1",
                offset=timedelta(seconds=int(meta["offset_seconds"])))
+
+
+def _read_or_none(path: Path) -> Run | None:
+    try:
+        return _read(path)
+    except (sqlite3.DatabaseError, KeyError):
+        return None
 ```
 
 - [ ] **Step 5: Убедиться, что тесты проходят**
@@ -1009,7 +1024,18 @@ def reset() -> None:
     _current = Faults()
 ```
 
-- [ ] **Step 4: Написать `backend/sandbox/node.py`**
+- [ ] **Step 4: Добавить `sandbox_self_url` в настройки**
+
+В `backend/config.py`, в класс `Settings`, после `sender_node_url`:
+
+```python
+    # Куда песочница шлёт события самой себе. Отдельной переменной, а не
+    # склейкой из uvicorn_host: адрес вебхука должен переживать смену хоста
+    # бэкенда (докер слушает 0.0.0.0, а ходить туда по 0.0.0.0 нельзя).
+    sandbox_self_url: str = "http://127.0.0.1:8787"
+```
+
+- [ ] **Step 5: Написать `backend/sandbox/node.py`**
 
 ```python
 """Подменный Node: те же пять ручек, что у sender/node/index.js, и столько же
@@ -1158,17 +1184,6 @@ async def _status_later(number: str, provider_id: str, status: int) -> None:
             log.warning("статус %s не доставлен (попытка %s): %s",
                         provider_id, attempt + 1, error)
     log.error("статус %s так и не нашёл строку очереди", provider_id)
-```
-
-- [ ] **Step 5: Добавить `sandbox_self_url` в настройки**
-
-В `backend/config.py`, в класс `Settings`, после `sender_node_url`:
-
-```python
-    # Куда песочница шлёт события самой себе. Отдельной переменной, а не
-    # склейкой из uvicorn_host: адрес вебхука должен переживать смену хоста
-    # бэкенда (докер слушает 0.0.0.0, а ходить туда по 0.0.0.0 нельзя).
-    sandbox_self_url: str = "http://127.0.0.1:8787"
 ```
 
 - [ ] **Step 6: Убедиться, что тесты проходят**
@@ -1342,6 +1357,7 @@ Expected: FAIL — `ImportError: cannot import name 'routes' from 'sandbox'`
 """
 
 import logging
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 import sqlite3
@@ -1451,7 +1467,7 @@ def thread_of_active_run() -> str:
     """Тред прогона — он один: прогон заводится на одного лида."""
     if runs.active() is None:
         raise HTTPException(409, "активного прогона нет: сначала создайте его")
-    with sqlite3.connect(paths.state_db()) as db:
+    with closing(sqlite3.connect(paths.state_db())) as db:
         row = db.execute("SELECT thread_id FROM threads"
                          " ORDER BY created_at LIMIT 1").fetchone()
     if row is None:
@@ -1732,7 +1748,7 @@ def _fate(db: sqlite3.Connection, message_id: int) -> dict | None:
 @router.get("/chat")
 async def read_chat() -> dict:
     thread_id = thread_of_active_run()
-    with sqlite3.connect(paths.state_db()) as db:
+    with closing(sqlite3.connect(paths.state_db())) as db:
         return chat.view(db, thread_id)
 ```
 
@@ -1931,7 +1947,7 @@ def mount(app: FastAPI, settings) -> None:
 sandbox.mount(app, settings)
 ```
 
-с `import sandbox` и `from config import settings` в шапке (проверить, не импортирован ли `settings` уже).
+с `import sandbox` и `from config import settings` в шапке: `settings` в `collector/api.py` сейчас не импортирован (`grep -n "from config" backend/collector/api.py` — пусто).
 
 - [ ] **Step 6: Убедиться, что тесты проходят**
 
@@ -2108,6 +2124,7 @@ import {
   fetchSandboxFaults,
   fetchSandboxRuns,
   moveSandboxClock,
+  queueMessage,
   requestDraft,
   sendSandboxIncoming,
   setSandboxFaults,
@@ -2183,6 +2200,9 @@ export default function SandboxPage() {
   }
 
   const active = runs.find((run) => run.active) ?? null;
+  // Ставится последний непоставленный черновик: очередь принимает текст, а
+  // какой именно — единственный вопрос, на который лента уже отвечает.
+  const draft = chat?.bubbles.filter((bubble) => bubble.kind === "draft").at(-1) ?? null;
 
   return (
     <>
@@ -2289,6 +2309,13 @@ export default function SandboxPage() {
                 onClick={() => act(() => requestDraft(active!.company_id, "first"))}
               >
                 Черновик первого письма
+              </button>
+              <button
+                className="btn-secondary"
+                disabled={busy || !draft || !chat}
+                onClick={() => act(() => queueMessage(chat!.thread_id, draft!.text))}
+              >
+                Поставить в очередь
               </button>
             </div>
           </div>
@@ -2532,7 +2559,7 @@ cd backend && SANDBOX=1 SENDER_NODE_URL=http://127.0.0.1:8787/api/sandbox/node u
 
 Открыть `http://localhost:3000/sandbox`, вписать `company_id` любой компании из `/leads`, нажать «Новый прогон» → «Черновик первого письма». Ожидается: черновик появился в ленте серой подписью «черновик».
 
-Дальше — очередь через `/threads` («Поставить в очередь»), затем «к открытию окна» и «+15 мин» на пульте. Ожидается: пузырь меняет подпись на «в очереди», потом «отправлено», потом «доставлено» — на это уходит один-два тика воркера (20 секунд каждый).
+Дальше — «Поставить в очередь» на той же странице, затем «к открытию окна» и «+15 мин» на пульте. Ожидается: пузырь меняет подпись на «в очереди», потом «отправлено», потом «доставлено» — на это уходит один-два тика воркера (20 секунд каждый).
 
 Ответить как лид «сколько стоит?» → в ленте появляется входящее, следующим тиком — ответ продавца.
 
