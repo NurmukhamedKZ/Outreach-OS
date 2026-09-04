@@ -5,6 +5,7 @@
 
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -234,6 +235,25 @@ def test_every_outcome_is_declared():
     экран строкой, которую никто не ждал."""
     assert {"answered", "escalated", "closed", "touched", "exhausted"} \
         <= set(worker.TICK_OUTCOMES)
+
+
+def test_the_frontend_has_a_label_for_every_tick_outcome():
+    """Исход без подписи приедет на экран сырым английским словом. Список
+    подписей лежит во фронтенде (чистая презентация), но полнота его —
+    свойство бэкенда: словарь значений здесь."""
+    vocabulary = (Path(__file__).parents[3] / "frontend/app/outcomes.ts").read_text()
+    missing = [outcome for outcome in worker.TICK_OUTCOMES
+               if f"\n  {outcome}: {{" not in vocabulary]
+    assert not missing, f"нет подписи для исходов: {missing}"
+
+
+def test_the_frontend_has_a_label_for_every_thread_status():
+    """То же для статусов треда: `escalated` без подписи — это слово
+    «escalated» в инбоксе оператора."""
+    vocabulary = (Path(__file__).parents[3] / "frontend/app/outcomes.ts").read_text()
+    missing = [status for status in conversation.STATUSES
+               if f"\n  {status}: {{" not in vocabulary]
+    assert not missing, f"нет подписи для статусов: {missing}"
 
 
 async def test_a_reply_does_not_spend_a_cold_touch(db):

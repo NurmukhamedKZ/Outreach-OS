@@ -18,6 +18,7 @@
   --success: #16a34a;
   --error: #b42318;
   --error-soft: #fdf1f0;
+  --attention: #ab6400;
   --radius-btn: 8px;
   --radius-card: 12px;
   --font: var(--font-sans), -apple-system, system-ui, sans-serif;
@@ -1358,6 +1359,36 @@ a.nav-item:hover {
 }
 
 /* --- состояния ---------------------------------------------------------------------- */
+
+/* Тон исхода: один класс — один смысл. Подпись и тон приходят из
+   app/outcomes.ts, здесь только цвет. */
+.tone {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.tone.is-stop {
+  background: var(--error-soft);
+  color: var(--error);
+}
+
+.tone.is-attention {
+  background: #fdf6e7;
+  color: var(--attention);
+}
+
+.tone.is-ok {
+  background: var(--surface-strong);
+  color: var(--ink);
+}
+
+.tone.is-idle {
+  background: transparent;
+  color: var(--muted);
+}
 
 .placeholder {
   padding: 60px 24px;
