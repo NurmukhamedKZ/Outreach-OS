@@ -92,10 +92,12 @@ def relocate(db: sqlite3.Connection, number: str, now: datetime, config: dict) -
     for thread in _threads_of(db, number):
         with db:
             if thread["thread_id"] not in cold:
-                conversation.set_status(db, thread["thread_id"], "escalated")
+                conversation.set_status(db, thread["thread_id"], "escalated",
+                                        f"номер {number} выбыл, а в треде уже шёл диалог")
                 escalated += 1
                 continue
-            conversation.set_status(db, thread["thread_id"], "blocked_channel")
+            conversation.set_status(db, thread["thread_id"], "blocked_channel",
+                                    f"номер {number} выбыл, ищем замену")
         try:
             spare = take(spare_room)
         except NoNumberAvailableError:
@@ -103,7 +105,8 @@ def relocate(db: sqlite3.Connection, number: str, now: datetime, config: dict) -
             continue
         with db:
             conversation.assign_number(db, thread["thread_id"], spare)
-            conversation.set_status(db, thread["thread_id"], "queued")
+            conversation.set_status(db, thread["thread_id"], "queued",
+                                    f"переехал на номер {spare}")
         moved += 1
     log.warning("номер %s отпустил треды: переехало %s, к человеку %s, ждут %s",
                 number, moved, escalated, stranded)
@@ -138,7 +141,8 @@ def rescue_stranded(db: sqlite3.Connection, now: datetime, config: dict) -> int:
             break                     # свободных нет — остальным тем более
         with db:
             conversation.assign_number(db, thread["thread_id"], spare)
-            conversation.set_status(db, thread["thread_id"], "queued")
+            conversation.set_status(db, thread["thread_id"], "queued",
+                                    f"нашёлся свободный номер {spare}")
         rescued += 1
     if rescued:
         log.info("из blocked_channel уведено тредов: %s", rescued)

@@ -58,7 +58,8 @@ async def touch_one(db, transport, config: dict, now: datetime) -> str | None:
     if draft.stop:
         with db:
             conversation.clear_schedule(db, thread["thread_id"])
-            conversation.set_status(db, thread["thread_id"], "exhausted")
+            conversation.set_status(db, thread["thread_id"], "exhausted",
+                                    "новых поводов написать нет")
         log.info("тред %s исчерпан: новых поводов нет", thread["thread_id"])
         return "exhausted"
 

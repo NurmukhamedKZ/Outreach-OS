@@ -76,7 +76,7 @@ def test_delivery_does_not_resurrect_a_thread_the_human_took(db, http):
     """Из escalated автоматического выхода нет — даже по доставке."""
     sent_row(db)
     with db:
-        conversation.set_status(db, "+77010000001", "escalated")
+        conversation.set_status(db, "+77010000001", "escalated", "тест: тред у человека")
 
     http.post("/api/sender/webhook", json={
         "kind": "status", "number": "+77001112233",

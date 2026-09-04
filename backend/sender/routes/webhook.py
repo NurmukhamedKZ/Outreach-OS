@@ -150,7 +150,8 @@ def _wake_the_thread(db: sqlite3.Connection, provider_id: str) -> None:
         return
     thread = conversation.get(db, row["thread_id"])
     if thread and thread["status"] == STARTS_THE_CHAT:
-        conversation.set_status(db, row["thread_id"], "active")
+        conversation.set_status(db, row["thread_id"], "active",
+                                "первое сообщение доставлено")
         log.info("тред %s -> active: доставлено", row["thread_id"])
 
 
@@ -214,15 +215,18 @@ def _settle(db, thread: dict, message_id: int, moment: datetime,
     `handled_at` здесь означает «тику тут делать нечего»: агента не позовут."""
     thread_id = thread["thread_id"]
     if refused:
-        conversation.set_status(db, thread_id, "closed_refused")
+        conversation.set_status(db, thread_id, "closed_refused",
+                                f"стоп-слово в ответе: {refused}")
         conversation.mark_handled(db, message_id, moment)
         return
     if not has_text:
-        conversation.set_status(db, thread_id, "escalated")
+        conversation.set_status(db, thread_id, "escalated",
+                                "пришло медиа без текста — автомат не читает")
         conversation.mark_handled(db, message_id, moment)
         return
     if thread["status"] == REVIVED_BY_A_REPLY:
-        conversation.set_status(db, thread_id, "active")
+        conversation.set_status(db, thread_id, "active",
+                                "лид ответил, тред снова живой")
         return
     if thread["status"] in conversation.AUTOMATON_STOPS:
         # Тред, куда автомату писать нельзя, не имеет права будить агента.

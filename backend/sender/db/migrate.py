@@ -63,6 +63,7 @@ def connect(path: Path) -> sqlite3.Connection:
 # заводить свою копию треда значило бы два источника правды на одну переписку.
 CONVERSATION_COLUMNS = (
     ("threads", "our_number", "TEXT"),
+    ("threads", "status_reason", "TEXT"),
     ("threads", "auto_replies", "INTEGER NOT NULL DEFAULT 0"),
     ("threads", "next_touch_at", "TEXT"),
     ("threads", "touch_no", "INTEGER NOT NULL DEFAULT 0"),

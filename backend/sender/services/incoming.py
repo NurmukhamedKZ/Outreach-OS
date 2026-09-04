@@ -16,6 +16,7 @@ import re
 from datetime import datetime
 from functools import lru_cache
 
+import activity
 from sender import notify
 from sender.db import conversation
 from sender.services import config as sender_config, pool, queue, refusal
@@ -92,6 +93,8 @@ async def _answer(db, transport, thread: dict, row: dict, text: str,
         message_id = conversation.add_draft(db, thread["thread_id"], text, ANGLE)
         conversation.bump_auto_replies(db, thread["thread_id"])
         conversation.mark_handled(db, row["message_id"], now)
+    activity.record("sender.tick", "answered", subject=thread["thread_id"],
+                    detail=text)
     if sender_config.autopilot() not in REPLY_MODES:
         log.info("ответ в тред %s остался черновиком: автопилот выключен",
                  thread["thread_id"])
@@ -112,9 +115,12 @@ async def _verdict(db, thread: dict, row: dict, reply, now: datetime) -> str:
         return await _escalate(db, thread, row, now,
                                f"агент вернул статус {reply.status!r}")
     with db:
-        conversation.set_status(db, thread["thread_id"], status)
+        conversation.set_status(db, thread["thread_id"], status, reply.reason)
         conversation.mark_handled(db, row["message_id"], now)
     log.info("тред %s -> %s: %s", thread["thread_id"], status, reply.reason)
+    activity.record("sender.tick", "closed" if status != "escalated" else "escalated",
+                    subject=thread["thread_id"],
+                    detail=f"{reply.status}: {reply.reason}")
     if status == "closed_refused":
         # После коммита: шов ходит в чужую базу, и держать на нём открытую
         # транзакцию state.db значило бы блокировать очередь.
@@ -128,9 +134,11 @@ async def _verdict(db, thread: dict, row: dict, reply, now: datetime) -> str:
 async def _escalate(db, thread: dict, row: dict, now: datetime, why: str) -> str:
     """Тупик для автомата. Из escalated выходит только человек, руками."""
     with db:
-        conversation.set_status(db, thread["thread_id"], "escalated")
+        conversation.set_status(db, thread["thread_id"], "escalated", why)
         conversation.mark_handled(db, row["message_id"], now)
     log.warning("тред %s эскалирован: %s", thread["thread_id"], why)
+    activity.record("sender.tick", "escalated", subject=thread["thread_id"],
+                    detail=why)
     await notify.send(f"{thread['thread_id']} — разбирай руками: {why}")
     return "escalated"
 

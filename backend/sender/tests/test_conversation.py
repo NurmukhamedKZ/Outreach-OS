@@ -32,6 +32,15 @@ def test_get_returns_the_state_columns(db):
     assert conversation.get(db, "нет такого треда") is None
 
 
+def test_a_status_carries_the_reason_it_was_set_with(db):
+    """Статус без причины — это `escalated` в инбоксе, на который оператор
+    смотрит и не знает, что делать."""
+    open_thread(db, "+77010000001")
+    with db:
+        conversation.set_status(db, "+77010000001", "escalated", "лид назвал цену")
+    assert conversation.get(db, "+77010000001")["status_reason"] == "лид назвал цену"
+
+
 def test_number_is_assigned_once_and_does_not_change(db):
     """Для лида сообщение с другого номера — новый чат без истории."""
     open_thread(db)

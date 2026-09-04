@@ -6,6 +6,7 @@
 
 import pytest
 
+import activity
 from sender.db import conversation, numbers
 from sender.services import config as sender_config, incoming, refusal
 from sender.tests.conftest import NOW, FakeTransport
@@ -185,3 +186,44 @@ async def test_the_fourth_visit_escalates_instead_of_calling_the_model(answered,
 
 async def test_nothing_unhandled_is_not_an_error(db):
     assert await incoming.handle_one(db, FakeTransport(), CONFIG, NOW) is None
+
+
+async def test_an_escalation_says_why_in_the_thread_and_in_the_journal(answered, monkeypatch):
+    """Причина эскалации живёт дольше строки в логе: оператор открывает тред
+    через час, а не в ту секунду, когда лид написал."""
+    говорит(monkeypatch, Reply(text="это будет 200 000 ₸", status=None, reason=None))
+
+    assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "escalated"
+
+    thread = conversation.get(answered, "+77010000001")
+    assert thread["status"] == "escalated"
+    assert "цен" in thread["status_reason"]
+    event = activity.recent(actor="sender.tick")[0]
+    assert event["outcome"] == "escalated"
+    assert event["subject"] == "+77010000001"
+    assert "цен" in (event["detail"] or "")
+
+
+async def test_a_verdict_keeps_the_agents_own_words(answered, monkeypatch):
+    """Вердикт `interested` без «почему» не отличим от `interested` по ошибке
+    классификатора — а разбирать их человеку."""
+    говорит(monkeypatch, Reply(text=None, status="interested",
+                               reason="просит прислать КП на почту"))
+
+    assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "escalated"
+
+    thread = conversation.get(answered, "+77010000001")
+    assert thread["status_reason"] == "просит прислать КП на почту"
+    assert "просит прислать КП" in (activity.recent(actor="sender.tick")[0]["detail"] or "")
+
+
+async def test_an_answer_shows_in_the_journal_what_we_wrote(answered, monkeypatch):
+    """«Что мы пишем лидам» — вопрос, на который журнал обязан отвечать без
+    открывания тредов по одному."""
+    говорит(monkeypatch, Reply(text="Цену назовём после разговора.", status=None, reason=None))
+
+    assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "answered"
+
+    event = activity.recent(actor="sender.tick")[0]
+    assert event["outcome"] == "answered"
+    assert event["detail"] == "Цену назовём после разговора."

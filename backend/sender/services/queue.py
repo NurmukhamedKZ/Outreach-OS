@@ -68,7 +68,8 @@ async def _first_number(db, transport, thread_id: str, now: datetime,
     number = pool.assign(db, now, config)          # NoNumberAvailableError наружу
     if not await transport.check(number, thread_id):
         with db:
-            conversation.set_status(db, thread_id, "unreachable")
+            conversation.set_status(db, thread_id, "unreachable",
+                                    "у номера нет WhatsApp")
         log.info("у %s нет WhatsApp — тред закрыт как unreachable", thread_id)
         raise NotReachableError(thread_id)
     with db:

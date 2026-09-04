@@ -23,7 +23,8 @@ STATUSES = ("queued", "active", "exhausted", "escalated", "unreachable",
 AUTOMATON_STOPS = ("escalated", "unreachable", "exhausted",
                    "closed_refused", "closed_junk")
 
-FIELDS = "thread_id, company_id, status, our_number, touch_no, auto_replies, next_touch_at"
+FIELDS = ("thread_id, company_id, status, status_reason, our_number, touch_no,"
+          " auto_replies, next_touch_at")
 
 
 class UnknownThreadError(Exception):
@@ -40,10 +41,16 @@ def get(db: sqlite3.Connection, thread_id: str) -> dict | None:
     return dict(row) if row else None
 
 
-def set_status(db: sqlite3.Connection, thread_id: str, status: str) -> None:
+def set_status(db: sqlite3.Connection, thread_id: str, status: str,
+               reason: str) -> None:
+    """Статус треда и почему он такой. Причина обязательна: статус без неё —
+    это `escalated` в инбоксе, на который оператор смотрит и не знает, что
+    делать. Слово «почему» дешевле здесь, чем в логе процесса, который к
+    моменту вопроса уже уехал."""
     if status not in STATUSES:
         raise ValueError(f"неизвестный статус треда: {status}")
-    db.execute("UPDATE threads SET status = ? WHERE thread_id = ?", (status, thread_id))
+    db.execute("UPDATE threads SET status = ?, status_reason = ? WHERE thread_id = ?",
+               (status, reason, thread_id))
 
 
 def assign_number(db: sqlite3.Connection, thread_id: str, our_number: str) -> None:
@@ -99,7 +106,7 @@ def bump_touch(db: sqlite3.Connection, thread_id: str, cadence: dict,
     if thread["touch_no"] > len(days):
         clear_schedule(db, thread_id)
         if thread["touch_no"] >= cadence["max_touches"] and not has_replies(db, thread_id):
-            set_status(db, thread_id, "exhausted")
+            set_status(db, thread_id, "exhausted", "касания кончились, лид не отвечал")
         return
     when = now + timedelta(days=days[thread["touch_no"] - 1])
     db.execute("UPDATE threads SET next_touch_at = ? WHERE thread_id = ?",
