@@ -237,9 +237,13 @@ def _seller_move(threads, thread, history):
 
 def state(leads, threads, company_id):
     channel = channel_of(leads, company_id)
+    record = thread_store.thread(threads, channel[1])
     return {
         "thread_id": channel[1],
         "channel_kind": channel[0],
+        "status": record["status"] if record else None,
+        "status_reason": record["status_reason"] if record else None,
+        "our_number": record["our_number"] if record else None,
         "messages": thread_store.history(threads, channel[1]),
         "draft": thread_store.pending_draft(threads, channel[1]),
         "stop": False,

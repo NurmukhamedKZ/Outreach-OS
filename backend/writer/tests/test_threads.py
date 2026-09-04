@@ -301,6 +301,60 @@ def test_inbox_works_without_the_column_system_three_owns():
     db.close()
 
 
+def test_the_inbox_carries_the_status_and_the_number_we_write_from():
+    """Статус приезжал с бэкенда и раньше, но без причины и без номера строка
+    инбокса не отвечала ни на «что с ним», ни на «через какой номер»."""
+    db = thread_store.connect(":memory:")
+    db.execute("ALTER TABLE threads ADD COLUMN status TEXT NOT NULL DEFAULT 'queued'")
+    db.execute("ALTER TABLE threads ADD COLUMN status_reason TEXT")
+    db.execute("ALTER TABLE threads ADD COLUMN our_number TEXT")
+    thread_store.open_thread(db, "+77010000001", "c1", SEED)
+    db.execute(
+        "UPDATE threads SET status = ?, status_reason = ?, our_number = ?"
+        " WHERE thread_id = ?",
+        ("escalated", "лид назвал цену", "+77001112233", "+77010000001"),
+    )
+    db.commit()
+
+    row = thread_store.inbox(db)[0]
+    assert row["status"] == "escalated"
+    assert row["status_reason"] == "лид назвал цену"
+    assert row["our_number"] == "+77001112233"
+    db.close()
+
+
+def test_the_inbox_survives_a_database_without_the_sender_columns():
+    """Колонки принадлежат системе 3, и writer открывает базу там, где sender
+    ни разу не стартовал. Жёсткий SELECT уронил бы инбокс целиком."""
+    db = thread_store.connect(":memory:")
+    thread_store.open_thread(db, "+77010000001", "c1", SEED)
+
+    row = thread_store.inbox(db)[0]
+    assert row["status"] == "queued"
+    assert row["status_reason"] is None
+    assert row["our_number"] is None
+    db.close()
+
+
+def test_the_inbox_is_still_ordered_by_the_last_reply():
+    """Регрессия под этот план: новые колонки в SELECT сдвигают позиционный
+    номер в ORDER BY, и сортировка молча уезжает на счётчик черновиков."""
+    db = thread_store.connect(":memory:")
+    thread_store.open_thread(db, "+77010000001", "c1", SEED)
+    thread_store.open_thread(db, "+77010000002", "c2", SEED)
+    old = thread_store.add_draft(db, "+77010000001", "привет", "crm_widget")
+    db.execute("UPDATE messages SET sent_text = ?, sent_at = ? WHERE message_id = ?",
+               ("привет", "2026-01-01T10:00:00", old))
+    fresh = thread_store.add_draft(db, "+77010000002", "привет", "crm_widget")
+    db.execute("UPDATE messages SET sent_text = ?, sent_at = ? WHERE message_id = ?",
+               ("привет", "2026-09-01T10:00:00", fresh))
+    db.commit()
+
+    order = [row["thread_id"] for row in thread_store.inbox(db)]
+    assert order == ["+77010000002", "+77010000001"], order
+    db.close()
+
+
 def test_meeting_is_recorded_with_its_moment():
     import pytest
     db = thread_store.connect(":memory:")

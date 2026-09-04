@@ -102,8 +102,12 @@ def thread(db, thread_id):
     stage = "stage" if _has_column(db, "threads", "stage") else f"'{FIRST_STAGE}'"
     outcome = "outcome" if _has_column(db, "threads", "outcome") else "NULL"
     meeting_at = "meeting_at" if _has_column(db, "threads", "meeting_at") else "NULL"
+    status = "status" if _has_column(db, "threads", "status") else "'queued'"
+    reason = "status_reason" if _has_column(db, "threads", "status_reason") else "NULL"
+    number = "our_number" if _has_column(db, "threads", "our_number") else "NULL"
     row = db.execute(
-        f"SELECT thread_id, company_id, seed, created_at, {stage}, {outcome}, {meeting_at}"
+        f"SELECT thread_id, company_id, seed, created_at, {stage}, {outcome}, {meeting_at},"
+        f" {status}, {reason}, {number}"
         " FROM threads WHERE thread_id = ?",
         (thread_id,),
     ).fetchone()
@@ -111,7 +115,8 @@ def thread(db, thread_id):
         return None
     return {"thread_id": row[0], "company_id": row[1],
             "seed": json.loads(row[2]), "created_at": row[3], "stage": row[4],
-            "outcome": row[5], "meeting_at": row[6]}
+            "outcome": row[5], "meeting_at": row[6],
+            "status": row[7], "status_reason": row[8], "our_number": row[9]}
 
 
 def set_stage(db, thread_id: str, stage: str) -> None:
@@ -153,6 +158,9 @@ def inbox(db):
     # перепиской в escalated, и колонка, созданная раньше него, украла бы эту
     # разметку. Значит терпим отсутствие — как history терпит отсутствие outbox.
     status = "t.status" if _has_column(db, "threads", "status") else "'queued'"
+    reason = ("t.status_reason" if _has_column(db, "threads", "status_reason")
+              else "NULL")
+    number = "t.our_number" if _has_column(db, "threads", "our_number") else "NULL"
     rows = db.execute(
         f"SELECT t.thread_id, t.company_id, t.created_at, {status},"
         " (SELECT count(*) FROM messages m WHERE m.thread_id = t.thread_id"
@@ -164,7 +172,8 @@ def inbox(db):
         " (SELECT sent_at FROM messages m WHERE m.thread_id = t.thread_id"
         "  AND m.sent_text IS NOT NULL ORDER BY m.message_id DESC LIMIT 1),"
         " (SELECT sent_text FROM messages m WHERE m.thread_id = t.thread_id"
-        "  AND m.sent_text IS NOT NULL ORDER BY m.message_id DESC LIMIT 1)"
+        "  AND m.sent_text IS NOT NULL ORDER BY m.message_id DESC LIMIT 1),"
+        f" {reason}, {number}"
         f" FROM threads t ORDER BY CASE {status} WHEN 'escalated' THEN 0 ELSE 1 END,"
         "   CASE (SELECT m.role FROM messages m WHERE m.thread_id = t.thread_id"
         "         AND m.sent_text IS NOT NULL ORDER BY m.message_id DESC LIMIT 1)"
@@ -173,7 +182,7 @@ def inbox(db):
     ).fetchall()
     return [dict(zip(
         ("thread_id", "company_id", "created_at", "status", "sent", "replies",
-         "drafts", "last_at", "last_message"), row,
+         "drafts", "last_at", "last_message", "status_reason", "our_number"), row,
     )) for row in rows]
 
 

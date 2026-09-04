@@ -23,6 +23,7 @@ import {
 } from "../api";
 import MessageComposer from "@/components/MessageComposer";
 import { useLive } from "@/components/live";
+import { threadStatus } from "../outcomes";
 
 const WHEN = new Intl.DateTimeFormat("ru", {
   day: "numeric",
@@ -143,11 +144,14 @@ export default function Threads() {
                   {thread.last_message ? ` · ${thread.last_message}` : ""}
                 </span>
               </span>
-              <span
-                className={`inbox-count mono${thread.replies > 0 ? " has-replies" : ""}`}
-                title={`${thread.sent} отправлено, ${thread.replies} ответов, ${thread.drafts} черновиков`}
-              >
-                {thread.replies > 0 ? `↩ ${thread.replies}` : `→ ${thread.sent}`}
+              <span className="inbox-marks">
+                <InboxStatusBadge status={thread.status} />
+                <span
+                  className={`inbox-count mono${thread.replies > 0 ? " has-replies" : ""}`}
+                  title={`${thread.sent} отправлено, ${thread.replies} ответов, ${thread.drafts} черновиков`}
+                >
+                  {thread.replies > 0 ? `↩ ${thread.replies}` : `→ ${thread.sent}`}
+                </span>
               </span>
             </button>
           ))}
@@ -174,7 +178,25 @@ export default function Threads() {
                   {conversation.thread_id}
                 </a>
                 <Link href={`/leads/${encodeURIComponent(selected)}`}>карточка лида</Link>
+                {conversation.our_number && (
+                  <span className="inbox-sub mono">
+                    пишем с {conversation.our_number}
+                  </span>
+                )}
               </header>
+
+              {conversation.status && (
+                <p className="thread-verdict">
+                  <span className={`tone is-${threadStatus(conversation.status).tone}`}>
+                    {threadStatus(conversation.status).label}
+                  </span>
+                  {conversation.status_reason
+                    ? <span className="inbox-sub">{conversation.status_reason}</span>
+                    : <span className="inbox-sub">
+                        причина не сохранилась — статус поставлен до того, как её начали писать
+                      </span>}
+                </p>
+              )}
 
               <ol className="thread-log">
                 {conversation.messages.map((message, index) => (
@@ -284,4 +306,9 @@ export default function Threads() {
 function firstLabel(kind: string, conversation: Conversation) {
   if (conversation.messages.length === 0) return "Черновик первого сообщения";
   return kind === "reply" ? "Черновик ответа" : "Черновик с новым поводом";
+}
+
+function InboxStatusBadge({ status }: { status: string }) {
+  const { label, tone } = threadStatus(status);
+  return <span className={`tone is-${tone}`}>{label}</span>;
 }

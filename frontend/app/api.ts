@@ -280,6 +280,13 @@ export type ThreadMessage = {
 export type Conversation = {
   thread_id: string;
   channel_kind: string;
+  /** Статус ведёт система 3; null — треда ещё нет, черновик будет первым. */
+  status: string | null;
+  /** Почему статус такой. null у тредов, чей статус ставили до того, как
+   *  причину начали сохранять. */
+  status_reason: string | null;
+  /** Наш номер, с которого лид видит переписку. Один на тред. */
+  our_number: string | null;
   messages: ThreadMessage[];
   draft: { message_id: number; draft_text: string; angle: string | null } | null;
   /** Агент советует не писать: нового повода в данных нет. Решает оператор. */
@@ -306,11 +313,14 @@ export type ThreadSummary = {
   company_id: string;
   company_name: string;
   created_at: string;
+  status: string;
   sent: number;
   replies: number;
   drafts: number;
   last_at: string | null;
   last_message: string | null;
+  status_reason: string | null;
+  our_number: string | null;
 };
 
 export function fetchThreads() {

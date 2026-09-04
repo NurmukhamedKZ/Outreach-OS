@@ -1345,6 +1345,12 @@ a.nav-item:hover {
   font-size: 12px;
 }
 
+.inbox-marks {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .inbox-count {
   font-size: 12px;
   padding: 3px 9px;
@@ -1388,6 +1394,13 @@ a.nav-item:hover {
 .tone.is-idle {
   background: transparent;
   color: var(--muted);
+}
+
+.thread-verdict {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
 }
 
 .placeholder {
