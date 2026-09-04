@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   addIncoming,
+  channelLink,
   fetchConversation,
   fetchPrompt,
   fetchQueue,
@@ -136,6 +137,7 @@ export default function Threads() {
             >
               <span className="row-text">
                 <span className="inbox-name">{thread.company_name}</span>
+                <span className="inbox-sub mono">{thread.thread_id}</span>
                 <span className="inbox-sub">
                   {thread.last_at ? WHEN.format(new Date(thread.last_at)) : "ещё не отправляли"}
                   {thread.last_message ? ` · ${thread.last_message}` : ""}
@@ -162,10 +164,15 @@ export default function Threads() {
           {selected && conversation ? (
             <>
               <header className="cold-head">
-                <b className="row-name">
-                  {summary?.company_name ?? selected}{" "}
-                  <span className="mono">{conversation.thread_id}</span>
-                </b>
+                <b className="row-name">{summary?.company_name ?? selected}</b>
+                <a
+                  className="ghost mono"
+                  href={channelLink({ kind: "whatsapp", handle: conversation.thread_id })}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {conversation.thread_id}
+                </a>
                 <Link href={`/leads/${encodeURIComponent(selected)}`}>карточка лида</Link>
               </header>
 

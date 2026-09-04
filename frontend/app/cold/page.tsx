@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowLeftIcon, ArrowRightIcon } from "@phosphor-icons/react";
-import { fetchCatalogue, fetchColdDrafts, type ColdDraft, type Pipeline } from "../api";
+import { channelLink, fetchCatalogue, fetchColdDrafts, type ColdDraft, type Pipeline } from "../api";
 import MessageComposer from "@/components/MessageComposer";
 import RefusalForm from "@/components/RefusalForm";
 import { PipelineActions } from "@/components/JobMonitor";
@@ -76,7 +76,9 @@ export default function Cold() {
               <span className="rank mono">{position + 1}</span>
               <span className="row-text">
                 <span className="row-name">{entry.company_name}</span>
-                <span className="row-sub mono">{entry.city}</span>
+                <span className="row-sub mono">
+                  {entry.city} · {entry.thread_id}
+                </span>
               </span>
               <span className="intent mono">{entry.intent_score.toFixed(1)}</span>
             </button>
@@ -97,6 +99,14 @@ export default function Cold() {
                 <Link href={`/leads/${encodeURIComponent(draft.company_id)}`}>
                   карточка {draft.company_name}
                 </Link>
+                <a
+                  className="ghost mono"
+                  href={channelLink({ kind: "whatsapp", handle: draft.thread_id })}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {draft.thread_id}
+                </a>
                 <span className="cold-position mono">
                   {index + 1} из {drafts!.length}
                 </span>
