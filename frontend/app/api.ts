@@ -197,7 +197,15 @@ export function cancelJob(id: number) {
 export type DashboardStats = {
   sourcing: Stats & { available: number };
   writer: { threads: number; drafts: number; sent: number; replies: number };
-  sender: { status: string; numbers: Record<string, number> };
+  sender: {
+    status: string;
+    numbers: Record<string, number>;
+    // Необязательные не для красоты: metrics.sender_stats отдаёт "queue": {}
+    // на базе без таблиц системы 3.
+    queue: { queued?: number; sent_today?: number; overdue?: number };
+    threads: { waiting: number; escalated: number };
+    heartbeat: string | null;
+  };
   jobs: { active: Job | null; recent: Job[] };
   /** Режим стенда решает бэкенд: без него сайдбар рисовал бы «Песочницу»,
    *  ручек которой в приложении нет. */
@@ -206,6 +214,21 @@ export type DashboardStats = {
 
 export function fetchStats() {
   return json<DashboardStats>("/api/stats");
+}
+
+/** Что требуется от человека сейчас. Порядок задаёт бэкенд — по срочности. */
+export type Task = {
+  kind: "escalated" | "draft" | "stuck";
+  company_id: string;
+  company_name: string;
+  thread_id: string;
+  our_number: string | null;
+  why: string;
+  at: string | null;
+};
+
+export function fetchTasks(limit = 50) {
+  return json<{ tasks: Task[] }>(`/api/tasks?limit=${limit}`);
 }
 
 export type ActivityEvent = {

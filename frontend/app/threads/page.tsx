@@ -6,8 +6,9 @@
  *  касание (cold / followup / reply) и что автомат — только его собственность.
  */
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   addIncoming,
   channelLink,
@@ -35,9 +36,23 @@ const WHEN = new Intl.DateTimeFormat("ru", {
 type PromptInfo = { hasPrompt: boolean; model: string | null };
 
 export default function Threads() {
+  return (
+    // useSearchParams требует границу Suspense при статической генерации —
+    // страница читает ?company= только на клиенте, серверу тут нечего ждать.
+    <Suspense fallback={null}>
+      <ThreadsPage />
+    </Suspense>
+  );
+}
+
+function ThreadsPage() {
   const { refreshTick } = useLive();
+  const params = useSearchParams();
   const [threads, setThreads] = useState<ThreadSummary[] | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  // Начальное значение, а не useEffect: ссылка с «Сегодня» открывает страницу
+  // заново, а переход внутри страницы (клик по строке инбокса) не должен
+  // спорить с параметром URL.
+  const [selected, setSelected] = useState<string | null>(params.get("company"));
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [queue, setQueue] = useState<QueueRow[]>([]);
   const [promptInfo, setPromptInfo] = useState<PromptInfo | null>(null);

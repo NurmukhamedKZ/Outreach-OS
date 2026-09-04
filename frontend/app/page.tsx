@@ -1,34 +1,106 @@
 "use client";
 
-/** Обзор: три системы одним экраном. Запуск — контекстный (на «Лидах» и
- *  «Холодных»), монитор джобы — в полоске наверху и на «Процессах», здесь
- *  только счётчики и последние запуски.
+/** «Сегодня»: список задач оператора первым, три системы — ниже одним экраном.
+ *  Счётчик отвечает на «сколько», задача — на «кто и почему»: `escalated: 3`
+ *  не говорит, кто эти трое, и оператор шёл искать их руками. Запуск —
+ *  контекстный (на «Лидах» и «Холодных»), монитор джобы — в полоске наверху
+ *  и на «Процессах».
  *
  *  Полминуты. Ничего не крутится зря: если джоба идёт, её видно из любого
  *  места; если нет, видна история последних.
  */
 
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { fetchTasks, type Task } from "./api";
 import { useLive } from "@/components/live";
 
 const WHEN = new Intl.DateTimeFormat("ru", { hour: "2-digit", minute: "2-digit" });
 
+const TASK_LABEL: Record<Task["kind"], string> = {
+  escalated: "ждёт вас",
+  stuck: "проверить в телефоне",
+  draft: "проверить черновик",
+};
+
+const TASK_TONE: Record<Task["kind"], "stop" | "attention"> = {
+  escalated: "stop",
+  stuck: "stop",
+  draft: "attention",
+};
+
+/** Куда ведёт задача. Черновик проверяют на «Холодных», диалог — в «Диалогах». */
+function hrefOf(task: Task) {
+  return task.kind === "draft"
+    ? "/cold"
+    : `/threads?company=${encodeURIComponent(task.company_id)}`;
+}
+
+/** Русское склонение «задача/задачи/задач» по последним двум цифрам числа. */
+function plural(n: number) {
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 14) return "задач";
+  const mod10 = n % 10;
+  if (mod10 === 1) return "задача";
+  if (mod10 >= 2 && mod10 <= 4) return "задачи";
+  return "задач";
+}
+
 export default function Overview() {
-  const { stats, jobs, connected } = useLive();
+  const { stats, jobs, refreshTick } = useLive();
+  const [tasks, setTasks] = useState<Task[] | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  useEffect(() => {
+    let stale = false;
+    fetchTasks()
+      .then((data) => !stale && setTasks(data.tasks))
+      .catch((error: Error) => !stale && setFailure(error.message));
+    return () => {
+      stale = true;
+    };
+  }, [refreshTick]);
 
   return (
     <>
       <header className="page-head">
-        <h1>Обзор</h1>
+        <h1>Сегодня</h1>
         <span className="page-sub">
-          {stats
-            ? `${stats.sourcing.available} лидов готовы к работе`
-            : connected
-              ? "загружаем счётчики…"
-              : "ждём бэкенд"}
+          {tasks === null
+            ? "смотрим, что требуется…"
+            : tasks.length === 0
+              ? "задач нет — автомат справляется сам"
+              : `${tasks.length} ${plural(tasks.length)} требуют вас`}
         </span>
       </header>
 
-      <Guide />
+      {failure && <div className="failure">{failure}</div>}
+
+      <section className="card">
+        {tasks?.map((task) => (
+          <Link
+            key={`${task.kind}:${task.thread_id}`}
+            href={hrefOf(task)}
+            className="row task-row"
+          >
+            <span className="row-text">
+              <span className="inbox-name">{task.company_name}</span>
+              <span className="inbox-sub">{task.why}</span>
+              <span className="inbox-sub mono">
+                {task.thread_id}
+                {task.our_number ? ` · пишем с ${task.our_number}` : ""}
+              </span>
+            </span>
+            <span className={`tone is-${TASK_TONE[task.kind]}`}>{TASK_LABEL[task.kind]}</span>
+          </Link>
+        ))}
+        {tasks !== null && tasks.length === 0 && (
+          <p className="placeholder">
+            Ничего не ждёт. Новые задачи появятся сами: лид ответит, автомат
+            отдаст тред человеку или черновик встанет на проверку.
+          </p>
+        )}
+      </section>
 
       {stats ? (
         <div className="metrics">
@@ -125,6 +197,8 @@ export default function Overview() {
           {jobs.length === 0 && <p className="note">Пока ничего не запускали.</p>}
         </div>
       </section>
+
+      <Guide />
     </>
   );
 }

@@ -24,9 +24,10 @@ import activity
 import analytics
 import paths
 import sandbox
+import tasks
 from config import settings
 from collector.routes import (activity as activity_routes, analytics as analytics_routes, events, jobs, leads,
-                              operations, pipeline, runs, stats, suppression)
+                              operations, pipeline, runs, stats, suppression, tasks as tasks_routes)
 from collector.services import events as bus
 from collector.services import jobs as queue
 from collector.services import suppression as suppression_service
@@ -65,6 +66,7 @@ sender_refusal.use(_write_refusal)
 # приложения, а журнал — модуль верхнего уровня — не знает ни одной из систем.
 activity.use(paths.state_db())
 analytics.use(paths.state_db(), store.DERIVED)
+tasks.use(paths.state_db(), store.DERIVED)
 
 # next dev занимает следующий свободный порт, если 3000 занят чем-то другим
 # (в докере, например) — фиксированный список origins тогда молча ломает SSE
@@ -113,6 +115,7 @@ app.add_middleware(
 app.include_router(leads.router)
 app.include_router(activity_routes.router)
 app.include_router(analytics_routes.router)
+app.include_router(tasks_routes.router)
 app.include_router(pipeline.router)
 app.include_router(operations.router)
 app.include_router(runs.router)

@@ -17,7 +17,7 @@ import {
 import { useLive } from "./live";
 
 const NAV = [
-  { href: "/", label: "Обзор", icon: SquaresFourIcon },
+  { href: "/", label: "Сегодня", icon: SquaresFourIcon },
   { href: "/leads", label: "Лиды", icon: TargetIcon },
   { href: "/cold", label: "Холодные", icon: PaperPlaneTiltIcon },
   { href: "/threads", label: "Диалоги", icon: PenNibIcon },
@@ -33,6 +33,9 @@ export default function Sidebar() {
   // «Песочница» живёт только при SANDBOX=1: иначе страница встречала бы
   // оператора баннером «GET /api/sandbox/runs — 404» над пустым экраном.
   const nav = NAV.filter((item) => item.href !== "/sandbox" || stats?.sandbox);
+  // Задачи считаются из снапшота, а не запросом: он и так приезжает по SSE на
+  // каждое событие, и второй источник числа разошёлся бы с первым.
+  const waiting = (stats?.sender.threads.escalated ?? 0) + (stats?.writer.drafts ?? 0);
 
   return (
     <aside className="sidebar">
@@ -56,6 +59,9 @@ export default function Sidebar() {
           >
             <Icon size={17} />
             <span className="nav-label">{label}</span>
+            {(href === "/" || href === "/threads") && waiting > 0 && (
+              <span className="nav-badge">{waiting}</span>
+            )}
             {href !== "/" && active && kindOf(href) === systemOf(active.kind) && (
               <span className="nav-live" title={`${active.title}: ${active.status === "running" ? "выполняется" : "в очереди"}`} />
             )}
