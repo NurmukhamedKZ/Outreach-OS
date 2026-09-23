@@ -16,6 +16,8 @@ from contextlib import closing
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
+import sqlite_tools
+
 KINDS = ("escalated", "draft", "stuck")
 
 NO_REASON = "причина не сохранилась"
@@ -53,13 +55,13 @@ def _escalated_sql(db: sqlite3.Connection) -> str:
     подставляем литерал. `'queued' = 'escalated'` никогда не истинно, так что
     без миграции system 3 escalated-задач просто не находится, а не падает
     ошибка."""
-    status = "t.status" if _has_column(db, "threads", "status") else "'queued'"
-    reason = "t.status_reason" if _has_column(db, "threads", "status_reason") else "NULL"
-    number = "t.our_number" if _has_column(db, "threads", "our_number") else "NULL"
+    status = "t.status" if sqlite_tools.has_column(db, "threads", "status") else "'queued'"
+    reason = "t.status_reason" if sqlite_tools.has_column(db, "threads", "status_reason") else "NULL"
+    number = "t.our_number" if sqlite_tools.has_column(db, "threads", "our_number") else "NULL"
     handled_at = (
         "(SELECT max(m.handled_at) FROM messages m"
         "  WHERE m.thread_id = t.thread_id AND m.role = 'incoming')"
-    ) if _has_column(db, "messages", "handled_at") else "NULL"
+    ) if sqlite_tools.has_column(db, "messages", "handled_at") else "NULL"
     return (
         f"SELECT t.thread_id, t.company_id, {reason} AS status_reason,"
         f"       {number} AS our_number, {handled_at} AS at"
@@ -101,13 +103,13 @@ def tasks(limit: int = 50) -> list[dict]:
         # режиме ro на отсутствующем файле бросает — страница отвечала бы 500
         # вместо «задач нет».
         return []
-    with closing(_connect()) as db:
-        if not _has_table(db, "threads"):
+    with closing(sqlite_tools.connect_readonly(_state, _leads)) as db:
+        if not sqlite_tools.has_table(db, "threads"):
             return []
         rows = [Task("escalated", r["company_id"], "", r["thread_id"], r["our_number"],
                      r["status_reason"] or NO_REASON, r["at"])
                 for r in db.execute(_escalated_sql(db))]
-        if _has_table(db, "outbox"):
+        if sqlite_tools.has_table(db, "outbox"):
             rows += [Task("stuck", r["company_id"], "", r["thread_id"], r["our_number"],
                          STUCK_WHY, r["at"])
                     for r in db.execute(STUCK_SQL)]
@@ -135,21 +137,3 @@ def _names(db: sqlite3.Connection, company_ids: set[str]) -> dict[str, str]:
         tuple(company_ids),
     )
     return dict(rows)
-
-
-def _connect() -> sqlite3.Connection:
-    db = sqlite3.connect(f"file:{_state}?mode=ro", uri=True)
-    db.row_factory = sqlite3.Row
-    if _leads is not None and Path(_leads).exists():
-        db.execute(f"ATTACH DATABASE 'file:{_leads}?mode=ro' AS leads")
-    return db
-
-
-def _has_table(db: sqlite3.Connection, name: str) -> bool:
-    return db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-                      (name,)).fetchone() is not None
-
-
-def _has_column(db: sqlite3.Connection, table: str, column: str) -> bool:
-    return _has_table(db, table) and any(
-        row["name"] == column for row in db.execute(f"PRAGMA table_info({table})"))

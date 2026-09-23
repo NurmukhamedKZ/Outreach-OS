@@ -12,9 +12,10 @@ CREATE TABLE IF NOT EXISTS, а не DROP. leads.db пересобирается 
 
 import json
 import sqlite3
-from datetime import date, datetime
+from datetime import date
 
 import clock
+import sqlite_tools
 
 # Этап новорождённого треда. Живёт здесь, а не берётся из services.stages:
 # слой базы не зависит от слоя сервисов, и та же строка уже стоит дефолтом в
@@ -99,12 +100,12 @@ def thread(db, thread_id):
     except у входящих — то есть каждое сообщение лида молча уезжало бы в
     escalated. Тот же приём, что у history() с чужой таблицей outbox.
     """
-    stage = "stage" if _has_column(db, "threads", "stage") else f"'{FIRST_STAGE}'"
-    outcome = "outcome" if _has_column(db, "threads", "outcome") else "NULL"
-    meeting_at = "meeting_at" if _has_column(db, "threads", "meeting_at") else "NULL"
-    status = "status" if _has_column(db, "threads", "status") else "'queued'"
-    reason = "status_reason" if _has_column(db, "threads", "status_reason") else "NULL"
-    number = "our_number" if _has_column(db, "threads", "our_number") else "NULL"
+    stage = "stage" if sqlite_tools.has_column(db, "threads", "stage") else f"'{FIRST_STAGE}'"
+    outcome = "outcome" if sqlite_tools.has_column(db, "threads", "outcome") else "NULL"
+    meeting_at = "meeting_at" if sqlite_tools.has_column(db, "threads", "meeting_at") else "NULL"
+    status = "status" if sqlite_tools.has_column(db, "threads", "status") else "'queued'"
+    reason = "status_reason" if sqlite_tools.has_column(db, "threads", "status_reason") else "NULL"
+    number = "our_number" if sqlite_tools.has_column(db, "threads", "our_number") else "NULL"
     row = db.execute(
         f"SELECT thread_id, company_id, seed, created_at, {stage}, {outcome}, {meeting_at},"
         f" {status}, {reason}, {number}"
@@ -157,10 +158,10 @@ def inbox(db):
     # здесь нельзя: sender при добавлении колонки размечает старые треды с
     # перепиской в escalated, и колонка, созданная раньше него, украла бы эту
     # разметку. Значит терпим отсутствие — как history терпит отсутствие outbox.
-    status = "t.status" if _has_column(db, "threads", "status") else "'queued'"
-    reason = ("t.status_reason" if _has_column(db, "threads", "status_reason")
+    status = "t.status" if sqlite_tools.has_column(db, "threads", "status") else "'queued'"
+    reason = ("t.status_reason" if sqlite_tools.has_column(db, "threads", "status_reason")
               else "NULL")
-    number = "t.our_number" if _has_column(db, "threads", "our_number") else "NULL"
+    number = "t.our_number" if sqlite_tools.has_column(db, "threads", "our_number") else "NULL"
     rows = db.execute(
         f"SELECT t.thread_id, t.company_id, t.created_at, {status},"
         " (SELECT count(*) FROM messages m WHERE m.thread_id = t.thread_id"
@@ -202,7 +203,7 @@ def history(db, thread_id):
     отсутствия чужих таблиц; импортировать его сюда нельзя — граница систем.
     """
     kind = "NULL"
-    if _has_table(db, "outbox"):
+    if sqlite_tools.has_table(db, "outbox"):
         # Подзапрос, а не join: уникальность в outbox держится только по живым
         # строкам, и у сообщения, кончившегося в failed и поставленного
         # заново, строк две. Join раздвоил бы саму переписку — и на экране, и
@@ -216,15 +217,6 @@ def history(db, thread_id):
     return [{"role": role, "text": text, "angle": angle, "sent_at": sent_at,
              "message_id": message_id, "kind": kind}
             for role, text, angle, sent_at, message_id, kind in rows]
-
-
-def _has_table(db, name):
-    return db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-                      (name,)).fetchone() is not None
-
-
-def _has_column(db, table, column):
-    return any(row[1] == column for row in db.execute(f"PRAGMA table_info({table})"))
 
 
 def pending_draft(db, thread_id):
@@ -305,7 +297,7 @@ def add_incoming(db, thread_id, text, provider_id=None):
     принёс вебхук: по нему транспорт узнаёт уже записанное событие.
     """
     stamp = now()
-    if _has_column(db, "messages", "provider_id"):
+    if sqlite_tools.has_column(db, "messages", "provider_id"):
         db.execute(
             "INSERT INTO messages (thread_id, role, sent_text, provider_id, created_at, sent_at)"
             " VALUES (?, 'incoming', ?, ?, ?, ?)",
