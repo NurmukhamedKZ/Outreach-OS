@@ -11,13 +11,10 @@
 Параметры (города, рубрики) берутся из config.toml.
 """
 
-import hashlib
 import json
 import time
-import tomllib
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import partial
 from pathlib import Path
 from threading import Lock
 from urllib.parse import urlsplit
@@ -25,9 +22,8 @@ from urllib.parse import urlsplit
 import logctx
 from collector.services import fetch
 from collector.services import sources
-from collector.services import storage
+from collector.services.pipeline import rebuild
 
-CONFIG = Path(__file__).resolve().parent.parent.parent / "config.toml"
 
 RUBRIC_PAGE = "https://2gis.kz/{city}/rubric/{rubric}/page/{page}"
 FIRM_CARD = "https://2gis.kz/{city}/firm/{branch_id}"
@@ -73,7 +69,7 @@ class Substituted(RuntimeError):
 
 def gis(ctx):
     """Рубрики и карточки филиалов из config.toml — две стадии одного прогона."""
-    config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    config = rebuild.config()
     budget = Budget(None)   # без потолка: дедуп по raw/
     plan = {"cities": config["cities"], "rubrics": config["rubrics"]["include"]}
 
@@ -140,7 +136,7 @@ def reviews(ctx):
     обычно — дедуп по ним же, повторный запуск не делает ни одного запроса.
     """
     from collector.services import store as engine
-    config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    config = rebuild.config()
     reviews_cfg = config["reviews"]
     db = engine.connect()
     try:
@@ -173,7 +169,7 @@ def site_pages(ctx):
     Страница вакансий возвращает hiring-сигнал, потерянный с удалением hh.
     """
     from collector.services import store as engine
-    config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    config = rebuild.config()
     links_cfg = config["site"]["links"]
     db = engine.connect()
     try:
@@ -269,7 +265,7 @@ def ig_comments(ctx):
     Правило «только посты с комментариями» вычёркивает половину запросов.
     В один поток с паузой, как ленты: сессия личная, цена бана — аккаунт человека.
     """
-    config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    config = rebuild.config()
     media_url = config["instagram"]["comments_media_url"]
     jar = instagram_cookies()
     posts = posts_with_comments()
@@ -302,7 +298,7 @@ def ig_profile(ctx):
     собирается из ответов лент (feed/user отдаёт user.pk). Био и подписчики
     приходят только этим запросом — feed/user их не отдаёт.
     """
-    config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    config = rebuild.config()
     info_url = config["instagram"]["profile_info_url"]
     jar = instagram_cookies()
     accounts = instagram_user_ids()
@@ -337,8 +333,7 @@ def posts_with_comments():
     остальным не читает никто — на живом raw/ это 221 запрос из 1441,
     по шесть секунд каждый.
     """
-    from collector.services.pipeline import rebuild
-    limit = tomllib.loads(CONFIG.read_text(encoding="utf-8"))["instagram"]["posts_limit"]
+    limit = rebuild.config()["instagram"]["posts_limit"]
     out = []
     for page in rebuild.load_pages():
         if "feed/user/" not in page["url"]:
@@ -358,7 +353,6 @@ def instagram_user_ids():
     user ответа feed/user, где он есть всегда.
     """
     import json as _json
-    from collector.services.pipeline import rebuild
     out = []
     for page in rebuild.load_pages():
         if "feed/user/" not in page["url"]:
@@ -443,7 +437,7 @@ def default_pacer():
     хостов ему места нет.
     """
     global _PACER
-    pacing = dict(tomllib.loads(CONFIG.read_text(encoding="utf-8"))["pacing"])
+    pacing = dict(rebuild.config()["pacing"])
     default = pacing.pop("default")
     # Проверка и присваивание — под локом: дорожки одной стадии строят свои
     # Budget одновременно, и без него обе успевали в окно между «is None» и

@@ -42,8 +42,7 @@ def test_reviews_tags_each_company(monkeypatch):
     _stub_llm(monkeypatch, seen)
     monkeypatch.setattr(analyze, "review_targets",
                          lambda db, max_reviews: [("c1", "Ромашка", "almaty", "текст")])
-    monkeypatch.setattr(analyze.tomllib, "loads",
-                         lambda text: {"llm": {"model": "m"}, "reviews": {"max_reviews_per_company": 5}})
+    monkeypatch.setattr(analyze.rebuild, "config", lambda: {"llm": {"model": "m"}, "reviews": {"max_reviews_per_company": 5}})
 
     analyze.reviews(DummyCtx())
 
@@ -55,7 +54,7 @@ def test_site_tags_each_company(monkeypatch):
     _stub_llm(monkeypatch, seen)
     monkeypatch.setattr(analyze, "site_targets",
                          lambda db: [("c2", "Бета", "astana", "текст сайта")])
-    monkeypatch.setattr(analyze.tomllib, "loads", lambda text: {"llm": {"model": "m"}})
+    monkeypatch.setattr(analyze.rebuild, "config", lambda: {"llm": {"model": "m"}})
 
     analyze.site(DummyCtx())
 
@@ -67,8 +66,7 @@ def test_instagram_tags_each_account(monkeypatch):
     _stub_llm(monkeypatch, seen)
     monkeypatch.setattr(analyze, "instagram_targets",
                          lambda db, limit: [("gamma_kz", "промпт-текст")])
-    monkeypatch.setattr(analyze.tomllib, "loads",
-                         lambda text: {"llm": {"model": "m"}, "instagram": {"posts_limit": 10}})
+    monkeypatch.setattr(analyze.rebuild, "config", lambda: {"llm": {"model": "m"}, "instagram": {"posts_limit": 10}})
 
     analyze.instagram(DummyCtx())
 
@@ -80,7 +78,7 @@ def test_dossier_tags_each_company(monkeypatch):
     _stub_llm(monkeypatch, seen)
     monkeypatch.setattr(analyze, "dossier_targets",
                          lambda db: [("c3", "Дельта", "shymkent", "факты")])
-    monkeypatch.setattr(analyze.tomllib, "loads", lambda text: {"llm": {"model": "m"}})
+    monkeypatch.setattr(analyze.rebuild, "config", lambda: {"llm": {"model": "m"}})
 
     analyze.dossier(DummyCtx())
 

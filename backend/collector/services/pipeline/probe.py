@@ -1,11 +1,9 @@
 """Пробы: посмотреть источник глазами. Одна операция на каждую пробу, fn(ctx)."""
 
 import hashlib
-import json
-import tomllib
-from pathlib import Path
 
 from collector.services import sources
+from collector.services.pipeline import rebuild
 from collector.services.fetch import HttpError, get
 from collector.services.sources import parse_firm_card
 from collector.services.sources import parse_initial_state as state
@@ -13,7 +11,6 @@ from collector.services.sources import parse_org_list as orgs
 from collector.services.sources import parse_search_meta as meta
 from config import settings
 
-CONFIG = Path(__file__).resolve().parent.parent.parent / "config.toml"
 
 COOKIE = {"dg5_museum_accept": "true"}  # снимает редирект на /museum
 LIST_URL = "https://2gis.kz/{city}/rubric/{rubric}/page/{page}"
@@ -25,7 +22,7 @@ SERP_API = "https://google.serper.dev/search"
 
 def gis_list(ctx):
     """Пробная рубрика: первая из include на первом городе. Ответ — dict."""
-    config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    config = rebuild.config()
     city = config["cities"][0]
     rubric = config["rubrics"]["include"][0]
     ctx.log(f"рубрика {rubric} / {city}")
@@ -35,7 +32,7 @@ def gis_list(ctx):
 
 def gis_firm(ctx):
     """Контакты первой карточки из пробной рубрики. Ответ — dict."""
-    config = tomllib.loads(CONFIG.read_text(encoding="utf-8"))
+    config = rebuild.config()
     city = config["cities"][0]
     rubric = config["rubrics"]["include"][0]
     s = state(get(LIST_URL.format(city=city, rubric=rubric, page=1), cookies=COOKIE))
