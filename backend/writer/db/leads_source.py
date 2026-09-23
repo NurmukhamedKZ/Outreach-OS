@@ -242,13 +242,6 @@ def best_channel(channels, suppressed):
     return None
 
 
-def is_suppressed(db, handle):
-    """Проверяется перед каждым ходом, а не только при отборе: отказ мог прийти
-    после того, как тред открыли (F21)."""
-    return bool(db.execute(
-        "SELECT 1 FROM state.suppression WHERE handle = ?", (handle,)
-    ).fetchone())
-
 
 def suppression_handles(db):
     return {row[0] for row in db.execute("SELECT handle FROM state.suppression")}

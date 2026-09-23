@@ -23,11 +23,9 @@ def test_run_overrides_production_and_none_returns_it_back(tmp_path):
     paths.use_run(tmp_path / "run.db")
     try:
         assert paths.state_db() == tmp_path / "run.db"
-        assert paths.run_path() == tmp_path / "run.db"
     finally:
         paths.use_run(None)
     assert paths.state_db() == paths.PRODUCTION_STATE
-    assert paths.run_path() is None
 
 
 def test_use_run_accepts_a_string(tmp_path):

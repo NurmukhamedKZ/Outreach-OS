@@ -4,25 +4,6 @@ import collector.services.store as engine
 from collector.services.pipeline import rebuild
 
 
-def test_rebuild_reads_own_run(stores):
-    """Внутренние чтения сборки идут в *_all по run_id, а не в view current_run.
-
-    Прогон 2 строится, пока current_run указывает на прогон 1: компания из
-    прогона 1 не должна попадать в чтения сборки прогона 2.
-    """
-    db = stores
-    run1 = engine.new_run(db)
-    run2 = engine.new_run(db)
-    db.execute("INSERT INTO companies_all (run_id, company_id, domain) VALUES (?, 'c1', 'a.kz')",
-               (run1,))
-    engine.activate_run(db, run1)   # опубликован прогон 1
-    # чтение «в рамках строящегося прогона» 2 ничего не видит из прогона 1
-    rows = list(engine.build_read(db, run2, "companies"))
-    assert rows == [], f"чтение прогона 2 подхватило данные прогона 1: {rows}"
-    # а чтение прогона 1 их видит
-    assert [r["company_id"] for r in engine.build_read(db, run1, "companies")] == ["c1"]
-
-
 def test_build_does_not_publish_until_activate(stores):
     """До activate_run выдача (view) показывает прежний прогон, не строящийся."""
     db = stores

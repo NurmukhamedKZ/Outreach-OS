@@ -129,8 +129,9 @@ def test_candidates_follow_f19_and_f21(leads_db):
     # CRM» — не боль, и цитировать в первом касании нечего.
     assert [s["type"] for s in lead["seed"]["signals"]] == [], lead["seed"]
 
-    assert leads_source.is_suppressed(db, "+77010000002"), "отказ не виден по handle"
-    assert not leads_source.is_suppressed(db, "+77010000001"), "лишний handle в отказах"
+    suppressed = leads_source.suppression_handles(db)
+    assert "+77010000002" in suppressed, "отказ не виден по handle"
+    assert "+77010000001" not in suppressed, "лишний handle в отказах"
 
     assert [row["company_id"] for row in found] == ["c_ok", "c_phone"], \
         "порядок отбора не по intent"

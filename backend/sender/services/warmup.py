@@ -21,7 +21,6 @@ from sender.db import numbers
 
 log = logging.getLogger(__name__)
 
-WARMING_STATUSES = ("new", "warming")
 REACHABLE_STATUSES = ("warming", "active")
 
 PHRASES_KEY = "phrases"
