@@ -680,8 +680,7 @@ a.nav-item:hover {
   gap: 8px;
 }
 
-.controls select,
-.args {
+.controls select {
   font: inherit;
   font-size: 14px;
   padding: 8px 12px;
@@ -1007,7 +1006,6 @@ a.nav-item:hover {
   color: var(--canvas);
 }
 
-.thread-draft textarea,
 .thread-reply input,
 .refusal input {
   font: inherit;
@@ -1018,16 +1016,10 @@ a.nav-item:hover {
   color: var(--ink);
 }
 
-.thread-draft textarea:focus,
 .thread-reply input:focus,
 .refusal input:focus {
   outline: 2px solid var(--ink);
   outline-offset: -1px;
-}
-
-.thread-draft textarea {
-  width: 100%;
-  resize: vertical;
 }
 
 .thread-reply {
@@ -1620,14 +1612,6 @@ a.nav-item:hover {
 
 .sandbox-shifts .btn-quiet {
   white-space: nowrap;
-}
-
-.sandbox-runs {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
 }
 
 .sandbox-check {

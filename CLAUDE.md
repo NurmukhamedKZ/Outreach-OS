@@ -396,6 +396,8 @@ CTA, Inter + JetBrains Mono (`next/font`), hairline-границы, тёмные
 Тем же основанием, что `paths.py`, `clock.py`, `activity.py` и `analytics.py`,
 на верхнем уровне лежит и `backend/tasks.py`: список задач оператора собирается
 из тех же трёх систем, и ни одна из них не имеет права знать две другие.
+Там же `backend/sqlite_tools.py` — `has_table`/`has_column`/`connect_readonly`:
+чужую колонку терпят все три системы, и проверка наличия живёт в одной копии.
 
 **Подменный Node** (`sandbox/node.py`) отдаёт те же пять ручек, что
 `sender/node/index.js`, и события шлёт в свой же `POST /api/sender/webhook` —

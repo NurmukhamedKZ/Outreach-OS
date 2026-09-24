@@ -11,6 +11,8 @@ PRAGMA table_info и добавляет колонку, только если е
 import sqlite3
 from pathlib import Path
 
+import sqlite_tools
+
 SCHEMA = """
 -- Очередь исходящих. Текста здесь нет: он в messages.draft_text.
 -- message_id/thread_id пусты у прогревочных отправок: сообщения лиду за ними
@@ -113,24 +115,15 @@ def _conversation_state(db: sqlite3.Connection) -> None:
         """)
     for table, column, ddl in CONVERSATION_COLUMNS:
         ensure_column(db, table, column, ddl)
-    if _has_table(db, "messages"):
+    if sqlite_tools.has_table(db, "messages"):
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS messages_provider"
                    " ON messages (provider_id) WHERE provider_id IS NOT NULL")
 
 
 def ensure_column(db: sqlite3.Connection, table: str, column: str, ddl: str) -> bool:
     """True, если колонку добавили; False, если она уже была или таблицы ещё нет."""
-    if not _has_table(db, table):
-        return False
-    existing = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
-    if column in existing:
+    if not sqlite_tools.has_table(db, table) or sqlite_tools.has_column(db, table, column):
         return False
     db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
     db.commit()
     return True
-
-
-def _has_table(db: sqlite3.Connection, table: str) -> bool:
-    return db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table,)).fetchone() is not None

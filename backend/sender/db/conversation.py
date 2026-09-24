@@ -14,6 +14,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 import clock
+import sqlite_tools
 
 STATUSES = ("queued", "active", "exhausted", "escalated", "unreachable",
             "closed_refused", "closed_junk", "blocked_channel")
@@ -257,7 +258,7 @@ def counters(db: sqlite3.Connection) -> dict:
     Ноль при отсутствующих таблицах: их владелец система 2, и sender может
     подняться раньше неё — счётчик в таком состоянии просто не существует.
     """
-    if not _has_table(db, "messages") or not _has_table(db, "threads"):
+    if not sqlite_tools.has_table(db, "messages") or not sqlite_tools.has_table(db, "threads"):
         return {"waiting": 0, "escalated": 0}
     return {
         "waiting": db.execute(
@@ -272,10 +273,3 @@ def now_stamp() -> str:
     """Момент записи сообщения. Формат — тот же, что у thread_store: таблица
     одна, и две формы штампа в ней сломали бы сортировку истории."""
     return clock.now().isoformat(timespec="seconds")
-
-
-
-def _has_table(db: sqlite3.Connection, table: str) -> bool:
-    return db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table,)).fetchone() is not None

@@ -66,3 +66,6 @@ backend/sender/node/sessions/
 # сервере он «full», в репозитории его быть не должно вовсе.
 backend/sender/autopilot
 backend/sender/autopilot.tmp
+
+# Скиллы агента: вендорятся по skills-lock.json, в git не нужны
+.agents/

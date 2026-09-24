@@ -27,8 +27,3 @@ def use_run(path: Path | str | None) -> None:
     global _run
     _run = Path(path) if path is not None else None
 
-
-def run_path() -> Path | None:
-    """Активный прогон или None. Нужен предохранителям: писать в боевую базу
-    из ручки песочницы нельзя, и отличить одно от другого можно только здесь."""
-    return _run

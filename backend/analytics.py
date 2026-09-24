@@ -17,6 +17,8 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import sqlite_tools
+
 STEPS = ("sent", "delivered", "replied", "dialog", "meeting_agreed", "meeting_held")
 
 # Меньше этого числа ответов диагноз не ставится: на трёх ответах он шум, а
@@ -46,8 +48,8 @@ def report(days: int = 30) -> dict:
         # запись и создаёт её сам, а аналитика писать не имеет права.
         return _empty(days)
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
-    with closing(_connect()) as db:
-        if not _has_table(db, "threads"):
+    with closing(sqlite_tools.connect_readonly(_state, _leads)) as db:
+        if not sqlite_tools.has_table(db, "threads"):
             return _empty(days)
         rows = _funnel(db, since)
         return {
@@ -77,14 +79,6 @@ def diagnose(funnel: list[dict]) -> str:
     return "ok"
 
 
-def _connect() -> sqlite3.Connection:
-    db = sqlite3.connect(f"file:{_state}?mode=ro", uri=True)
-    db.row_factory = sqlite3.Row
-    if _leads is not None and Path(_leads).exists():
-        db.execute(f"ATTACH DATABASE 'file:{_leads}?mode=ro' AS leads")
-    return db
-
-
 SENT_THREADS = (
     " FROM threads t JOIN messages m ON m.thread_id = t.thread_id"
     " AND m.role = 'outgoing' AND m.sent_text IS NOT NULL AND m.sent_at >= ?"
@@ -102,12 +96,12 @@ def _funnel(db: sqlite3.Connection, since: str) -> list[dict]:
     delivered = (
         f"SELECT count(DISTINCT t.thread_id){SENT_THREADS}"
         " JOIN outbox o ON o.message_id = m.message_id AND o.delivered_at IS NOT NULL"
-    ) if _has_column(db, "outbox", "delivered_at") else None
+    ) if sqlite_tools.has_column(db, "outbox", "delivered_at") else None
     dialog = (
         f"SELECT count(DISTINCT t.thread_id){SENT_THREADS}"
         " WHERE t.stage IN ('probing', 'offer', 'closing')"
-    ) if _has_column(db, "threads", "stage") else None
-    has_outcome = _has_column(db, "threads", "outcome")
+    ) if sqlite_tools.has_column(db, "threads", "stage") else None
+    has_outcome = sqlite_tools.has_column(db, "threads", "outcome")
     counts = {
         "sent": _scalar(db, f"SELECT count(DISTINCT t.thread_id){SENT_THREADS}", since),
         "delivered": _scalar(db, delivered, since),
@@ -134,19 +128,9 @@ def _scalar(db: sqlite3.Connection, sql: str | None, since: str) -> int:
     return db.execute(sql, (since,)).fetchone()[0] or 0
 
 
-def _has_table(db: sqlite3.Connection, name: str) -> bool:
-    return db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-                      (name,)).fetchone() is not None
-
-
-def _has_column(db: sqlite3.Connection, table: str, column: str) -> bool:
-    return _has_table(db, table) and any(
-        row["name"] == column for row in db.execute(f"PRAGMA table_info({table})"))
-
-
 def _column(db: sqlite3.Connection, table: str, name: str) -> str | None:
     """Имя колонки для GROUP BY или None, если её ещё нет в этой базе."""
-    return f"m.{name}" if _has_column(db, table, name) else None
+    return f"m.{name}" if sqlite_tools.has_column(db, table, name) else None
 
 
 BEFORE_AB = "до A/B"
@@ -158,7 +142,7 @@ HELD = "t.outcome = 'meeting_held'"
 
 def _held(db: sqlite3.Connection) -> str:
     """Условие «встреча состоялась» или заведомо ложное, пока колонки нет."""
-    return HELD if _has_column(db, "threads", "outcome") else "0"
+    return HELD if sqlite_tools.has_column(db, "threads", "outcome") else "0"
 
 
 FIRST_SENT = (

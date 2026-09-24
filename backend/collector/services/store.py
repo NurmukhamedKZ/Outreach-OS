@@ -124,17 +124,3 @@ def run_history(db, limit=50):
     ).fetchall()
     return [dict(row) for row in rows]
 
-
-def build_read(db, run_id, table):
-    """SELECT * FROM {table}_all WHERE run_id = ? — чтение в рамках строящегося прогона.
-
-    Продуктовые читатели (report/routes/leads/writer) используют view {table}
-    текущего прогона; сборка использует физическую *_all и свой run_id.
-    Это каноническая форма «прочитать таблицу прогона» — используется тестом
-    test_rebuild_reads_own_run, чтобы доказать инвариант «сборка не видит чужой
-    прогон». JOIN-чтения (fill_profiles/enrich/resolve/score) хардкодят *_all и
-    run_id прямо в SQL — хелпер им не подходит, и дублировать его там не нужно.
-    """
-    return db.execute(
-        f"SELECT * FROM {table}_all WHERE run_id = ?", (run_id,)
-    )

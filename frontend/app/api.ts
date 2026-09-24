@@ -181,10 +181,6 @@ export function startPipeline(kind: string) {
   return json<{ job: Job }>(`/api/pipeline/${encodeURIComponent(kind)}`, { method: "POST" });
 }
 
-export function fetchJobs(limit = 20) {
-  return json<{ jobs: Job[]; active: Job | null }>(`/api/jobs?limit=${limit}`);
-}
-
 export function fetchJob(id: number, offset = 0) {
   return json<JobTail>(`/api/jobs/${id}?offset=${offset}`);
 }
