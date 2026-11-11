@@ -1,0 +1,212 @@
+%%{init: {"flowchart": {"curve": "basis"}, "theme": "neutral"}}%%
+flowchart TB
+
+  %% ============================================================
+  %% ВНЕШНИЙ МИР
+  %% ============================================================
+  subgraph EXT["🌐 Внешний мир"]
+    direction TB
+    SRC_2GIS["2ГИС<br/>рубрики, отзывы"]
+    SRC_SITE["Сайты компаний"]
+    SRC_IG["Instagram<br/>лента"]
+    SERPER["Serper API<br/>(SERPER_API_KEY)"]
+    OPENROUTER["OpenRouter LLM<br/>(OPENROUTER_API_KEY)"]
+    WA_NET["WhatsApp сеть"]
+    TG["Telegram оператора<br/>(эскалация)"]
+    LANGFUSE["Langfuse self-host<br/>109.199.125.111:3000"]
+  end
+
+  %% ============================================================
+  %% FRONTEND
+  %% ============================================================
+  subgraph FE["🖥️ frontend/ — Next.js дашборд (:3000)"]
+    direction TB
+    FE_TODAY["/ — «Сегодня»<br/>задачи оператора"]
+    FE_LEADS["/leads, /leads/[id]<br/>выдача + карточка лида"]
+    FE_COLD["/cold<br/>конвейер черновиков"]
+    FE_THREADS["/threads<br/>инбокс диалогов"]
+    FE_ANALYTICS["/analytics<br/>воронка переписки"]
+    FE_SENDER["/sender<br/>пул номеров, kill switch"]
+    FE_ACTIVITY["/activity<br/>демоны, живой журнал"]
+    FE_LIVE["components/live.tsx<br/>LiveProvider — одна SSE-подписка"]
+    FE_RUNBAR["RunBar.tsx<br/>активная джоба видна отовсюду"]
+  end
+
+  FE_LIVE -->|"EventSource, минуя next-rewrite"| API_EVENTS
+
+  %% ============================================================
+  %% BACKEND — main.py, сквозные модули
+  %% ============================================================
+  subgraph CORE["⚙️ backend/ — main.py (FastAPI, один процесс)"]
+    direction TB
+    CONFIG["config.py<br/>единственная точка чтения env"]
+    OBS["observability.py<br/>Langfuse callback handler"]
+    PATHS["paths.py<br/>невосстановимый слой, единый путь"]
+    CLOCK["clock.py<br/>«сейчас» продукта, сдвиг из прогона"]
+    JOBS["services/jobs.py<br/>очередь job-ов, state.jobs"]
+    ACTIVITY_MOD["activity.py<br/>журнал фоновой работы, repeats-схлопывание"]
+    ANALYTICS_MOD["analytics.py<br/>воронка, три разреза (ro)"]
+    TASKS_MOD["tasks.py<br/>задачи «Сегодня» (ro, 3 системы)"]
+    API_EVENTS["GET /api/events (SSE)<br/>snapshot / job / log / refresh / activity"]
+    API_STATS["GET /api/stats, /api/activity,<br/>/api/analytics, /api/tasks"]
+    API_PIPELINE["POST /api/pipeline/{kind}<br/>discover · classify · rebuild · write"]
+    API_OPS["POST /api/operations/{name}<br/>реестр OPERATIONS[name](ctx)"]
+  end
+
+  CONFIG -.->|env, .env| SERPER
+  CONFIG -.->|env, .env| OPENROUTER
+  OBS -->|"CallbackHandler"| LANGFUSE
+  API_PIPELINE --> JOBS
+  API_OPS --> JOBS
+  JOBS -->|"asyncio.to_thread"| WORKER_STEP["Шаг операции<br/>stage · track · status · progress"]
+  WORKER_STEP -->|"events.publish (call_soon_threadsafe)"| API_EVENTS
+  ACTIVITY_MOD --> API_STATS
+  ANALYTICS_MOD --> API_STATS
+  TASKS_MOD --> API_STATS
+
+  FE_TODAY --> TASKS_MOD
+  FE_ACTIVITY --> ACTIVITY_MOD
+  FE_ANALYTICS --> ANALYTICS_MOD
+  FE_LEADS --> API_STATS
+  FE_SENDER --> API_STATS
+  FE_COLD --> API_PIPELINE
+  FE_THREADS --> API_PIPELINE
+  FE_RUNBAR --> API_STATS
+
+  %% ============================================================
+  %% СИСТЕМА 1 — collector/ (Targeting & Enrichment)
+  %% ============================================================
+  subgraph SYS1["📡 Система 1 — collector/ (Targeting & Enrichment)"]
+    direction TB
+    COLLECT["collect.py<br/>collect.reviews / sites / site_pages<br/>collect.instagram + ig_*<br/>services/fetch.py + scrapling"]
+    ANALYZE["analyze.py<br/>analyze.profile, analyze.ig_signals"]
+    SOURCES["services/sources.py<br/>единственная копия разбора HTML/JSON<br/>чистые функции, без сети"]
+    REBUILD["services/pipeline/rebuild.py<br/>граница системы: не импортирует fetch/scrapling"]
+    EXPORT["services/pipeline/export.py<br/>F19 канал · F20 why_now · F21 suppression"]
+    SUPPRESSION["services/suppression.py<br/>юридический контур"]
+    LEADS_SVC["services/leads.py, routes/leads.py<br/>импортируют export.candidates"]
+    CONFIG_TOML["config.toml<br/>рубрики, города, веса, LLM-модель,<br/>[pacing]"]
+  end
+
+  SRC_2GIS --> COLLECT
+  SRC_SITE --> COLLECT
+  SRC_IG --> COLLECT
+  SERPER --> COLLECT
+  COLLECT -->|"пишет"| RAW["data/raw/<br/>*.html.gz + *.json сайдкар<br/>невосстановимо, не в git"]
+  RAW -->|"снята эталонная страница"| FIXTURES["fixtures/<br/>по одной странице на разбор<br/>в git"]
+  FIXTURES -.->|"test_parsers сверяет числа"| SOURCES
+  RAW --> ANALYZE
+  ANALYZE -->|"invoke() + langfuse callback"| OPENROUTER
+  ANALYZE -->|"кэш ответов, ключ (kind,subject,model,prompt)"| LLM_ANSWERS["state.llm_answers<br/>+ raw/*.llm.json"]
+  COLLECT --> SOURCES
+  SOURCES --> REBUILD
+  LLM_ANSWERS -->|"читает, не платит повторно"| REBUILD
+  REBUILD -->|"run_id, *_all таблицы,<br/>activate_run() одним махом"| DERIVED["data/derived.db<br/>runs, current_run, *_all + view<br/>пересобираемое, не в git"]
+  CONFIG_TOML -.-> COLLECT
+  CONFIG_TOML -.-> REBUILD
+  DERIVED --> EXPORT
+  SUPPRESS_TBL["state.suppression<br/>невосстановимый список отказов"] -.->|"проверка ДО выдачи"| EXPORT
+  SUPPRESSION --> SUPPRESS_TBL
+  EXPORT --> LEADS_CSV["data/leads.csv"]
+  EXPORT --> LEADS_SVC
+  LEADS_SVC --> FE_LEADS
+  WEBHOOK_REFUSAL -.->|"стоп-слово → отказ"| SUPPRESSION
+
+  %% ============================================================
+  %% СИСТЕМА 2 — writer/ (AI-персонализация)
+  %% ============================================================
+  subgraph SYS2["✍️ Система 2 — writer/ (тред + черновик)"]
+    direction TB
+    LEADS_SOURCE["leads_source.py<br/>F19/F21 воспроизведены запросом,<br/>не импортом report.py"]
+    AGENT_DRAFT["services/agent.py :: draft()<br/>with_structured_output, без langgraph"]
+    SCHEMA_OUTREACH["schemas/outreach.py<br/>запрет пустых follow-up — в схеме"]
+    SELLER["services/seller.py<br/>create_agent, classify(return_direct=True)"]
+    FOLLOWUP_W["services/followup.py<br/>текст рождается в момент срока"]
+    THREADS_ROUTES["routes/threads.py<br/>/api/threads/*, drafts"]
+  end
+
+  DERIVED -->|"read-only, никогда не пишет"| LEADS_SOURCE
+  LEADS_SOURCE --> AGENT_DRAFT
+  AGENT_DRAFT -->|"invoke() + langfuse callback, thread_id"| OPENROUTER
+  SCHEMA_OUTREACH --> AGENT_DRAFT
+  AGENT_DRAFT -->|"Attempt(draft, prompt, model)"| MESSAGES["state.threads / state.messages<br/>draft_text → queued_text → sent_text<br/>+ prompt (json), model"]
+  THREADS_ROUTES --> MESSAGES
+  THREADS_ROUTES --> FE_COLD
+  THREADS_ROUTES --> FE_THREADS
+  MESSAGES -->|"WHERE sent_text IS NOT NULL"| SELLER
+  SELLER --> OPENROUTER
+  FOLLOWUP_W --> OPENROUTER
+  FOLLOWUP_W -->|"текст в момент next_touch_at"| OUTBOX
+
+  %% ============================================================
+  %% СИСТЕМА 3 — sender/ (Sending infrastructure)
+  %% ============================================================
+  subgraph SYS3["📤 Система 3 — sender/ (пул номеров, доставка)"]
+    direction TB
+    QUEUE_SVC["services/queue.py<br/>POST /api/sender/queue —<br/>единая точка постановки"]
+    GATES["services/gates.py<br/>отказ/закрытый тред → cancel<br/>окно 10–18 Asia/Almaty, лимит, джиттер"]
+    WORKER_SEND["services/worker.py<br/>тик 20с, одна строка/тик,<br/>backoff 1/5/30"]
+    OUTBOX["state.numbers / state.outbox<br/>пул + очередь исходящих"]
+    TRANSPORT["transport.py<br/>единственный сетевой модуль системы"]
+    NODE["sender/node (Baileys, :8788)<br/>отдельный Node-процесс"]
+    WEBHOOK["POST /api/sender/webhook<br/>X-Sender-Secret"]
+    INCOMING["services/incoming.py<br/>4 предохранителя:<br/>1 автоответ/тред, recursion_limit=2,<br/>эскалация, 3 попытки"]
+    WEBHOOK_REFUSAL["services/refusal.py<br/>стоп-слова из config.toml [stopwords]"]
+    MONITOR["monitor_numbers, warm_numbers<br/>часовой health-monitor, прогрев"]
+    SENDER_CONFIG["sender/config.toml<br/>каденция [3,7], max_touches,<br/>тики"]
+  end
+
+  QUEUE_SVC --> OUTBOX
+  MONITOR --> OUTBOX
+  GATES --> OUTBOX
+  WORKER_SEND --> GATES
+  WORKER_SEND -->|"sent_text — один автор"| OUTBOX
+  WORKER_SEND --> TRANSPORT
+  TRANSPORT -->|"HTTP"| NODE
+  NODE -->|"messages.update"| WA_NET
+  WA_NET -->|"webhook: статус доставки код 3/4,<br/>incoming"| WEBHOOK
+  WEBHOOK -->|"canonical JID → thread_id,<br/>дедуп provider_id"| MESSAGES
+  WEBHOOK -->|"стоп-слово"| WEBHOOK_REFUSAL
+  WEBHOOK -->|"иначе"| INCOMING
+  INCOMING --> SELLER
+  INCOMING -->|"escalated"| TG
+  SELLER -->|"reply через outbox, окно [window.reply]"| OUTBOX
+  SENDER_CONFIG -.-> WORKER_SEND
+  SENDER_CONFIG -.-> FOLLOWUP_W
+  NODE -->|"sessions/ — ключи,<br/>невосстановимо"| NODE_SESSIONS["sender/node/sessions/"]
+
+  ACTIVITY_LOG["state.activity<br/>журнал, ретенция 14 дней,<br/>MAX(last_at) = пульс демона"]
+  MONITOR --> ACTIVITY_LOG
+  WORKER_SEND --> ACTIVITY_LOG
+  INCOMING --> ACTIVITY_LOG
+  COLLECT --> ACTIVITY_LOG
+  ACTIVITY_LOG --> ACTIVITY_MOD
+
+  FE_THREADS --> THREADS_ROUTES
+  FE_SENDER --> QUEUE_SVC
+  FE_SENDER -.->|"autopilot: off/replies/full,<br/>файл-kill switch"| AUTOPILOT["sender/autopilot"]
+  AUTOPILOT -.-> WORKER_SEND
+
+  %% ============================================================
+  %% ПЕСОЧНИЦА — backend/sandbox/ (SANDBOX=1)
+  %% ============================================================
+  subgraph SANDBOX["🧪 sandbox/ (флаг SANDBOX=1, тестовый прогон без WhatsApp)"]
+    direction TB
+    SANDBOX_NODE["sandbox/node.py<br/>подменные 5 ручек вместо Baileys"]
+    SANDBOX_FAULTS["sandbox/faults.py<br/>4 тумблера аварий, в памяти"]
+    SANDBOX_DB["data/sandbox/<run>.db<br/>thread_id = телефон = PK"]
+  end
+
+  SANDBOX_NODE -->|"тот же webhook, тот же секрет"| WEBHOOK
+  SANDBOX_NODE --> SANDBOX_DB
+  DERIVED -.->|"боевая, только чтение"| SANDBOX_DB
+
+  %% ============================================================
+  %% СТИЛИ
+  %% ============================================================
+  classDef ext fill:#f5f5f5,stroke:#999,color:#333;
+  classDef store fill:#fff3cd,stroke:#c9a227,color:#5c4a00;
+  classDef core fill:#e8f0fe,stroke:#4285f4,color:#1a3a6b;
+  class RAW,FIXTURES,DERIVED,LLM_ANSWERS,SUPPRESS_TBL,MESSAGES,OUTBOX,NODE_SESSIONS,LEADS_CSV,ACTIVITY_LOG,SANDBOX_DB store;
+  class SRC_2GIS,SRC_SITE,SRC_IG,SERPER,OPENROUTER,WA_NET,TG,LANGFUSE ext;
+  class CONFIG,OBS,PATHS,CLOCK,JOBS,ACTIVITY_MOD,ANALYTICS_MOD,TASKS_MOD,API_EVENTS,API_STATS,API_PIPELINE,API_OPS core;

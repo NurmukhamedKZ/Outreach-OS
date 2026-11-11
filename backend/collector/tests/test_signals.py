@@ -3,7 +3,78 @@
 Требует собранной data/derived.db — на чистом клоне раздел пропускается.
 """
 
+import functools
+import gzip
+import json
+
 SITE_TYPES = {"ads_platform", "crm_widget", "inbound_widget"}
+
+
+REVIEWS_HOST = "reviews.2gis.com"
+INSTAGRAM_HOST = "instagram.com"
+
+
+def _pages(belongs) -> list[str]:
+    """Тела страниц одного вида источника: belongs(url) решает, чей это файл.
+
+    Списком, а не конкатенацией: raw/ весит гигабайты, и `text += ...` в цикле
+    — квадратичная склейка, из-за которой эти две проверки занимали пять минут
+    из шести.
+    """
+    import collector.services.storage as storage
+
+    bodies = []
+    for sidecar in sorted(storage.RAW.glob("*.json")):
+        if sidecar.name.count(".") != 1:
+            continue   # .llm.json / .serp.json — кэш другого рода, не страница
+        url = json.loads(sidecar.read_text(encoding="utf-8")).get("url") or ""
+        if not belongs(url):
+            continue
+        gz = storage.RAW / f"{sidecar.name.removesuffix('.json')}.html.gz"
+        if gz.exists():
+            bodies.append(gzip.open(gz, "rt", encoding="utf-8").read())
+    return bodies
+
+
+@functools.cache
+def _review_text() -> str:
+    """Тексты отзывов и официальных ответов — РАЗОБРАННЫЕ, а не сырой JSON.
+
+    Ответ API 2GIS экранирует кавычки внутри текста, и отзыв со словом
+    «эксперт» в кавычках не находится в файле дословно, хотя цитата верна.
+    Разбор берётся из sources.py — той же единственной копии, которой
+    пользуется прод: сверять цитату с байтами, которых модель не видела,
+    значит проверять не то.
+    """
+    from collector.services import sources
+
+    return "\n".join(
+        f"{row.get('text') or ''}\n{row.get('official_answer') or ''}"
+        for body in _pages(lambda url: REVIEWS_HOST in url)
+        for row in sources.parse_reviews(body, "branch"))
+
+
+@functools.cache
+def _comment_text() -> str:
+    """Реплики под постами — тем же разбором и по той же причине."""
+    from collector.services import sources
+
+    return "\n".join(
+        row.get("text") or ""
+        for body in _pages(lambda url: "/comments/" in url)
+        for row in sources.parse_ig_comments(body, "pk"))
+
+
+@functools.cache
+def _site_text() -> str:
+    """Страницы сайтов компаний: HTML отдаётся как есть, экранирования в нём нет.
+
+    Всё, что не отзывы и не инстаграм: их тексты живут в JSON и разбираются
+    отдельно, а цитате с сайта нечего делать в чужом источнике — найденная
+    там, она означала бы, что проверка ничего не проверяет.
+    """
+    return "\n".join(_pages(
+        lambda url: REVIEWS_HOST not in url and INSTAGRAM_HOST not in url))
 
 
 def test_signals_are_dated_and_grounded(live_db):
@@ -140,28 +211,18 @@ def test_reviews_missed_lead_no_match_is_none():
 
 
 def test_reviews_quote_is_verbatim(live_db):
-    """Главная проверка: цитата отзыва стоит дословно в сырье.
+    """Главная проверка: цитата отзыва стоит дословно в тексте отзыва.
 
-    Для этого сигналы отзывов перепривязываются к филиалу и сверяются с текстом
-    отзыва из raw/. Не нашлась дословно — модель исказила, и в signals ей не место.
+    Не нашлась — модель исказила, и в signals ей не место. Сверяется с
+    разобранным текстом, а не с телом ответа API: экранированные кавычки в
+    JSON — свойство транспорта, а не отзыва, и модель их не видела.
     """
-    import gzip
-    import json
-    import collector.services.storage as storage
-
     quotes = live_db.execute(
         "SELECT quote FROM signals WHERE type LIKE 'reviews_%' AND length(quote) > 2"
     ).fetchall()
-    raw_text = ""
-    for sidecar in sorted(storage.RAW.glob("*.json")):
-        if sidecar.name.count(".") != 1:
-            continue   # .llm.json / .serp.json — кэш другого рода, не страница
-        if "reviews.2gis.com" not in json.loads(sidecar.read_text(encoding="utf-8"))["url"]:
-            continue
-        sha = sidecar.name.removesuffix(".json")
-        raw_text += gzip.open(storage.RAW / f"{sha}.html.gz", "rt", encoding="utf-8").read()
+    text = _review_text()
     for (quote,) in quotes:
-        assert quote in raw_text, f"цитата отзыва не дословна в сырье: {quote!r}"
+        assert quote in text, f"цитата отзыва не дословна в сырье: {quote!r}"
 
 
 SITE_AI_TYPES = {"site_hiring_sales", "site_no_pricing"}
@@ -217,31 +278,32 @@ def test_old_ig_llm_signals_retired(live_db):
     assert not (families & retired), f"старый LLM-слой инстаграма всё ещё пишет: {families & retired}"
 
 
+# Где искать цитату каждого вида сигнала. Источник у каждого свой, и текст
+# из него достаётся своим разбором: искать цитату отзыва в HTML сайта — то же
+# самое, что не искать вовсе.
+QUOTE_SOURCE = {
+    "reviews_missed_lead": _review_text,
+    "reviews_unanswered_complaint": _review_text,
+    "ig_unanswered_question": _comment_text,
+    "site_hiring_sales": _site_text,
+}
+
+
 def test_quote_is_verbatim_for_ai_signals(live_db):
     """Главная проверка спеки §6: цитата каждого AI-сигнала стоит дословно в сырье.
 
     reviews/site/instagram — единственная защита от выдуманного факта в письме
-    живому человеку. Собирается весь текст raw/ и каждая цитата ищется в нём.
+    живому человеку, и на ней же стоит отбор поводов системы 2: сигнал без
+    цитаты поводом не считается, поэтому цитата обязана быть настоящей.
     """
-    import gzip
-    import collector.services.storage as storage
-
-    raw_text = ""
-    for sidecar in sorted(storage.RAW.glob("*.json")):
-        if sidecar.name.count(".") != 1:
-            continue
-        sha = sidecar.name.removesuffix(".json")
-        gz = storage.RAW / f"{sha}.html.gz"
-        if gz.exists():
-            raw_text += gzip.open(gz, "rt", encoding="utf-8").read()
-
-    ai_types = ("reviews_missed_lead", "reviews_unanswered_complaint",
-                "site_hiring_sales", "ig_unanswered_question")
     rows = live_db.execute(
-        f"SELECT type, quote FROM signals WHERE type IN ({','.join('?'*len(ai_types))})"
-        " AND length(quote) > 2", ai_types).fetchall()
+        "SELECT type, quote FROM signals WHERE type IN"
+        f" ({','.join('?' * len(QUOTE_SOURCE))}) AND length(quote) > 2",
+        tuple(QUOTE_SOURCE)).fetchall()
+    assert rows, "ни одной цитаты AI-сигналов — проверять нечего"
     for signal_type, quote in rows:
-        assert quote in raw_text, f"{signal_type}: цитата не дословна в сырье: {quote!r}"
+        assert quote in QUOTE_SOURCE[signal_type](), \
+            f"{signal_type}: цитата не дословна в сырье: {quote!r}"
 
 
 def _memory_db():
