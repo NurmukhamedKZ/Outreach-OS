@@ -27,7 +27,8 @@
 
 Сверх общих условий `/workflow:launch-main` (нет «blocked by» между тикетами, не трогают одни файлы):
 
-- схему `state.db` (`backend/collector/db/schema.sql`, `backend/sender/db/migrate.py`, `thread_store._ensure_columns`) меняет не больше одного: владелец таблицы доливает колонки сам, и две правки одной таблицы разойдутся;
+- миграцию Alembic (`backend/migrations/`) добавляет не больше одного: две миграции от одной базы дают две головы (ADR 0004). Перед пушем ветки с миграцией — `git fetch`, перебазироваться на свежий `main`, `uv run alembic heads` — голова одна;
+- старую схему `state.db` (`backend/collector/db/schema.sql`, `backend/sender/db/migrate.py`, `thread_store._ensure_columns`) меняет не больше одного: владелец таблицы доливает колонки сам, и две правки одной таблицы разойдутся;
 - сборщик приложения `backend/collector/api.py` правит не больше одного.
 
 ## Effort
