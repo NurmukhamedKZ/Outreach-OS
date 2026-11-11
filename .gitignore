@@ -73,3 +73,6 @@ backend/sender/autopilot.tmp
 
 # Скиллы агента: вендорятся по skills-lock.json, в git не нужны
 .agents/
+
+# Worktree кодеров
+.claude/worktrees/

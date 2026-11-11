@@ -1,0 +1,6 @@
+{
+  "extraKnownMarketplaces": {
+    "claude-workflow": { "source": { "source": "github", "repo": "NurmukhamedKZ/claude-workflow" } }
+  },
+  "enabledPlugins": { "workflow@claude-workflow": true }
+}

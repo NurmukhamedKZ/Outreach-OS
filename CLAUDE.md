@@ -2,6 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**Перед любым изменением кода спроси пользователя, создавать ли для этих изменений отдельный git worktree.** Не начинай правки, пока не получишь ответ. Исключение — кодер, запущенный `/workflow:launch-main`: он уже в worktree.
+
+**Worktree создаются только внутри проекта:** `git worktree add .claude/worktrees/<ветка-без-слешей> -b <ветка>`. Папка `.claude/worktrees/` — в `.gitignore`.
+
+**Лучшее решение — предлагай.** Спека, тикет и ADR — не догма. Видишь решение лучше записанного (проще, надёжнее, безопаснее, дешевле в поддержке) или записанное не работает на практике — предложи его пользователю до реализации: что записано, что предлагаешь, плюсы и минусы, рекомендация. Молча не отступай; новое реализуй после согласия, затем обнови спеку и заведи ADR.
+
+**Архитектурные разделы ниже описывают код до редизайна** (#4): три системы, швы между ними, слои данных. Новый код пишется по разделу «Принципы кода» и `backend/CLAUDE.md`; где они расходятся с описанным устройством, побеждают принципы.
+
 ## Что это
 
 AI lead-generation продукт: находит нужных людей, пишет им персонализированные
@@ -26,6 +34,20 @@ AI lead-generation продукт: находит нужных людей, пи�
 не консоль запуска скриптов.
 
 Бизнес-контекст, ICP и полная спецификация — в `docs/` (см. ниже).
+
+### Что прочитать перед кодингом
+
+Читай в этом порядке и только то, что касается тикета, — не всё подряд:
+
+1. **Тикет**: `gh issue view <номер>` — что сделать, критерии приёмки, блокеры (все должны быть закрыты).
+2. **`GLOSSARY.md`**, если он есть, — термины в коде, интерфейсе, тестах и коммитах только оттуда.
+3. **Спека**: `docs/PRD.md` — требования F-номерами из критериев приёмки тикета; `docs/TRD.md` и `docs/ARCHITECTURE_v3.md` — разделы затронутой системы.
+4. **ADR** из `docs/adr/`, которых касается тикет. Не менять молча то, что решено в ADR.
+5. **Для бэкенда**: `backend/CLAUDE.md` — правила FastAPI, структура модуля, анти-паттерны.
+6. **Для интерфейса**: `frontend/AGENTS.md`, раздел «Архитектура frontend/» ниже и соседние страницы, которые тикет меняет или повторяет.
+7. **Код вокруг**: соседние модули и их `public.py`, чтобы повторить уже принятые шаблоны.
+
+Если в ходе работы всплыло решение, которое меняет поведение для оператора, контракт API или схему базы, противоречит спеке или ADR либо его трудно откатить, — не додумывай: спроси пользователя, затем обнови спеку. Остальное решай сам.
 
 ## Команды
 
@@ -411,75 +433,129 @@ CTA, Inter + JetBrains Mono (`next/font`), hairline-границы, тёмные
 
 ## Документация
 
-`docs/BRD.md`, `docs/PRD.md`, `docs/TRD.md`, `docs/SPEC.md`,
-`docs/ARCHITECTURE.md`, `docs/ARCHITECTURE_v2.md` — бизнес-контекст, ICP,
-полная спецификация и обоснование схемы (`ARCHITECTURE_v2.md` §4 — источник
-для `db/schema.sql`). Комментарии в коде вида «Ф3», «Ф9», «F19» — ссылки на
+`docs/BRD.md`, `docs/PRD.md`, `docs/TRD.md`, `docs/ARCHITECTURE_v3.md` —
+бизнес-контекст, ICP, требования и устройство. Прежние версии —
+`docs/legacy/SPEC.md`, `docs/legacy/ARCHITECTURE.md`,
+`docs/legacy/ARCHITECTURE_v2.md` (§4 последнего — обоснование
+`db/schema.sql`). Воркфлоу тикетов — `docs/agents/workflow.md`. Комментарии в коде вида «Ф3», «Ф9», «F19» — ссылки на
 фазы и требования из этих документов.
 
----
+## Принципы кода
 
-## Code Style & Architecture
+Принципы описывают новый код. Существующие три системы написаны до них и приводятся к ним при переписывании (#4), а не отдельной кампанией. Правила FastAPI, структура модуля и анти-паттерны — `backend/CLAUDE.md`.
 
-**Naming**: intention-revealing names for files, modules, functions, vars, classes — name must match what the thing _actually does_, not what it was originally meant to do (`getUserOrders` not `getData`, `isEmailVerified` not `flag`; rename `processing.py` → `stripe_api_helpers.py` if that's what it wraps). If a function's behavior drifts from its name during a refactor, rename it — don't leave the name stale.
+### CUPID — обязательно, все пять
 
-**Functions**: SRP, ≤20-30 lines, 0-2 params (3+ → DTO/options object), no boolean flags (split into separate functions), no hidden side effects, guard clauses over nesting. A function/module should have exactly one reason to change — if a module handles two domains (e.g. payments + accounting), split it; cross-domain imports between two "single-purpose" modules is a smell that they aren't actually separated.
+- **Composable.** Маленькая поверхность: функция принимает то, что ей нужно, а не «контекст на всё». Минимум зависимостей, никаких скрытых глобальных синглтонов — соединение с базой, транспорт, модель и конфиг приходят в конструктор сервиса или параметром. Новых модульных швов `use()` не заводим.
+- **Unix philosophy.** Одна функция — одно дело, и делает его целиком. Гейт только отвечает «можно ли отправлять сейчас», не пишет в базу и не шлёт сообщение.
+- **Predictable.** Одинаковый вход — одинаковый результат; побочные эффекты видны из имени (`enqueue`, `record_refusal`, `activate_run`). Время читает одна функция (`clock.now()`) на границе — в роуте или в тике, дальше оно идёт параметром `now`; случайность (джиттер) передаётся так же. Ошибки — доменные исключения (`AlreadyQueuedError`, `ClosedThreadError`, `UnknownThreadError`), а не `None` или магические значения.
+- **Idiomatic.** Пишем как принято в Python 3.13, FastAPI и Pydantic v2: аннотации типов на всех сигнатурах, pydantic или `dataclass` для DTO, `pathlib`, `StrEnum`/`Literal` вместо голых строк, контекстные менеджеры для ресурсов. Фронт — Next 16, React 19, TypeScript; эта версия Next отличается от привычной, перед правкой читай `frontend/AGENTS.md`. Не переносим паттерны из других экосистем.
+- **Domain-based.** Имена — из `GLOSSARY.md`. Структура кода повторяет модули предметной области, а не технические слои (`utils/`, `helpers/`, `managers/`, `common/` не заводим). Общее ядро без бизнес-логики — модули верхнего уровня `backend/` (`config.py`, `clock.py`, `paths.py`, `sqlite_tools.py`).
 
-**Classes**: small, high cohesion, SRP. Objects = behavior + hidden state; DTOs = pure data, zero behavior. Wrap third-party APIs/DBs/HTTP clients behind adapters — never let vendor types leak into domain layer. Inject dependencies via constructor, don't instantiate internally.
+### SOLID — только S и D
 
-**Errors**: throw exceptions, not error codes/flags/`Optional` return-and-check. A function should either always return a valid value or raise — never return `T | None` to push the null-check onto every caller; that cascades into `Optional` chains up the call stack. No silent null return/pass — use guard clauses, empty collections, or explicit handling. Keep try/catch out of happy-path logic.
+Из SOLID обязательны два принципа. Остальные три не применяем как цель: запрещены не классы, а **лишние абстракции**, и абстракция появляется, только когда у неё есть вторая реальная причина существовать.
 
-**Comments**: explain _why_, never _what_ (e.g. "need this timestamp to filter recent intents" not "compute timestamp"); if code needs a what-comment, rewrite the code. Allowed only for legal notices, non-obvious algorithms, TODO/FIXME. Zero dead code — delete unused/commented-out code immediately.
+**S — Single Responsibility: одна причина для изменения.**
 
-**Law of Demeter**: don't drill into a nested object's internals across module boundaries to extract one field (e.g. reaching into a `financial_statement` response 3 levels deep for a `mutation_id`). Instead, have the owning function return only what the caller needs; pull cross-cutting data (e.g. `application_fee`) into the primary domain object itself (as a field/custom attribute) rather than passing two parallel objects (`invoice` + `invoice_data`) everywhere just so callers can dig through both.
+- Слои модуля не смешиваются: `api.py` — только HTTP, `service.py` — бизнес-правила и транзакция, `repository.py` — только запросы своих таблиц, `domain.py` — чистые правила без ввода-вывода.
+- Модуль отвечает за одну область предметной модели; правило живёт у владельца данных (Tell, Don't Ask).
+- Сервис начал меняться из-за двух разных сценариев или актёров — делим на два, а не растим один на 30 методов.
 
-**Domain modeling**: before splitting a "god function," understand the domain well enough to see which data naturally belongs on which entity — the right refactor is usually a data-model fix (add a field to the entity) not just a function split. Bring outside/fresh technical judgment on top of domain knowledge — don't just implement what a domain expert dictates without a critical technical pass.
+**D — Dependency Inversion: бизнес-логика не создаёт и не знает конкретную инфраструктуру.**
 
-**File structure**: newspaper metaphor (high-level → low-level top to bottom), 100-500 lines/file max, follow linter/formatter.
+- Зависимости приходят снаружи — через конструктор и `Depends` FastAPI; сервис никогда не создаёт клиентов и SDK сам. Сборка — в `dependencies.py` модуля для запроса и в `backend/main.py` для фоновых задач.
+- От внешних систем сервис зависит через `Protocol` с реальной и Fake-реализацией. Таких систем три: модель (OpenRouter), транспорт WhatsApp (Node), сетевой сбор (scrapling). Код домена не импортирует SDK.
+- Между модулями — зависимость от фасада `public.py`, а не от внутренностей чужого модуля. Фасад появляется вместе с первым внешним вызовом.
+- Реализация одна и заменять её не нужно — интерфейс не заводим: инверсию даёт внедрение через конструктор.
 
-**Testing**: FIRST principles (Fast, Independent, Repeatable, Self-validating, Timely), same quality bar as prod code.
+**O, L, I — не цель.** Не строим точек расширения «на будущее»; наследования, кроме исключений, нет; узкие интерфейсы на границах получаются сами собой.
 
-**Refactoring**: Boy Scout Rule — leave code cleaner than found. Make it work → make it clean, in small incremental steps, not big-bang rewrites.
+**Под запретом:** интерфейс с одной реализацией, наследование ради переиспользования кода, базовые `BaseService`/`BaseRepository`, generic-репозитории, фабрики одного продукта, DI-контейнеры, стратегии из одного варианта, классы-«менеджеры» и «хелперы», слои-обёртки без логики. Дублирование двух-трёх похожих строк лучше неверной общей абстракции — обобщаем на третьем реальном повторе. Границы модулей (`public.py`, тест графа импортов) — обязательны.
 
-## Python-Specific
+### Где классы, а где функции
 
-- Type-hint every function signature: params and return type (`def get_user(user_id: int) -> User | None`). No untyped `def`.
-- Use `dataclass` or `pydantic.BaseModel` for DTOs, never raw dicts/tuples passed across boundaries.
-- Prefer `Enum`/`Literal` over raw strings for fixed value sets.
-- Use `pathlib.Path`, not string paths.
-- No mutable default args (`def f(items: list = [])` → use `None` + guard, or `field(default_factory=list)`).
-- Prefer f-strings over `%`/`.format()`.
-- Use `@property` for computed attributes, not getter methods.
-- Raise custom exception classes (`class OrderNotFoundError(Exception)`), not bare `Exception`/`ValueError` for domain errors.
-- Use context managers (`with`) for resources (files, connections, locks) — never manual open/close.
-- Prefer list/dict comprehensions over manual loops for simple transforms; drop back to a loop once logic needs branching/side effects.
-- Use `is None`/`is not None`, never ` == None`.
-- Avoid `*args`/`**kwargs` in public APIs unless genuinely variadic — hides the contract.
-- One class = one file for domain entities; group small related DTOs together.
-- Run `mypy`/`ruff` (or project equivalent) — treat type/lint errors as build failures, not warnings.
-- Docstrings only for public functions/classes with non-obvious behavior (Google or NumPy style) — describe _why_/_contract_, not restate the type hints.
+Класс — когда есть состояние (в том числе зависимости запроса), несколько реализаций или его требует фреймворк. Без состояния — функция. Наследование — только в иерархии исключений и от общей базы схем.
 
-## Debugging Protocol
+- **Классы:** сервис модуля с зависимостями в конструкторе; репозиторий; Pydantic-схемы и DTO; доменные исключения; адаптеры трёх внешних систем; инфраструктура с состоянием (темп сети `Pacer`).
+- **Функции:** чистые правила домена (гейты, скоринг, разбор страниц); фасады `public.py`; роуты; компоненты React и хуки.
 
-- State root cause in one line before touching code.
-- Fix at source-of-truth/owner layer, never patch symptoms in child layers (no fallbacks/duplicated logic there).
-- Before fixing: trace top-down (route→page→container→state) and bottom-up (function→hook→service→API→DB).
-- Diagnose in order: data/contracts → business logic → async/timing → UI state → integration → architecture.
-- When changing a mechanic, update all coupled layers together: contracts, handlers, queries, cache, serializers, loading/error states.
-- Justify why other layers are unaffected before a one-file fix.
-- If not reliably reproducible, write a failing test first, then fix.
-- Re-architecture requires explicit scope/risk/compatibility/rollout plan.
-- Two tools must never share a side-effect surface — split the lighter tool's concern off so the heavy one stays one-per-lifecycle.
+### ACID — транзакции
 
-## Self-Improvement Protocol
+- **Одна бизнес-операция — одна транзакция.** Открывает и коммитит её сервис (`with db:`). Операцию не дробим на несколько коммитов.
+- **Atomicity.** Сеть и вызов модели — никогда внутри транзакции: `sent_text` пишется после ответа транспорта. Изменения наружу (SSE, Telegram) — только after-commit: откат не должен оставлять следов. Единственное исключение — журнал `activity`: он пишется своим соединением вне транзакции вызывающего, потому что след «пытались, и вот что вышло» обязан пережить откат.
+- **Consistency.** Инварианты данных охраняет схема: `CHECK`, `UNIQUE`, частичные индексы (уникальность живых строк `outbox`). Проверка в сервисе — для понятной ошибки оператору, но не вместо ограничения в базе.
+- **Isolation.** Гонки закрываем явно: смена статуса — `UPDATE … WHERE status = :from` (0 строк → конфликт). Не читаем «проверил, потом записал» без условного `UPDATE`: тик воркера и кнопка оператора работают с одними строками.
+- **Durability.** Ответ «успешно» — только после коммита. Запись в базу не ретраим; ретраи — только идемпотентных внешних вызовов, а неопределённый исход отправки уходит человеку (`stuck`), не в слепой повтор.
+- Транзакции короткие: никаких сетевых ожиданий и тяжёлых вычислений внутри.
 
-- After a correction/successful fix: add one imperative-sentence rule about the _error class_, not the incident, to the right section.
-- Search existing rules first; refine instead of duplicating.
-- Contradicting rules → flag and ask which to keep.
-- Keep this file under 2500 tokens; merge/delete overlapping or stale rules when exceeded.
-- Weekly: audit which rules never fired or overlap, report findings.
+### Postel's Law — строго отдаём, терпимо принимаем
 
-## File Hygiene
+«Терпимо» значит нормализовать безобидные различия, а не угадывать смысл кривого ввода. На границе доверия неоднозначное или неверное отклоняется явной ошибкой.
 
-- One dense sentence per rule, grouped by section (Architecture, Style, Bug Fix, Self-Improvement, Project-specific).
-- After code changes, update CLAUDE.md/BRD/PRD/TRD/SPEC docs accordingly.
+- **Принимаем терпимо.** Обрезаем пробелы по краям строк; телефон приводим к канонической форме, домен — к нижнему регистру, ник Instagram — без `@`; лишние поля в теле запроса игнорируются, а не роняют запрос.
+- **Не угадываем.** Неоднозначное значение, неизвестный код, переход статуса не по таблице — 422/409 с кодом ошибки, а не «примерно подходящее» значение.
+- **Отдаём строго.** Ответы точно по схеме API; ошибки — `detail` и стабильный `code` (`errors.numberExists`), фронт ветвится по `code`, а не по тексту; время — ISO 8601 с таймзоной, в базе UTC, Asia/Almaty — только в гейте окна и на показе.
+- **Читаем чужое терпимо (tolerant reader).** Ответы 2GIS, Instagram и Node разбираем только по нужным полям, неизвестные игнорируем.
+- **Контракт меняем одним PR с фронтом.** Потребитель API один — свой дашборд, поэтому expand/contract не нужен; появится второй потребитель — правило меняется.
+
+### Tell, Don't Ask — решает владелец данных
+
+Не вытаскивай чужое состояние, чтобы принять решение за его владельца: скажи владельцу, что сделать, и пусть он решит сам.
+
+- **Между модулями — команды, а не расспросы.** Отказ оформляет только владелец юридического контура, остальные зовут его фасад и не пишут в `suppression` сами. В очередь ставит только `enqueue` — и кнопка оператора, и тик воркера.
+- **Правило живёт рядом с данными, которыми оно управляет**, и существует в одном месте. Два модуля проверяют одно условие — одно из мест лишнее.
+- **Клиент не дублирует правила домена.** API отдаёт готовые решения — порядок срочности задач, пороги молчания демонов, доступные действия; дашборд показывает их как есть.
+- **Чтение — можно.** Запросы данных для показа — не нарушение; нарушение — бизнес-решение по прочитанному чужому состоянию.
+
+## Безопасность
+
+### Least Privilege
+
+- **Ключи и секреты** — только в `backend/.env` через `config.py`, никогда в репо. Фронт знает только адрес API (`NEXT_PUBLIC_API_ORIGIN`).
+- **Невосстановимый слой** — `state.db`, `data/raw/`, сессии WhatsApp — в git не попадает никаким способом и бэкапится отдельно.
+- **API без авторизации и слушает `127.0.0.1`.** Наружу не выставляется без отдельного решения (ADR): у дашборда нет входа, а за ним — отправка сообщений живым людям.
+- **Вебхук** в бою работает только с `SENDER_WEBHOOK_SECRET`; пустой секрет — только локальная разработка.
+- **Данные лидов** уходят в модель и в логи по необходимости: телефоны и тексты сообщений не логируем.
+
+### Defense in Depth
+
+Ни одна проверка не должна быть единственной защитой: подпись вебхука → валидация входа Pydantic → стоп-слова до модели → гейты перед отправкой → проверка отказа до выдачи и до отправки → ограничения схемы → песочница не стартует с боевым транспортом → журнал `activity`.
+
+- **Фронт — не защита.** Скрытая кнопка — это UX; гейты и отказ бэкенд проверяет сам.
+- **Самые чувствительные пути** — отправка лидам (гейты, очередь, автопилот), отказы (F21), вебхук, песочница — закрыты минимум двумя слоями и тестом.
+
+## Работа с тикетами
+
+Факты о проекте для воркфлоу (ветки, команды проверок, QA) — `docs/agents/workflow.md`. Процедуры — в скиллах плагина `workflow` (репо `NurmukhamedKZ/claude-workflow`, включён в `.claude/settings.json`), а не здесь. Меняется процесс — правка в репо плагина; меняется факт о проекте — правка `workflow.md`.
+
+**Main грилит, кодер пишет код.** Main-сессия берёт тикет через `/workflow:launch-main`: изучает код, грилит пользователя (`grill-me` / `grill-with-docs`), пишет спеку в тело issue («Решения грилинга»), выбирает effort, показывает спеку и **только после подтверждения пользователя** создаёт worktree и запускает кодера `/workflow:launch-coder <N>`. Кодер ведёт тикет до PR: `/tdd`, `/workflow:review-axes`, `/workflow:manual-qa`. `/implement` не используем — его заменяет `/workflow:launch-coder`.
+
+- Тикеты — sub-issues #3 со связями «blocked by». Брать только тикет, все блокеры которого закрыты. Один тикет — одна ветка `ticket/<номер>-<slug>` от свежей `main`, один кодер в своём worktree.
+- **Сначала падающий тест, потом код** (`/tdd`) во всех частях репо.
+- **Сначала ревью, потом PR.** Ветка не пушится и PR не открывается, пока не пройден `/workflow:review-axes` и не закоммичены исправления.
+- **Документацию обновляй тем же PR, что и код:** затронутые `CLAUDE.md`, `backend/CLAUDE.md`, `docs/PRD.md`, `docs/TRD.md`, `docs/agents/workflow.md`.
+- Мержит пользователь: тикеты в `main` — squash.
+
+## Отладка
+
+- **Сначала журнал:** поищи симптом в `docs/agents/bugs.md` (`grep` по тексту ошибки, поведению). Файл не грузится в сессию сам — открывай его при каждой отладке.
+- **Корень одной строкой — до правки кода.** Гипотеза без доказательства (трейс, лог, воспроизведение) — не корень.
+- **Не воспроизводится стабильно — сначала воспроизведи:** падающий тест или повтор. Исправление рабочее, когда повтор зелёный.
+- **Порядок поиска:** данные и контракт API → сервис и база → фоновые тики и очередь → SSE и клиентское состояние → окружение (Node, песочница, `backend/.env`).
+- **Чини у владельца данных или механизма**, а не заплаткой в слое-потребителе. Перед правкой в одном файле объясни, почему остальные слои не затронуты.
+- **После исправления — запись в `docs/agents/bugs.md`** (симптом, корень, исправление, класс, как ловили). Класс встретился второй раз — предложи пользователю правило для `CLAUDE.md`; вписывай после согласия, сначала найди похожее правило и уточни его вместо дубля.
+
+## Agent skills
+
+### Issue tracker
+
+Задачи и спеки живут в GitHub Issues репо `NurmukhamedKZ/Outreach-OS`, работа через `gh`. См. `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Стандартные метки: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. См. `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` и `docs/adr/` в корне, заводятся по мере надобности. См. `docs/agents/domain.md`.
