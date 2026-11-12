@@ -1,11 +1,5 @@
 -- STATE --
 -- state.db — порождённое: невосстановимо, CREATE TABLE IF NOT EXISTS, DROP запрещён.
-CREATE TABLE IF NOT EXISTS suppression (
-  handle   TEXT PRIMARY KEY,
-  added_at TEXT NOT NULL,
-  reason   TEXT
-);
-
 CREATE TABLE IF NOT EXISTS threads (
   thread_id  TEXT PRIMARY KEY,
   company_id TEXT NOT NULL,
@@ -34,7 +28,7 @@ CREATE TABLE IF NOT EXISTS llm_answers (
   answer     TEXT NOT NULL    -- json ответа
 );
 
--- Очередь и история запусков операций (спека §1: state.db = suppression, jobs,
+-- Очередь и история запусков операций (спека §1: state.db = отказы, jobs,
 -- threads, messages, llm_answers). result — json результата операции.
 CREATE TABLE IF NOT EXISTS jobs (
   id         INTEGER PRIMARY KEY,

@@ -42,17 +42,43 @@ def test_lead_without_channel_is_not_picked(stores):
 
 
 def test_refusal_filters_lead(stores):
-    """F21: отказ из state.suppression убирает канал, а без канала — лид."""
+    """F21: отказ из state.refusals убирает канал, а без канала — лид."""
     from collector.services import leads as service
     db = stores
     _published_run(db)
-    db.execute("INSERT INTO state.suppression (handle, added_at, reason)"
-               " VALUES ('+77010000001', '2026-08-10', 'просил')")
-    db.execute("INSERT INTO state.suppression (handle, added_at, reason)"
-               " VALUES ('+77010000002', '2026-08-10', 'просил')")
+    db.execute("INSERT INTO state.refusals (handle, reason, refused_at)"
+               " VALUES ('+77010000001', 'просил', '2026-08-10T00:00:00+00:00')")
+    db.execute("INSERT INTO state.refusals (handle, reason, refused_at)"
+               " VALUES ('+77010000002', 'просил', '2026-08-10T00:00:00+00:00')")
     db.commit()
     found = service.pick(db, limit=10)
     assert found == [], "отказ обязан убрать лида из выдачи (F21)"
+
+
+def test_refusal_in_another_spelling_filters_the_channel(stores):
+    """F21: a refusal is kept in canonical form, the contact in 2GIS spelling."""
+    from contextlib import closing
+
+    import paths
+    from collector.services import leads as service
+    from core import db as core_db
+    from datetime import UTC, datetime
+    from refusals import public as refusals
+    db = stores
+    _published_run(db)
+    db.execute("DELETE FROM contacts_all")
+    db.execute("INSERT INTO contacts_all (run_id, branch_id, kind, handle)"
+               " VALUES (1, 'b1', 'email', 'Info@Romashka.KZ')")
+    db.execute("INSERT INTO contacts_all (run_id, branch_id, kind, handle)"
+               " VALUES (1, 'b1', 'phone', '7010000002')")
+    db.commit()
+    with closing(core_db.connect(paths.state_db())) as state:
+        refusals.record(state, "info@romashka.kz", "просил по почте", datetime.now(UTC))
+        refusals.record(state, "+77010000002", "просил по телефону", datetime.now(UTC))
+
+    assert service.pick(db, limit=10) == [], "отказ в другой записи пропустил лида (F21)"
+    card = service.card(db, "c1")
+    assert [channel["suppressed"] for channel in card["channels"]] == [True, True]
 
 
 def test_second_channel_survives_refusal(stores):
@@ -60,8 +86,8 @@ def test_second_channel_survives_refusal(stores):
     from collector.services import leads as service
     db = stores
     _published_run(db)
-    db.execute("INSERT INTO state.suppression (handle, added_at, reason)"
-               " VALUES ('+77010000001', '2026-08-10', 'просил')")
+    db.execute("INSERT INTO state.refusals (handle, reason, refused_at)"
+               " VALUES ('+77010000001', 'просил', '2026-08-10T00:00:00+00:00')")
     db.commit()
     found = service.pick(db, limit=10)
     assert len(found) == 1
@@ -80,15 +106,15 @@ def test_every_lead_has_why_now(stores):
 
 
 def test_export_filters_refusals(stores, tmp_path, monkeypatch):
-    """F21: отказ из state.suppression убирает канал, а без канала — лид."""
+    """F21: отказ из state.refusals убирает канал, а без канала — лид."""
     from collector.services.pipeline import export as export_op
     monkeypatch.setattr(export_op, "OUT", tmp_path / "leads.csv")   # не трогать боевой CSV
     db = stores
     _published_run(db)
-    db.execute("INSERT INTO state.suppression (handle, added_at, reason)"
-               " VALUES ('+77010000001', '2026-08-10', 'просил')")
-    db.execute("INSERT INTO state.suppression (handle, added_at, reason)"
-               " VALUES ('+77010000002', '2026-08-10', 'просил')")
+    db.execute("INSERT INTO state.refusals (handle, reason, refused_at)"
+               " VALUES ('+77010000001', 'просил', '2026-08-10T00:00:00+00:00')")
+    db.execute("INSERT INTO state.refusals (handle, reason, refused_at)"
+               " VALUES ('+77010000002', 'просил', '2026-08-10T00:00:00+00:00')")
     db.commit()
     leads = export_op.build_leads(db, limit=10)
     assert leads == [], "отказ обязан убрать лида из выдачи (F21)"

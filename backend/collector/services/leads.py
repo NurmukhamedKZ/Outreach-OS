@@ -7,6 +7,7 @@
 
 from collector.services.pipeline import export as report
 from collector.db import lead as store
+from refusals import public as refusals
 
 
 def pick(db, limit, city=None):
@@ -40,7 +41,8 @@ def card(db, company_id):
     return {
         **as_lead(row, report.best_channel(row["channels"], suppressed)),
         "channels": [
-            {"kind": kind, "handle": handle, "suppressed": handle in suppressed}
+            {"kind": kind, "handle": handle,
+             "suppressed": refusals.canonical(handle) in suppressed}
             for kind, handle in row["channels"]
         ],
         "signals": store.signals_of(db, company_id),
