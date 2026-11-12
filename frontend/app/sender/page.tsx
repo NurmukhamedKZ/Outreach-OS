@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  AUTOPILOT_LABELS,
   fetchQueue,
   fetchSender,
   liftQuarantine,
@@ -15,6 +16,7 @@ import {
   qrNumber,
   registerNumber,
   setAutopilot,
+  type AutopilotMode,
   type QueueRow,
   type SenderStatus,
 } from "../api";
@@ -26,12 +28,6 @@ const PHASE_LABEL: Record<string, string> = {
   internal: "внутренний прогрев",
   cold: "боевые касания",
 };
-
-const AUTOPILOT_LABEL = {
-  off: "Стоп",
-  replies: "Только ответы",
-  full: "Полный автопилот",
-} as const;
 
 const WHEN = new Intl.DateTimeFormat("ru", {
   day: "numeric",
@@ -68,7 +64,7 @@ export default function Sender() {
       <header className="page-head">
         <h1>Отправка</h1>
         <span className="page-sub">
-          система 3 · автопилот: {status?.autopilot ?? "…"}
+          система 3 · автопилот: {status ? AUTOPILOT_LABELS[status.autopilot] ?? status.autopilot : "…"}
         </span>
       </header>
 
@@ -96,20 +92,26 @@ export default function Sender() {
           </span>
         </div>
         <div className="autopilot">
-          {(["off", "replies", "full"] as const).map((mode) => (
+          {(Object.entries(AUTOPILOT_LABELS) as [AutopilotMode, string][]).map(([mode, label]) => (
             <button
               key={mode}
-              className="btn"
+              className={status?.autopilot === mode ? "btn" : "btn-secondary"}
               aria-current={status?.autopilot === mode}
               onClick={() => {
                 setError(null);
                 setAutopilot(mode).then(reload).catch(report);
               }}
             >
-              {AUTOPILOT_LABEL[mode]}
+              {label}
             </button>
           ))}
         </div>
+        <p className="note">
+          «Стоп» держит всю очередь. «Ручной» — модель готовит черновики, а уходит
+          только то, что вы поставили в очередь кнопкой. То, что автомат успел
+          поставить до переключения в «Ручной», тоже уйдёт: остановить всё — только
+          «Стоп».
+        </p>
         {recent.length > 0 && (
           <table className="table">
             <thead>

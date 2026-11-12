@@ -41,7 +41,7 @@ def test_status_lists_the_pool_with_warmup_day(client):
     body = http.get("/api/sender").json()
 
     assert body["status"] == "live"
-    assert body["autopilot"] == "off"
+    assert body["autopilot"] == "manual"
     assert body["numbers"][0]["number"] == "+77001112233"
     assert body["numbers"][0]["day"] == 1
     assert body["numbers"][0]["phase"] == "socket_delay"
@@ -226,12 +226,13 @@ def test_a_number_without_whatsapp_answers_with_words_not_a_traceback(client_no_
     assert "whatsapp" in response.json()["detail"].lower()
 
 
-def test_autopilot_switches_and_is_visible_in_the_status(client, switch):
+@pytest.mark.parametrize("mode", ["off", "manual", "replies", "full"])
+def test_autopilot_switches_and_is_visible_in_the_status(client, switch, mode):
     http, _ = client
 
-    assert http.post("/api/sender/autopilot", json={"mode": "full"}).json() == \
-        {"autopilot": "full"}
-    assert http.get("/api/sender").json()["autopilot"] == "full"
+    assert http.post("/api/sender/autopilot", json={"mode": mode}).json() == \
+        {"autopilot": mode}
+    assert http.get("/api/sender").json()["autopilot"] == mode
 
 
 def test_autopilot_rejects_an_unknown_mode(client, switch):

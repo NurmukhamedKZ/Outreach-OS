@@ -55,6 +55,65 @@ async def test_replies_does_not_start_cold_outreach(db, drafted, mode):
     assert db.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
 
 
+async def test_manual_does_not_start_cold_outreach(db, drafted, mode):
+    """Ручной режим: модель готовит черновики, но в очередь сам автомат не
+    ставит ничего — первое касание ждёт кнопки так же, как в replies."""
+    mode("manual")
+    assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) is None
+    assert db.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
+
+
+async def test_manual_sends_what_the_operator_queued(db, drafted, mode):
+    """В отличие от off, ручной режим очередь не держит: строка, которую
+    оператор поставил кнопкой, уходит на ближайшем тике."""
+    from sender.services import queue
+    mode("manual")
+    await queue.enqueue(db, FakeTransport(), "+77010000001", INSIDE, CONFIG)
+    transport = FakeTransport()
+
+    assert await worker.tick(db, transport, CONFIG, INSIDE) == "sent"
+
+    assert [call["to"] for call in transport.sent_calls] == ["+77010000001"]
+
+
+async def test_manual_sends_what_the_automaton_queued_before_the_switch(db, drafted, mode):
+    """Записанный факт, а не сюрприз: у строки очереди нет автора, и ответ,
+    поставленный автоматом в replies, после перехода в manual уходит. Полный
+    стоп — только off. Автор строки и её удержание в manual — #7."""
+    from sender.services import queue
+    mode("replies")
+    await queue.enqueue(db, FakeTransport(), "+77010000001", INSIDE, CONFIG, kind="reply")
+    mode("manual")
+    transport = FakeTransport()
+
+    assert await worker.tick(db, transport, CONFIG, INSIDE) == "sent"
+    assert [call["to"] for call in transport.sent_calls] == ["+77010000001"]
+
+
+async def test_a_broken_switch_file_holds_the_queue(db, drafted):
+    """Не подменяя режим: битый файл-переключатель доходит до тика как off."""
+    from sender.services import queue
+    config.OVERRIDE.write_text("fulll\n", encoding="utf-8")
+    await queue.enqueue(db, FakeTransport(), "+77010000001", INSIDE, CONFIG)
+    transport = FakeTransport()
+
+    assert await worker.tick(db, transport, CONFIG, INSIDE) is None
+    assert transport.sent_calls == []
+
+
+async def test_stop_pressed_mid_tick_still_reports_the_queued_touch(db, drafted,
+                                                                    monkeypatch):
+    """«Стоп» посреди тика держит строку, но журнал не врёт, что тик был
+    пустым: касание в очередь встало."""
+    modes = iter(["full", "off"])
+    monkeypatch.setattr(worker.sender_config, "autopilot", lambda: next(modes))
+    transport = FakeTransport()
+
+    assert await worker.tick(db, transport, CONFIG, INSIDE) == "queued"
+    assert transport.sent_calls == []
+    assert db.execute("SELECT count(*) FROM outbox").fetchone()[0] == 1
+
+
 async def test_full_takes_one_cold_touch_per_tick(db, drafted, mode):
     """Одна строка за тик: автопилот, выгребающий пачку, отличается от живого
     отправителя ровно тем, из-за чего номера и банят."""

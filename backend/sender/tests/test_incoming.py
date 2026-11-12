@@ -78,9 +78,11 @@ async def test_free_text_becomes_a_draft_and_a_queued_row(answered, monkeypatch)
                             ).fetchone()[0] is not None
 
 
-async def test_autopilot_off_writes_the_draft_but_queues_nothing(answered, monkeypatch):
+@pytest.mark.parametrize("mode", ["off", "manual"])
+async def test_without_reply_autopilot_the_draft_waits_for_the_button(answered, monkeypatch,
+                                                                     mode):
     """Этап 3 выката: оператор читает каждое сообщение и правит промпт."""
-    monkeypatch.setattr(sender_config, "autopilot", lambda: "off")
+    monkeypatch.setattr(sender_config, "autopilot", lambda: mode)
     говорит(monkeypatch, Reply(text="Ответ агента", status=None, reason=None))
 
     assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "answered"
@@ -88,6 +90,55 @@ async def test_autopilot_off_writes_the_draft_but_queues_nothing(answered, monke
     assert answered.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
     assert answered.execute("SELECT count(*) FROM messages WHERE role = 'outgoing'"
                             ).fetchone()[0] == 1
+
+
+async def test_manual_drafts_an_answer_to_every_incoming(answered, monkeypatch):
+    """Предохранитель «один автоответ на тред» стережёт разговор без
+    присмотра. Черновик, который читает оператор, автоответом не является:
+    сочти его — и второе входящее ушло бы в эскалацию без черновика."""
+    monkeypatch.setattr(sender_config, "autopilot", lambda: "manual")
+    говорит(monkeypatch, Reply(text="Ответ агента", status=None, reason=None))
+
+    assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "answered"
+    with answered:
+        conversation.add_incoming(answered, "+77010000001", "а когда можно?", "IN2")
+    assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "answered"
+
+    assert answered.execute("SELECT count(*) FROM messages WHERE role = 'outgoing'"
+                            ).fetchone()[0] == 2
+    thread = conversation.get(answered, "+77010000001")
+    assert thread["auto_replies"] == 0 and thread["status"] == "active"
+    assert answered.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
+
+
+async def test_manual_drafts_even_where_the_automaton_answered_before(answered,
+                                                                      monkeypatch):
+    """Счётчик остался от replies, но в manual ответ всё равно читает
+    оператор: эскалировать «автомат уже отвечал» незачем."""
+    answered.execute("UPDATE threads SET auto_replies = 1")
+    answered.commit()
+    monkeypatch.setattr(sender_config, "autopilot", lambda: "manual")
+    говорит(monkeypatch, Reply(text="Ответ агента", status=None, reason=None))
+
+    assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "answered"
+    assert conversation.get(answered, "+77010000001")["status"] == "active"
+    assert answered.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
+
+
+async def test_switching_to_replies_mid_turn_does_not_bypass_the_limit(answered,
+                                                                       monkeypatch):
+    """Режим сменили, пока думала модель: проверка лимита прошла под manual,
+    постановка решается под replies. Лимит уже выбран — ответ остаётся
+    черновиком, а не уходит вторым автоответом."""
+    answered.execute("UPDATE threads SET auto_replies = 1")
+    answered.commit()
+    modes = iter(["manual", "replies"])
+    monkeypatch.setattr(sender_config, "autopilot", lambda: next(modes))
+    говорит(monkeypatch, Reply(text="Ответ агента", status=None, reason=None))
+
+    assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "answered"
+    assert answered.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
+    assert conversation.get(answered, "+77010000001")["auto_replies"] == 1
 
 
 async def test_the_automaton_answers_in_its_own_words_only_once(answered, monkeypatch):

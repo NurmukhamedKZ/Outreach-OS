@@ -34,13 +34,9 @@ COLD_PER_TICK = 1
 # автоответа, и завести молчащему лиду «напоминание» посреди живого разговора.
 OUTREACH_KINDS = ("cold", "followup")
 
-# Кто уходит сам в каком режиме. `replies` наполнит часть 3: ответы в диалоге
-# приносит она, а холодные касания и follow-up остаются на кнопке.
+# Кто уходит сам в каком режиме. В `manual` и `replies` холодные касания
+# остаются на кнопке.
 COLD_MODES = ("full",)
-
-# Kill switch. Как readme и обещает: выключенный автопилот держит очередь
-# стоящей, а не только перестаёт её наполнять.
-OFF_MODE = "off"
 
 # Такт, когда конфиг прочитать не удалось. Чтение стоит внутри try вместе со
 # всем остальным: битый config.toml обязан стоить одного пропущенного тика, а
@@ -80,10 +76,11 @@ async def tick(db, transport, config: dict, now: datetime) -> str | None:
                              "касание")
     queued = (sender_config.autopilot() in COLD_MODES
               and await _queue_cold_touch(db, transport, config, now))
-    if sender_config.autopilot() == OFF_MODE:
+    if sender_config.autopilot() == sender_config.OFF:
         # Kill switch: строки, уже стоящие в outbox (хоть от автопилота, хоть от
         # кнопки оператора), ждут, а не уходят по инерции старого режима.
-        return handled or matured
+        # `manual` очередь не держит: туда сам автомат ничего не ставит.
+        return handled or matured or ("queued" if queued else None)
     row = outbox.due(db, now)
     if row is None:
         return handled or matured or ("queued" if queued else None)

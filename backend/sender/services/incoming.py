@@ -25,8 +25,9 @@ from writer.services import config as writer_config, offers, seller, stages
 
 log = logging.getLogger(__name__)
 
-# Режимы, в которых ответ уходит сам. В `off` остаётся черновик под кнопку —
-# это и есть этап 3 выката: оператор читает каждое сообщение и правит промпт.
+# Режимы, в которых ответ уходит сам. В `off` и `manual` остаётся черновик под
+# кнопку — это и есть этап 3 выката: оператор читает каждое сообщение и правит
+# промпт.
 REPLY_MODES = ("replies", "full")
 
 # Цифра рядом с валютой. Самый дорогой класс ошибки — придуманная цена: это
@@ -56,7 +57,10 @@ async def handle_one(db, transport, config: dict, now: datetime) -> str | None:
     if row["handle_attempts"] >= config["limits"]["max_handle_attempts"]:
         return await _escalate(db, thread, row, now,
                                "не смогли обработать входящее три раза")
-    if thread["auto_replies"] >= config["limits"]["auto_replies_per_thread"]:
+    # Лимит стережёт разговор без присмотра: в `off` и `manual` ответ читает
+    # оператор, и счётчик, оставшийся от `replies`, черновик не отменяет.
+    if (thread["auto_replies"] >= config["limits"]["auto_replies_per_thread"]
+            and sender_config.autopilot() in REPLY_MODES):
         return await _escalate(db, thread, row, now,
                                "автомат уже отвечал своими словами")
 
@@ -89,14 +93,24 @@ async def _answer(db, transport, thread: dict, row: dict, text: str,
     if len(text) > config["limits"]["max_reply_chars"] or PRICE.search(text):
         return await _escalate(db, thread, row, now,
                                "ответ длиннее лимита или содержит цену")
+    # Режим читается один раз: счётчик и постановка обязаны решаться одним
+    # значением, иначе переключение посреди хода дало бы автоответ без счёта.
+    # Лимит — ещё раз здесь: режим могли сменить на `replies`, пока думала
+    # модель, и проверка в handle_one тогда прошла под другим режимом.
+    automatic = (sender_config.autopilot() in REPLY_MODES
+                 and thread["auto_replies"] < config["limits"]["auto_replies_per_thread"])
     with db:
-        message_id = conversation.add_draft(db, thread["thread_id"], text, ANGLE)
-        conversation.bump_auto_replies(db, thread["thread_id"])
+        conversation.add_draft(db, thread["thread_id"], text, ANGLE)
+        # Предохранитель стережёт разговор без присмотра. Черновик, который
+        # прочтёт оператор, автоответом не является: сочти его — и второе
+        # входящее ушло бы в эскалацию без черновика.
+        if automatic:
+            conversation.bump_auto_replies(db, thread["thread_id"])
         conversation.mark_handled(db, row["message_id"], now)
     activity.record("sender.tick", "answered", subject=thread["thread_id"],
                     detail=text)
-    if sender_config.autopilot() not in REPLY_MODES:
-        log.info("ответ в тред %s остался черновиком: автопилот выключен",
+    if not automatic:
+        log.info("ответ в тред %s остался черновиком: ответы не уходят сами",
                  thread["thread_id"])
         return "answered"
     try:

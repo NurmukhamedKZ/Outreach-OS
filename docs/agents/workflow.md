@@ -91,7 +91,7 @@ Main ведёт тикеты сам и зовёт пользователя то�
 
 - **Инструмент:** Playwright MCP (`mcp__plugin_playwright_playwright__*`); QA делает Claude, не пользователь.
 - **Где:** локально, preview-деплоев нет. `cd backend && uv run python main.py` (порт 8787) и `cd frontend && npm run dev`, страницы — `http://localhost:3000`.
-- **Переписка и отправка** проверяются только в песочнице: `SANDBOX=1` и `SENDER_NODE_URL=http://127.0.0.1:8787/api/sandbox/node` в `backend/.env`. Боевой Node (`backend/sender/node`) для QA не запускается; `backend/sender/autopilot` остаётся `off`.
+- **Переписка и отправка** проверяются только в песочнице: `SANDBOX=1` и `SENDER_NODE_URL=http://127.0.0.1:8787/api/sandbox/node` в `backend/.env`. Боевой Node (`backend/sender/node`) для QA не запускается; `backend/sender/autopilot` остаётся `off` (файла нет — режим `manual` из `sender/config.toml`).
 - **Устройства:** десктоп `1280×800`, телефон `390×844`.
 - **Языки:** только русский.
 - **Данные:** слой данных пуст. Страницы с данными проверяются после мини-сбора (одна рубрика, один город), который один раз делает main-сессия, а не каждый кодер; сбор ходит в сеть и платит за модель.

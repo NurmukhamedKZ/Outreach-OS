@@ -13,6 +13,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  AUTOPILOT_LABELS,
   ApiError,
   activateSandboxRun,
   createSandboxRun,
@@ -29,6 +30,7 @@ import {
   setAutopilot,
   setSandboxFaults,
   type ActivityEvent,
+  type AutopilotMode,
   type Lead,
   type SandboxBubble,
   type SandboxChat,
@@ -555,17 +557,12 @@ export default function SandboxPage() {
           <section className="card">
             <h2 className="card-sub">Автопилот</h2>
             <p className="note">
-              Тот же переключатель, что в бою. «Выключен» — очередь стоит,
-              отправляет только кнопка.
+              Тот же переключатель, что в бою. «Стоп» держит всю очередь,
+              «Ручной» отправляет только поставленное кнопкой — и то, что автомат
+              успел поставить до переключения.
             </p>
             <div className="sandbox-shifts">
-              {(
-                [
-                  ["off", "выключен"],
-                  ["replies", "только ответы"],
-                  ["full", "полный"],
-                ] as const
-              ).map(([mode, label]) => (
+              {(Object.entries(AUTOPILOT_LABELS) as [AutopilotMode, string][]).map(([mode, label]) => (
                 <button
                   key={mode}
                   className={pool?.autopilot === mode ? "btn" : "btn-quiet"}
