@@ -139,15 +139,17 @@ reload-режима: `uv run uvicorn main:app --port 8787 --reload --timeout-gra
 **Юридический контур (модуль `backend/refusals/`, PRD F21).** Источник истины —
 таблица `refusals` в `state.db`, невосстановимый слой (пересборкой не
 затрагивается; схема — ревизия Alembic `0002`). Писатель один —
-`refusals.public.record`: контакт в канонической форме (телефон `+7XXXXXXXXXX`
-через `core/phones.py`, остальное — в нижнем регистре), причина обязательна,
-повтор возвращает первую запись. `DELETE` и `UPDATE` таблицы отклоняют
-триггеры. Проверка нового кода — `refusals.public.is_refused(db, контакты
-компании)`: отказ по любому контакту закрывает компанию целиком. Старое имя
-`suppression(handle, added_at, reason)` — представление над `refusals`: его до
-#7 и #13 читают `export.run`, `services/leads.py`, writer и sender, и там отказ
-по-прежнему снимает один канал, а не компанию. API — `GET/POST /api/refusals`,
-выгрузка — `GET /api/refusals/export.csv` по требованию.
+`refusals.public.record`: контакт в канонической форме (`core/contacts.py`:
+телефон и ссылка WhatsApp на него — `+7XXXXXXXXXX`, остальное — в нижнем
+регистре), причина обязательна, повтор возвращает первую запись. `DELETE`,
+`UPDATE` и `INSERT OR REPLACE` таблицы гасят триггеры. Проверка нового кода —
+`refusals.public.is_refused(db, контакты компании)`: отказ по любому контакту
+закрывает компанию целиком. Старое имя `suppression(handle, added_at, reason)` —
+представление над `refusals`: его до #7 и #13 читают `export.run`,
+`services/leads.py`, writer и sender. Контакт с ним они сравнивают через
+`refusals.public.canonical(handle)` — 2GIS пишет контакт по-своему, — и отказ
+там по-прежнему снимает один канал, а не компанию. API — `GET/POST
+/api/refusals`, выгрузка — `GET /api/refusals/export.csv` по требованию.
 
 **LLM-кэш в `state.llm_answers`.** `analyze.profile` и `analyze.ig_signals`
 кладут ответы модели в невосстановимую таблицу вместе с промптом; rebuild

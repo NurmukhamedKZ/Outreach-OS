@@ -6,3 +6,10 @@ class InvalidHandleError(DomainError):
 
     code = "errors.handleInvalid"
     status_code = 422
+
+
+class InvalidReasonError(DomainError):
+    """The reason is shorter than three characters once stripped."""
+
+    code = "errors.reasonInvalid"
+    status_code = 422

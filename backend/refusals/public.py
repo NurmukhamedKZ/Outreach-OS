@@ -4,7 +4,7 @@ import sqlite3
 from collections.abc import Iterable
 from datetime import datetime
 
-from refusals.service import RefusalService
+from refusals.service import RefusalService, comparable_handle
 
 
 def record(db: sqlite3.Connection, handle: str, reason: str, now: datetime) -> None:
@@ -16,6 +16,7 @@ def record(db: sqlite3.Connection, handle: str, reason: str, now: datetime) -> N
     Raises:
         InvalidHandleError: the handle is empty, shorter than three characters or
             a malformed phone.
+        InvalidReasonError: the reason is shorter than three characters.
     """
     RefusalService(db).record(handle, reason, now)
 
@@ -27,3 +28,13 @@ def is_refused(db: sqlite3.Connection, handles: Iterable[str]) -> bool:
     and a refused handle stays closed whichever company it turns up at.
     """
     return RefusalService(db).is_refused(handles)
+
+
+def canonical(handle: str) -> str:
+    """Return the form in which `handle` is compared with refusals; never raises.
+
+    For old readers that compare a contact with the set of refused handles
+    (until #12 and #13): a phone, a WhatsApp link to it and an email in capitals
+    each match the refusal kept in canonical form.
+    """
+    return comparable_handle(handle)

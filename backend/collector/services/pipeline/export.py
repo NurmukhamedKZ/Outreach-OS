@@ -22,6 +22,7 @@ import json
 import re
 
 from collector.services import store as engine
+from refusals import public as refusals
 
 # Путь анкорится к пакету collector, а не к cwd процесса: main.py запускается
 # из backend/ (см. Dockerfile WORKDIR /app), и относительный "data/leads.csv"
@@ -185,7 +186,8 @@ def best_channel(channels, suppressed):
     """
     for kind in CHANNEL_PRIORITY:
         for channel_kind, handle in channels:
-            if channel_kind != kind or handle in suppressed:
+            # Refusals are kept in canonical form, contacts in the 2GIS spelling.
+            if channel_kind != kind or refusals.canonical(handle) in suppressed:
                 continue
             if not reachable(kind, handle):
                 continue

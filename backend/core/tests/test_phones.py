@@ -11,13 +11,21 @@ def test_kazakhstan_numbers_in_any_spelling_become_one_form(raw):
     assert phones.canonical(raw) == "+77011234567"
 
 
-def test_an_international_number_with_a_plus_keeps_its_digits():
+@pytest.mark.parametrize("raw,phone", [
+    ("+1 555 123 4567", "+15551234567"), ("  +77011234567", "+77011234567"),
+    ("+1234567890", "+1234567890"), ("+123456789012345", "+123456789012345"),
+    ("97011234567", "+97011234567"),
+    # sender's numbers.normalize accepts these as thread ids: a refusal on one must not fail
+    ("+7701123456", "+7701123456"), ("+770112345678", "+770112345678"),
+])
+def test_a_number_with_a_plus_keeps_its_digits(raw, phone):
     """WhatsApp delivers foreign leads too; their thread is +<digits>."""
-    assert phones.canonical("+1 555 123 4567") == "+15551234567"
+    assert phones.canonical(raw) == phone
 
 
-@pytest.mark.parametrize("raw", ["", "  ", "12345", "+7701123456", "+770112345678",
-                                 "8 701 123", "+1234567890123456", "701-ABC", "+-()"])
+@pytest.mark.parametrize("raw", ["", "  ", "12345", "+123456789", "8 701 123",
+                                 "+1234567890123456", "701-ABC", "+-()",
+                                 "\uff18\uff17\uff10\uff11\uff11\uff12\uff13\uff14\uff15\uff16\uff17"])
 def test_not_a_phone_is_rejected_with_a_code(raw):
     with pytest.raises(ValueError, match="errors.phoneInvalid"):
         phones.canonical(raw)

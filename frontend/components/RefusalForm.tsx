@@ -54,6 +54,7 @@ export default function RefusalForm({
           onChange={(event) => setReason(event.target.value)}
           placeholder={`Причина отказа для ${channel.handle}`}
           minLength={3}
+          maxLength={500}
           required
         />
         <button type="submit" disabled={sending || reason.trim().length < 3}>

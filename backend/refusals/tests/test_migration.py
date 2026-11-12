@@ -65,13 +65,39 @@ def test_handles_that_meet_after_normalising_keep_the_earlier_record(tmp_path):
     assert refusals_in(path) == [("+77010000001", "ранняя", "2026-09-02T00:00:00+00:00")]
 
 
-def test_a_malformed_legacy_phone_is_kept_rather_than_dropped(tmp_path):
+def test_a_malformed_legacy_handle_is_kept_rather_than_dropped(tmp_path):
     path = tmp_path / "state.db"
-    legacy_database(path, [("8 701 000", "2026-09-02", "кривой номер")])
+    legacy_database(path, [("8 701 000", "2026-09-02", "кривой номер"),
+                           (" a ", "2026-09-02", "старая форма проверяла длину до обрезки")])
 
     core_db.migrate(path)
 
-    assert refusals_in(path) == [("8 701 000", "кривой номер", "2026-09-02T00:00:00+00:00")]
+    assert refusals_in(path) == [
+        ("8 701 000", "кривой номер", "2026-09-02T00:00:00+00:00"),
+        ("a", "старая форма проверяла длину до обрезки", "2026-09-02T00:00:00+00:00")]
+
+
+def test_a_legacy_whatsapp_link_becomes_its_phone(tmp_path):
+    path = tmp_path / "state.db"
+    legacy_database(path, [("https://wa.me/77010000001?text=%D0%9F", "2026-09-03", "форма"),
+                           ("+77010000001", "2026-09-02", "стоп-слово")])
+
+    core_db.migrate(path)
+
+    assert refusals_in(path) == [("+77010000001", "стоп-слово", "2026-09-02T00:00:00+00:00")]
+
+
+@pytest.mark.parametrize("reason,kept", [
+    ("ок", "причина не записана (ок)"), ("  ", "причина не записана"),
+    (None, "причина не записана"), (" стоп ", "стоп"),
+])
+def test_a_legacy_reason_shorter_than_three_characters_is_marked(tmp_path, reason, kept):
+    path = tmp_path / "state.db"
+    legacy_database(path, [("+77010000001", "2026-09-02", reason)])
+
+    core_db.migrate(path)
+
+    assert refusals_in(path)[0][1] == kept
 
 
 def test_after_the_move_the_old_name_is_a_view_over_refusals(tmp_path):
@@ -102,6 +128,18 @@ def test_downgrade_gives_every_refusal_back_to_the_old_table_and_upgrade_takes_i
 
     core_db.migrate(path)
     assert (refusals_in(path), schema_of(path)) == upgraded
+
+
+def test_an_empty_database_goes_down_and_up_again(tmp_path):
+    path = tmp_path / "state.db"
+    core_db.migrate(path)
+    upgraded = schema_of(path)
+
+    core_db.downgrade(path, "0001")
+    assert schema_of(path) == []
+    core_db.migrate(path)
+
+    assert schema_of(path) == upgraded
 
 
 def test_a_database_without_the_old_table_ends_with_the_same_schema(tmp_path):

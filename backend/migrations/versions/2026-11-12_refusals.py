@@ -9,12 +9,13 @@ Revises: 0001
 Create Date: 2026-11-12
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 import sqlalchemy as sa
 from alembic import op
 
-from core import phones
+from core import contacts
 
 revision = "0002"
 down_revision = "0001"
@@ -23,7 +24,7 @@ depends_on = None
 
 # The old table allowed a refusal without a reason; the new one requires it.
 NO_REASON = "причина не записана"
-MIN_LENGTH = 3
+MIN_REASON_LENGTH = 3
 
 # A frozen copy of the legacy definition: the old collector created it on every connect.
 LEGACY_TABLE = ("CREATE TABLE suppression ("
@@ -31,9 +32,18 @@ LEGACY_TABLE = ("CREATE TABLE suppression ("
 LEGACY_VIEW = ("CREATE VIEW suppression AS"
                " SELECT handle, refused_at AS added_at, reason FROM refusals")
 # A batch rebuild of refusals in a later revision drops these: recreate them there.
-GUARDS = [f"CREATE TRIGGER refusals_never_{verb.lower()} BEFORE {verb} ON refusals"
-          f" BEGIN SELECT RAISE(ABORT, 'refusals are never {done}'); END"
-          for verb, done in (("DELETE", "deleted"), ("UPDATE", "edited"))]
+# The INSERT guard covers INSERT OR REPLACE: its implicit delete fires no DELETE
+# trigger while recursive_triggers is off, so it would rewrite the first record.
+GUARDS = [
+    *(f"CREATE TRIGGER refusals_never_{verb.lower()} BEFORE {verb} ON refusals"
+      f" BEGIN SELECT RAISE(ABORT, 'refusals are never {done}'); END"
+      for verb, done in (("DELETE", "deleted"), ("UPDATE", "edited"))),
+    "CREATE TRIGGER refusals_keep_the_first BEFORE INSERT ON refusals"
+    " WHEN EXISTS (SELECT 1 FROM refusals WHERE handle = NEW.handle)"
+    " BEGIN SELECT RAISE(IGNORE); END",
+]
+
+LegacyRow = tuple[str, str, str | None]
 
 
 def upgrade() -> None:
@@ -42,8 +52,10 @@ def upgrade() -> None:
         sa.Column("handle", sa.Text, primary_key=True),
         sa.Column("reason", sa.Text, nullable=False),
         sa.Column("refused_at", sa.Text, nullable=False),
-        sa.CheckConstraint(f"length(handle) >= {MIN_LENGTH}", name="handle_not_short"),
-        sa.CheckConstraint(f"length(reason) >= {MIN_LENGTH}", name="reason_not_short"),
+        # Non-empty only: the service asks for three characters, but a shorter
+        # legacy handle is kept as typed rather than dropped.
+        sa.CheckConstraint("length(handle) > 0", name="handle_not_empty"),
+        sa.CheckConstraint(f"length(reason) >= {MIN_REASON_LENGTH}", name="reason_not_short"),
     )
     bind = op.get_bind()
     legacy = bind.execute(sa.text(
@@ -61,8 +73,8 @@ def downgrade() -> None:
     bind = op.get_bind()
     rows = bind.execute(sa.text("SELECT handle, refused_at, reason FROM refusals")).all()
     op.execute("DROP VIEW suppression")
-    # With nothing to give back the table is left to the old schema.sql, which
-    # creates it on connect; downgrading a fresh database to base leaves it empty.
+    # With nothing to give back the table is left to the pre-0002 schema.sql,
+    # which creates it on connect; downgrading a fresh database to base leaves it empty.
     if rows:
         op.execute(LEGACY_TABLE)
         bind.execute(sa.text("INSERT INTO suppression VALUES (:handle, :added_at, :reason)"),
@@ -70,9 +82,9 @@ def downgrade() -> None:
     op.drop_table("refusals")
 
 
-def _earliest_per_handle(rows) -> list[dict]:
+def _earliest_per_handle(rows: Sequence[LegacyRow]) -> list[dict[str, str]]:
     """Normalise legacy rows; handles that meet in canonical form keep the earlier one."""
-    earliest: dict[str, dict] = {}
+    earliest: dict[str, dict[str, str]] = {}
     for handle, added_at, reason in rows:
         row = {"handle": _canonical(handle), "reason": _reason(reason),
                "refused_at": _utc(added_at)}
@@ -83,20 +95,18 @@ def _earliest_per_handle(rows) -> list[dict]:
 
 
 def _canonical(handle: str) -> str:
-    # Frozen at 0002 except the phone rule. A malformed legacy phone is kept as
-    # typed: dropping it would drop a refusal.
-    text = handle.strip()
-    if phones.PHONE.fullmatch(text):
-        try:
-            return phones.canonical(text)
-        except ValueError:
-            return text
-    return text.lower()
+    # The live rule, not a frozen copy: a migrated handle must match the form the
+    # service looks refusals up in. What is no contact is kept as typed: dropping
+    # it would drop a refusal.
+    try:
+        return contacts.canonical(handle)
+    except ValueError:
+        return handle.strip()
 
 
 def _reason(reason: str | None) -> str:
     text = (reason or "").strip()
-    if len(text) >= MIN_LENGTH:
+    if len(text) >= MIN_REASON_LENGTH:
         return text
     return f"{NO_REASON} ({text})" if text else NO_REASON
 

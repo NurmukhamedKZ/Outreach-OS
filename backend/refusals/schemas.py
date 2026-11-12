@@ -4,15 +4,12 @@ from core.schemas import Schema, Timestamp
 
 
 class NewRefusal(Schema):
-    """reason is required: the list is never cleared, and half a year later
-    there is nobody left to ask why a contact is on it.
+    """A refusal as the operator sends it."""
 
-    handle is checked by the service, not here: the facade takes the same
-    handles without this schema and answers with the same code.
-    """
-
+    # Both are checked by the service, not here: the facade takes them without
+    # this schema and must answer with the same codes.
     handle: str = Field(max_length=200)
-    reason: str = Field(min_length=3, max_length=500)
+    reason: str = Field(max_length=500)
 
 
 class Refusal(Schema):

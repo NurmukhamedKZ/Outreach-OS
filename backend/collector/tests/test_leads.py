@@ -55,6 +55,32 @@ def test_refusal_filters_lead(stores):
     assert found == [], "отказ обязан убрать лида из выдачи (F21)"
 
 
+def test_refusal_in_another_spelling_filters_the_channel(stores):
+    """F21: a refusal is kept in canonical form, the contact in 2GIS spelling."""
+    from contextlib import closing
+
+    import paths
+    from collector.services import leads as service
+    from core import db as core_db
+    from datetime import UTC, datetime
+    from refusals import public as refusals
+    db = stores
+    _published_run(db)
+    db.execute("DELETE FROM contacts_all")
+    db.execute("INSERT INTO contacts_all (run_id, branch_id, kind, handle)"
+               " VALUES (1, 'b1', 'email', 'Info@Romashka.KZ')")
+    db.execute("INSERT INTO contacts_all (run_id, branch_id, kind, handle)"
+               " VALUES (1, 'b1', 'phone', '7010000002')")
+    db.commit()
+    with closing(core_db.connect(paths.state_db())) as state:
+        refusals.record(state, "info@romashka.kz", "просил по почте", datetime.now(UTC))
+        refusals.record(state, "+77010000002", "просил по телефону", datetime.now(UTC))
+
+    assert service.pick(db, limit=10) == [], "отказ в другой записи пропустил лида (F21)"
+    card = service.card(db, "c1")
+    assert [channel["suppressed"] for channel in card["channels"]] == [True, True]
+
+
 def test_second_channel_survives_refusal(stores):
     """Отказ на одном канале не рубит лида, если остался другой."""
     from collector.services import leads as service

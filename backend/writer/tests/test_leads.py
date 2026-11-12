@@ -81,6 +81,20 @@ def _seed(db, run_id=1):
     db.commit()
 
 
+def test_a_refusal_in_canonical_form_closes_a_channel_in_another_spelling(leads_db):
+    """F21: refusals are kept canonical; 2GIS spells the phone its own way."""
+    db = leads_db
+    _seed(db)
+    db.execute("UPDATE contacts_all SET handle = '701 000 00 03' WHERE branch_id = 'b_c_phone'")
+    db.execute("INSERT INTO state.suppression (handle, added_at, reason)"
+               " VALUES ('+77010000003', '2026-08-10T00:00:00+00:00', 'просил')")
+    db.commit()
+
+    found = {row["company_id"] for row in leads_source.candidates(db, RULES)}
+
+    assert "c_phone" not in found, "отказ в канонической форме не закрыл канал (F21)"
+
+
 def test_pitchable_fresh_and_quoted_signals_only(leads_db):
     db = leads_db
     _seed(db)
