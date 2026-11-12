@@ -1384,6 +1384,12 @@ a.nav-item:hover {
   font-size: 12px;
 }
 
+/* The reason is the point of a task: it wraps instead of being cut on a phone. */
+.inbox-sub.task-why {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .inbox-marks {
   display: flex;
   align-items: center;
