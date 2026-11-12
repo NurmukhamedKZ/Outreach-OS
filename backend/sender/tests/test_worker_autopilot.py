@@ -76,6 +76,20 @@ async def test_manual_sends_what_the_operator_queued(db, drafted, mode):
     assert [call["to"] for call in transport.sent_calls] == ["+77010000001"]
 
 
+async def test_manual_sends_what_the_automaton_queued_before_the_switch(db, drafted, mode):
+    """Записанный факт, а не сюрприз: у строки очереди нет автора, и ответ,
+    поставленный автоматом в replies, после перехода в manual уходит. Полный
+    стоп — только off. Автор строки и её удержание в manual — #7."""
+    from sender.services import queue
+    mode("replies")
+    await queue.enqueue(db, FakeTransport(), "+77010000001", INSIDE, CONFIG, kind="reply")
+    mode("manual")
+    transport = FakeTransport()
+
+    assert await worker.tick(db, transport, CONFIG, INSIDE) == "sent"
+    assert [call["to"] for call in transport.sent_calls] == ["+77010000001"]
+
+
 async def test_a_broken_switch_file_holds_the_queue(db, drafted):
     """Не подменяя режим: битый файл-переключатель доходит до тика как off."""
     from sender.services import queue

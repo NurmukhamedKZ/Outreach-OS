@@ -558,7 +558,8 @@ export default function SandboxPage() {
             <h2 className="card-sub">Автопилот</h2>
             <p className="note">
               Тот же переключатель, что в бою. «Стоп» держит всю очередь,
-              «Ручной» отправляет только поставленное кнопкой.
+              «Ручной» отправляет только поставленное кнопкой — и то, что автомат
+              успел поставить до переключения.
             </p>
             <div className="sandbox-shifts">
               {(Object.entries(AUTOPILOT_LABELS) as [AutopilotMode, string][]).map(([mode, label]) => (
