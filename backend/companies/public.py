@@ -7,7 +7,8 @@ import sqlite3
 from collections.abc import Callable, Collection
 from datetime import datetime
 
-from companies.schemas import Company
+from companies import domain
+from companies.schemas import Company, Contact
 from companies.service import CompanyService
 from core.pages import Pages
 
@@ -22,6 +23,29 @@ def prioritized(db: sqlite3.Connection, limit: int,
     are skipped. Refusals are not checked here: the caller asks refusals.
     """
     return CompanyService(db).prioritized(limit, exclude)
+
+
+def by_id(db: sqlite3.Connection, company_ids: Collection[str]) -> dict[str, Company]:
+    """Return the companies with these ids by id; an unknown id is left out.
+
+    Any segment, chosen or not: a dossier outlives the operator's choice.
+    """
+    return CompanyService(db).by_id(company_ids)
+
+
+def channel(company: Company) -> Contact | None:
+    """Return the contact to write to in WhatsApp, None when there is none.
+
+    A WhatsApp contact first, else a Kazakh mobile; a city line and an email
+    are no channel.
+    """
+    found = domain.channel((c.kind, c.handle) for c in company.contacts)
+    return Contact(kind=found[0], handle=found[1]) if found else None
+
+
+def site_domain(company: Company) -> str | None:
+    """Return the host of the company's own site; a social network page is no site."""
+    return domain.site_domain((c.kind, c.handle) for c in company.contacts)
 
 
 def forget_interrupted_collection(db: sqlite3.Connection) -> None:
