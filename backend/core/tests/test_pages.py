@@ -178,3 +178,40 @@ def test_fake_returns_known_pages_and_404_for_the_rest():
     with pytest.raises(pages.HttpStatusError):
         fake.get("https://unknown.kz/")
     assert fake.requested == [URL, URL, "https://down.kz/", "https://unknown.kz/"]
+
+
+def test_cookies_and_headers_reach_the_network_and_the_page_is_kept_by_address(network, source):
+    net = network(response())
+    calls = []
+    original = net.get
+
+    def get(url, **kwargs):
+        calls.append(kwargs)
+        return original(url, **kwargs)
+
+    net.get = get
+    source.get(URL, cookies={"dg5_museum_accept": "true"}, headers={"Accept": "application/json"})
+    source.get(URL)
+
+    assert calls == [{"impersonate": "chrome", "cookies": {"dg5_museum_accept": "true"},
+                      "headers": {"Accept": "application/json"}}]
+
+
+def test_without_cookies_and_headers_scrapling_keeps_its_defaults(network, source):
+    net = network(response())
+    calls = []
+    original = net.get
+    net.get = lambda url, **kwargs: calls.append(kwargs) or original(url, **kwargs)
+
+    source.get(URL)
+
+    assert calls == [{"impersonate": "chrome"}]
+
+
+def test_fake_records_the_cookies_of_each_request():
+    fake = pages.FakePages({URL: "<html>card</html>"})
+
+    fake.get(URL, cookies={"dg5_museum_accept": "true"})
+    fake.get(URL, headers={"Accept": "application/json"})
+
+    assert fake.cookies == [{"dg5_museum_accept": "true"}, None]

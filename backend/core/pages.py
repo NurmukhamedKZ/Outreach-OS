@@ -62,8 +62,12 @@ class BotCheckError(FetchError):
 class Pages(Protocol):
     """Source of web pages; scrapling in production, FakePages in tests."""
 
-    def get(self, url: str) -> Page:
+    def get(self, url: str, *, cookies: Mapping[str, str] | None = None,
+            headers: Mapping[str, str] | None = None) -> Page:
         """Return the page, from files when it was fetched before.
+
+        The page is kept by its address alone: cookies and headers only help the
+        source answer (2GIS sends a request without its cookie to /museum).
 
         Raises:
             FetchError: the network gave no usable page (a malformed address
@@ -118,7 +122,8 @@ class ScraplingPages:
         self.now = now
         self.pacer = Pacer(intervals, default_interval)
 
-    def get(self, url: str) -> Page:
+    def get(self, url: str, *, cookies: Mapping[str, str] | None = None,
+            headers: Mapping[str, str] | None = None) -> Page:
         body, sidecar = self._paths(url)
         if sidecar.exists():
             try:
@@ -128,14 +133,18 @@ class ScraplingPages:
                             url, error)
                 body.unlink(missing_ok=True)
                 sidecar.unlink(missing_ok=True)
-        page = self._fetch(url)
+        page = self._fetch(url, cookies, headers)
         self._store(url, page)
         return page
 
-    def _fetch(self, url: str) -> Page:
+    def _fetch(self, url: str, cookies: Mapping[str, str] | None,
+               headers: Mapping[str, str] | None) -> Page:
         self.pacer.wait(url)
+        # Only what the caller gave: an empty value would replace scrapling's own headers.
+        extra = {name: dict(value) for name, value in (("cookies", cookies), ("headers", headers))
+                 if value}
         try:
-            response = Fetcher.get(url, impersonate="chrome")
+            response = Fetcher.get(url, impersonate="chrome", **extra)
         # curl reports a malformed address the same way (InvalidURL is a CurlError).
         except CurlError as error:
             raise FetchError(f"{url}: {error}") from error
@@ -186,9 +195,12 @@ class FakePages:
         self.pages = pages
         self.fetched_at = fetched_at or datetime.fromisoformat("2026-11-12T09:00:00+00:00")
         self.requested: list[str] = []
+        self.cookies: list[Mapping[str, str] | None] = []
 
-    def get(self, url: str) -> Page:
+    def get(self, url: str, *, cookies: Mapping[str, str] | None = None,
+            headers: Mapping[str, str] | None = None) -> Page:
         self.requested.append(url)
+        self.cookies.append(cookies)
         if url not in self.pages:
             raise HttpStatusError(404, url)
         page = self.pages[url]

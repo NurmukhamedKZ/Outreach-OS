@@ -12,6 +12,7 @@ COPY config.py llm_schema.py logctx.py logging_setup.py observability.py \
 COPY alembic.ini ./
 COPY core/ core/
 COPY refusals/ refusals/
+COPY companies/ companies/
 COPY migrations/ migrations/
 COPY collector/ collector/
 COPY writer/ writer/
