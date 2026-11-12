@@ -36,6 +36,8 @@ from collector.services import events as bus
 from collector.services import jobs as queue
 from collector.services import store
 from collector.services.pipeline import OPERATIONS, PIPELINES
+from companies import api as companies_api, public as companies
+from core.pages import ScraplingPages
 from refusals import api as refusals_api, public as refusals
 from sender.routes import sender, webhook as sender_webhook
 from sender.services import refusal as sender_refusal
@@ -102,6 +104,8 @@ def prepare_database(path: Path) -> None:
     """
     core_db.migrate(path)
     thread_store.connect(path).close()
+    with closing(core_db.connect(path)) as db:
+        companies.forget_interrupted_collection(db)
 
 
 @asynccontextmanager
@@ -128,13 +132,15 @@ app = FastAPI(
     description="Лиды по Казахстану",
     lifespan=lifespan,
 )
+# One page adapter per process: the pace belongs to the host, two would double it.
+app.state.pages = ScraplingPages(paths.PAGES, now=clock.now)
 # New domain errors only: old routes keep their error format.
 app.add_exception_handler(DomainError, domain_error_handler)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=WEB_ORIGINS,
     allow_origin_regex=WEB_ORIGIN_REGEX,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT"],
     allow_headers=["*"],
 )
 app.include_router(leads.router)
@@ -148,6 +154,7 @@ app.include_router(jobs.router)
 app.include_router(events.router)
 app.include_router(stats.router)
 app.include_router(refusals_api.router)
+app.include_router(companies_api.router)
 app.include_router(writer.router)
 app.include_router(sender.router)
 app.include_router(sender_webhook.router)
