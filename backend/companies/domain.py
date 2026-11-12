@@ -19,10 +19,13 @@ RUBRIC_PAGE = "https://2gis.kz/{city}/rubric/{rubric}/page/{page}"
 FIRM_CARD = "https://2gis.kz/{city}/firm/{branch_id}"
 # Without it 2GIS redirects every request to /museum.
 GIS_COOKIE = {"dg5_museum_accept": "true"}
-# 2GIS serves 60 organisations (5 pages) per rubric of a city but promises more.
-# The sixth page is asked for on purpose: the substitution check fires on it, so
-# the ceiling is caught rather than assumed.
-PAGE_LIMIT = 6
+# Our own cap on list pages per rubric of a city, not the source's ceiling. Up to
+# August 2026 2GIS served 5 pages (60 organisations) and answered the sixth with
+# the first; on 12 November 2026 it served all 30 pages asked for (rubric 653 of
+# Almaty promises 58). Twenty pages is 240 organisations per rubric, a few minutes
+# of collection for six rubrics; the substitution check still catches the ceiling
+# if the source brings it back.
+PAGE_LIMIT = 20
 
 CITIES = {"almaty": "Алматы", "astana": "Астана"}
 # Leaf rubrics of the 2GIS "B2B services" branch picked for the ICP (BRD §4),
