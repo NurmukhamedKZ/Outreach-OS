@@ -22,8 +22,6 @@ from uuid import uuid4
 from curl_cffi.curl import CurlError
 from scrapling.fetchers import Fetcher
 
-import clock
-
 log = logging.getLogger(__name__)
 
 # Seconds between requests to one host. 2GIS answers thousands of requests and
@@ -62,11 +60,14 @@ class BotCheckError(FetchError):
 
 
 class Pages(Protocol):
+    """Source of web pages; scrapling in production, FakePages in tests."""
+
     def get(self, url: str) -> Page:
         """Return the page, from files when it was fetched before.
 
         Raises:
-            FetchError: the network gave no usable page; nothing is stored.
+            FetchError: the network gave no usable page (a malformed address
+                included); nothing is stored.
         """
         ...
 
@@ -110,7 +111,7 @@ class ScraplingPages:
     would each keep their own slots and double it.
     """
 
-    def __init__(self, root: Path, now: Callable[[], datetime] = clock.now,
+    def __init__(self, root: Path, now: Callable[[], datetime], *,
                  intervals: Mapping[str, float] = HOST_INTERVALS,
                  default_interval: float = DEFAULT_INTERVAL):
         self.root = root
@@ -122,7 +123,7 @@ class ScraplingPages:
         if sidecar.exists():
             try:
                 return self._read(body, sidecar)
-            except (OSError, EOFError, zlib.error, ValueError, KeyError) as error:
+            except (OSError, EOFError, zlib.error, ValueError, KeyError, TypeError) as error:
                 log.warning("stored page for %s is unreadable (%s), fetching again",
                             url, error)
                 body.unlink(missing_ok=True)
@@ -135,6 +136,7 @@ class ScraplingPages:
         self.pacer.wait(url)
         try:
             response = Fetcher.get(url, impersonate="chrome")
+        # curl reports a malformed address the same way (InvalidURL is a CurlError).
         except CurlError as error:
             raise FetchError(f"{url}: {error}") from error
         if response.status != 200:

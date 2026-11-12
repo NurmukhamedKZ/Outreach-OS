@@ -3,7 +3,7 @@
 import httpx
 import pytest
 from langchain_core.exceptions import OutputParserException
-from openrouter.errors import ResponseValidationError
+from openrouter.errors import NoResponseError, OpenRouterError, ResponseValidationError
 
 from core import model
 from llm_schema import LLMSchema
@@ -42,9 +42,15 @@ class Client:
 
 
 @pytest.fixture
-def client(monkeypatch):
+def slept(monkeypatch):
+    pauses: list[float] = []
+    monkeypatch.setattr(model, "sleep", pauses.append)
+    return pauses
+
+
+@pytest.fixture
+def client(monkeypatch, slept):
     monkeypatch.setattr(model, "langfuse_handler", lambda: None)
-    monkeypatch.setattr(model, "sleep", lambda seconds: None)
 
     def install(*outcomes):
         fake = Client(*outcomes)
@@ -93,12 +99,37 @@ def test_dropped_connection_or_invalid_reply_is_retried(client, glitch):
     assert len(fake.calls) == 2
 
 
-def test_gives_up_after_the_last_attempt_with_model_error(client):
+def test_gives_up_after_the_last_attempt_with_model_error(client, slept):
     fake = client(*[httpx.ReadTimeout("slow")] * model.TRANSPORT_RETRIES)
 
     with pytest.raises(model.ModelError):
         answer(model.OpenRouterModel("key"))
     assert len(fake.calls) == model.TRANSPORT_RETRIES
+    assert slept == [1, 2]
+
+
+@pytest.mark.parametrize("refusal", [
+    OpenRouterError("402 payment required", httpx.Response(402)),
+    NoResponseError(),
+])
+def test_provider_refusal_is_a_model_error_without_retry(client, slept, refusal):
+    fake = client(refusal, Dossier(summary="never reached"))
+
+    with pytest.raises(model.ModelError):
+        answer(model.OpenRouterModel("key"))
+    assert len(fake.calls) == 1
+    assert slept == []
+
+
+def test_model_error_does_not_carry_the_reply_text(client):
+    """The reply is built from lead data, and errors end up in logs."""
+    client(*[OutputParserException("Invalid json output: Ромашка, +77010000001")]
+           * model.TRANSPORT_RETRIES)
+
+    with pytest.raises(model.ModelError) as error:
+        answer(model.OpenRouterModel("key"))
+    assert "Ромашка" not in str(error.value)
+    assert error.value.__cause__ is None and error.value.__suppress_context__
 
 
 def test_missing_key_is_refused_before_any_request(client):

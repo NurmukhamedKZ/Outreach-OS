@@ -9,7 +9,8 @@ from fastapi.responses import JSONResponse
 class DomainError(Exception):
     """Base of business errors; subclasses set a stable `code` and the HTTP status.
 
-    The dashboard branches on `code`; the message is detail for a human.
+    The dashboard branches on `code`; the message is detail for a human and
+    goes to the client as is, so it never carries phones, message texts or keys.
     """
 
     code: ClassVar[str]

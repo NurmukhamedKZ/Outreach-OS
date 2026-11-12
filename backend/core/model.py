@@ -13,6 +13,7 @@ from time import sleep
 from typing import Literal, Protocol
 
 import httpx
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.exceptions import OutputParserException
 from langchain_openrouter import ChatOpenRouter
 from openrouter.errors import NoResponseError, OpenRouterError, ResponseValidationError
@@ -28,7 +29,6 @@ type Message = tuple[Literal["system", "human", "ai"], str]
 # back to its own RetryConfig with an hour of backoff per attempt, stacked on
 # top of TRANSPORT_RETRIES below. Only strategy="none" passed per call does.
 NO_SDK_RETRY = RetryConfig("none", BackoffStrategy(0, 0, 1, 0), False)
-REASONING = {"enabled": False}
 # Without a timeout a hung connection blocks invoke() forever; 60 s is ample
 # for a structured reply of a few KB.
 REQUEST_TIMEOUT_MS = 60_000
@@ -41,7 +41,12 @@ RETRYABLE = (httpx.TransportError, OutputParserException, ResponseValidationErro
 
 
 class ModelError(Exception):
-    """The model gave no valid answer: retries exhausted or the provider refused."""
+    """The model gave no valid answer: retries exhausted or the provider refused.
+
+    Carries only the error class: SDK messages quote the reply and the request,
+    which are built from lead data, and this error ends up in logs. The full
+    story is in the Langfuse trace.
+    """
 
 
 class ModelKeyMissingError(DomainError):
@@ -54,6 +59,8 @@ class ModelKeyMissingError(DomainError):
 
 
 class Model(Protocol):
+    """Structured-output LLM; OpenRouter in production, FakeModel in tests."""
+
     def answer[S: BaseModel](self, model: str, schema: type[S], messages: Sequence[Message],
                              *, session_id: str, name: str) -> S:
         """Return the model's reply parsed into `schema`.
@@ -68,6 +75,9 @@ class Model(Protocol):
 
 
 class OpenRouterModel:
+    """Model through OpenRouter. `answer` blocks the thread for up to minutes:
+    call it from async code via asyncio.to_thread."""
+
     def __init__(self, api_key: str | None):
         self.api_key = api_key
 
@@ -78,7 +88,7 @@ class OpenRouterModel:
         # require_parameters keeps routing to providers that honour strict
         # json_schema; others ignore response_format and answer off the schema.
         client = ChatOpenRouter(
-            model=model, api_key=self.api_key, temperature=0, reasoning=REASONING,
+            model=model, api_key=self.api_key, temperature=0, reasoning={"enabled": False},
             timeout=REQUEST_TIMEOUT_MS, model_kwargs={"retries": NO_SDK_RETRY},
             openrouter_provider={"require_parameters": True},
         ).with_structured_output(schema, method="json_schema", strict=True)
@@ -93,10 +103,10 @@ class OpenRouterModel:
                 result = client.invoke(list(messages), config=config)
             except RETRYABLE as error:
                 if attempt == TRANSPORT_RETRIES:
-                    raise ModelError(f"{name}: {error!r}") from error
+                    raise ModelError(f"{name}: {type(error).__name__}") from None
                 sleep(attempt)
             except (OpenRouterError, NoResponseError) as error:
-                raise ModelError(f"{name}: {error!r}") from error
+                raise ModelError(f"{name}: {type(error).__name__}") from None
             else:
                 if handler:
                     _log_trace_in_background(handler)
@@ -104,7 +114,7 @@ class OpenRouterModel:
         raise AssertionError("unreachable")
 
 
-def _log_trace_in_background(handler) -> None:
+def _log_trace_in_background(handler: BaseCallbackHandler) -> None:
     # The trace link is a convenience, and Langfuse's own client has hung for
     # 10-25 minutes in production: it must not be able to hold up the call.
     context = contextvars.copy_context()

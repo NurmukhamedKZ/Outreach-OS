@@ -10,4 +10,10 @@ Timestamp = Annotated[AwareDatetime, AfterValidator(lambda moment: moment.astime
 
 
 class Schema(BaseModel):
+    """Base of request and response schemas; strips string edges (Postel's law).
+
+    Model reply schemas inherit llm_schema.LLMSchema instead: it maps null to
+    the field default, which only a model needs.
+    """
+
     model_config = ConfigDict(str_strip_whitespace=True)

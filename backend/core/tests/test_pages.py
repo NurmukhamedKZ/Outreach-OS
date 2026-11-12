@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from curl_cffi.curl import CurlError
+from curl_cffi.requests.exceptions import InvalidURL
 
 from core import pages
 
@@ -60,7 +61,8 @@ def test_second_request_is_served_from_files_without_network(network, source, tm
     net = network(response(landed=URL + "/tab/info"))
     first = source.get(URL)
 
-    again = pages.ScraplingPages(tmp_path / "pages", now=lambda: datetime.now(timezone.utc))
+    again = pages.ScraplingPages(tmp_path / "pages", now=lambda: datetime.now(timezone.utc),
+                                 intervals={}, default_interval=0)
     assert again.get(URL) == first
     assert net.requested == [URL]
 
@@ -74,29 +76,72 @@ def test_bot_check_page_is_refused_and_never_stored(network, source):
     assert net.requested == [URL, URL]
 
 
-def test_non_200_is_an_error_with_status_and_nothing_is_stored(network, source):
-    net = network(response(status=404), response())
+@pytest.mark.parametrize("status", [204, 403, 404, 429, 500])
+def test_non_200_is_an_error_with_status_and_nothing_is_stored(network, source, status):
+    net = network(response(status=status), response())
 
     with pytest.raises(pages.HttpStatusError) as error:
         source.get(URL)
-    assert error.value.status == 404
+    assert error.value.status == status
     source.get(URL)
     assert len(net.requested) == 2
 
 
-def test_network_failure_surfaces_as_fetch_error(network, source):
-    network(CurlError("Failed to connect"))
+@pytest.mark.parametrize("failure", [CurlError("Failed to connect"),
+                                     InvalidURL("URL rejected: Bad hostname")])
+def test_network_failure_or_malformed_address_surfaces_as_fetch_error(network, source,
+                                                                      failure):
+    network(failure)
 
     with pytest.raises(pages.FetchError):
         source.get(URL)
 
 
-def test_corrupted_page_is_fetched_again(network, source, tmp_path):
-    net = network(response(html="<html>first</html>"), response(html="<html>second</html>"))
-    source.get(URL)
-    for stored in (tmp_path / "pages").glob("*.html.gz"):
+def corrupt_body(root):
+    for stored in root.glob("*.html.gz"):
         stored.write_bytes(b"not gzip at all")
 
+
+def sidecar(content):
+    def corrupt(root):
+        for stored in root.glob("*.json"):
+            stored.write_text(content, encoding="utf-8")
+    return corrupt
+
+
+def delete_body(root):
+    for stored in root.glob("*.html.gz"):
+        stored.unlink()
+
+
+@pytest.mark.parametrize("corrupt", [corrupt_body, sidecar("{trunc"), sidecar("[]"),
+                                     sidecar("{}"), delete_body])
+def test_corrupted_page_is_fetched_again(network, source, tmp_path, corrupt):
+    net = network(response(html="<html>first</html>"), response(html="<html>second</html>"))
+    source.get(URL)
+    corrupt(tmp_path / "pages")
+
+    assert source.get(URL).text == "<html>second</html>"
+    assert len(net.requested) == 2
+
+
+def test_crash_before_the_sidecar_leaves_the_page_unfinished(network, source, monkeypatch):
+    net = network(response(html="<html>first</html>"), response(html="<html>second</html>"))
+    write = pages._write_atomically
+    written = []
+
+    def crash_on_second_file(path, data):
+        written.append(path.name)
+        if len(written) == 2:
+            raise OSError("disk full")
+        write(path, data)
+
+    monkeypatch.setattr(pages, "_write_atomically", crash_on_second_file)
+    with pytest.raises(OSError):
+        source.get(URL)
+    monkeypatch.setattr(pages, "_write_atomically", write)
+
+    assert written[0].endswith(".html.gz")
     assert source.get(URL).text == "<html>second</html>"
     assert len(net.requested) == 2
 

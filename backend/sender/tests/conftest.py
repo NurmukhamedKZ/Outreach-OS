@@ -11,9 +11,25 @@ import pytest
 
 import activity
 from sender.db import migrate
+from sender.services import refusal
 from writer.db import thread_store
 
 NOW = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)   # среда, 18:00 в Алматы
+
+
+@pytest.fixture(autouse=True)
+def refusal_seam(monkeypatch):
+    """Keep the refusal seam away from the real database.
+
+    Once collector/api.py is imported (any earlier test in a full run), the seam
+    writes into the production state.db: a refusal verdict in a test left a
+    fake refusal there and created collector/data/derived.db. Tests that check
+    the seam replace it themselves.
+    """
+    written: list[tuple[str, str]] = []
+    monkeypatch.setattr(refusal, "_hook",
+                        lambda handle, reason: written.append((handle, reason)) or True)
+    return written
 
 
 @pytest.fixture

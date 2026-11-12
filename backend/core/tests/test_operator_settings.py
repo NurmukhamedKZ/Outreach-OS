@@ -1,7 +1,7 @@
 from contextlib import closing
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from core import db, operator_settings
 
@@ -75,3 +75,22 @@ def test_save_is_part_of_the_callers_transaction(conn):
             raise RuntimeError("operation failed after saving")
 
     assert operator_settings.load(conn, "sending", Sending) == Sending()
+
+
+class Window(BaseModel):
+    start: int = 10
+    end: int = 18
+
+    @model_validator(mode="after")
+    def start_before_end(self):
+        if self.start >= self.end:
+            raise ValueError("errors.windowEmpty")
+        return self
+
+
+def test_section_the_schema_rejects_as_a_whole_falls_back_to_defaults(conn):
+    with conn:
+        conn.execute("INSERT INTO operator_settings (module, data) VALUES (?, ?)",
+                     ("window", '{"start": 20, "end": 9}'))
+
+    assert operator_settings.load(conn, "window", Window) == Window()

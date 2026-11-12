@@ -17,9 +17,11 @@ log = logging.getLogger(__name__)
 def load[S: BaseModel](db: sqlite3.Connection, module: str, schema: type[S]) -> S:
     """Return the module's saved values laid over the schema defaults.
 
-    Unknown keys are ignored. A saved value the schema no longer accepts falls
-    back to its default with a warning, so a schema change cannot lock the
-    operator out of the module.
+    Every field of `schema` needs a default and the schema must not forbid
+    extra keys. Unknown keys are ignored. A saved value the schema no longer
+    accepts falls back to its default, and a section rejected as a whole (a
+    model validator) falls back to all defaults, both with a warning: a schema
+    change must not lock the operator out of the module.
     """
     row = db.execute("SELECT data FROM operator_settings WHERE module = ?",
                      (module,)).fetchone()
@@ -29,8 +31,11 @@ def load[S: BaseModel](db: sqlite3.Connection, module: str, schema: type[S]) -> 
     except ValidationError as error:
         stale = {issue["loc"][0] for issue in error.errors() if issue["loc"]}
         log.warning("settings of %s: stale keys fell back to defaults: %s",
-                    module, sorted(map(str, stale)))
-        return schema.model_validate({k: v for k, v in saved.items() if k not in stale})
+                    module, sorted(map(str, stale)) or "the whole section")
+        try:
+            return schema.model_validate({k: v for k, v in saved.items() if k not in stale})
+        except ValidationError:
+            return schema()
 
 
 def save(db: sqlite3.Connection, module: str, values: BaseModel) -> None:
