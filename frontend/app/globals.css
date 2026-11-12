@@ -1002,11 +1002,6 @@ a.nav-item:hover {
   margin-top: 12px;
 }
 
-.autopilot .btn[aria-current="true"] {
-  background: var(--ink);
-  color: var(--canvas);
-}
-
 .thread-reply input,
 .refusal input {
   font: inherit;

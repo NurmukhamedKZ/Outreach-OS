@@ -95,7 +95,7 @@ export default function Sender() {
           {(Object.entries(AUTOPILOT_LABELS) as [AutopilotMode, string][]).map(([mode, label]) => (
             <button
               key={mode}
-              className="btn"
+              className={status?.autopilot === mode ? "btn" : "btn-secondary"}
               aria-current={status?.autopilot === mode}
               onClick={() => {
                 setError(null);
