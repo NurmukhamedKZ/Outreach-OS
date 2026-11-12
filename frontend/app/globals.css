@@ -1640,3 +1640,61 @@ a.nav-item:hover {
   font-size: 11px;
   color: var(--muted);
 }
+
+/* --- настройки -------------------------------------------------------------- */
+
+.settings-section h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+}
+
+.settings-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+}
+
+.settings-rubrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 8px 24px;
+}
+
+.settings-check {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.settings-id {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings-custom {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.settings-custom .input {
+  flex: 1 1 220px;
+  max-width: 320px;
+}
+
+.settings-save {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+/* Таблица шире телефона прокручивается сама, а не вся страница. */
+.settings-table {
+  overflow-x: auto;
+}

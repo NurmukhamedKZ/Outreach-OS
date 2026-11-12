@@ -85,7 +85,9 @@ export type Stats = {
 /** Ошибка запроса вместе с кодом состояния: словами объясняет отказ `detail`,
  *  а отличить «состояние» (409) от «авария» (500) можно только по коду. */
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  /** `code` — стабильный код доменной ошибки (`errors.cityInvalid`): по нему
+   *  страница выбирает текст, по `detail` — нет. У старых ручек кода нет. */
+  constructor(message: string, readonly status: number, readonly code?: string) {
     super(message);
     this.name = "ApiError";
   }
@@ -96,10 +98,12 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     // detail из HTTPException объясняет отказ словами («прогон не завершён»),
     // а код состояния — нет. Тела может и не быть: тогда остаётся код.
-    const detail = await response.json().then((body) => body?.detail).catch(() => null);
+    const body = await response.json().catch(() => null);
+    const detail = typeof body?.detail === "string" ? body.detail : null;
     throw new ApiError(
       detail ?? `${init?.method ?? "GET"} ${url} — ${response.status}`,
       response.status,
+      typeof body?.code === "string" ? body.code : undefined,
     );
   }
   return response.json();
@@ -125,6 +129,43 @@ export function refuse(handle: string, reason: string) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ handle, reason }),
+  });
+}
+
+// ---- Компании: сегменты и их сбор из 2GIS ----
+
+export type CatalogItem = { id: string; name: string };
+export type SegmentSettings = { cities: string[]; rubrics: string[] };
+export type SegmentStatus = "new" | "collecting" | "collected" | "failed";
+export type SegmentState = {
+  city: string;
+  rubric: string;
+  status: SegmentStatus;
+  branches: number;
+  companies: number;
+  /** 2GIS показал меньше организаций, чем обещал: потолок пагинации. */
+  capped: boolean;
+  error: string | null;
+  updated_at: string | null;
+};
+export type SegmentsView = {
+  settings: SegmentSettings;
+  cities: CatalogItem[];
+  rubrics: CatalogItem[];
+  segments: SegmentState[];
+};
+
+export function fetchSegments() {
+  return json<SegmentsView>("/api/companies/segments");
+}
+
+/** Раздел сохраняется целиком: неизвестный город или id рубрики не из цифр —
+ *  422 с `code` (`errors.cityInvalid`, `errors.rubricInvalid`). */
+export function saveSegments(settings: SegmentSettings) {
+  return json<SegmentsView>("/api/companies/segments", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
   });
 }
 

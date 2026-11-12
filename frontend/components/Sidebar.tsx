@@ -13,6 +13,7 @@ import {
   SquaresFourIcon,
   ChartLineUpIcon,
   FlaskIcon,
+  GearSixIcon,
 } from "@phosphor-icons/react";
 import { useLive } from "./live";
 
@@ -24,6 +25,7 @@ const NAV = [
   { href: "/analytics", label: "Аналитика", icon: ChartLineUpIcon },
   { href: "/sender", label: "Отправка", icon: BroadcastIcon },
   { href: "/activity", label: "Процессы", icon: PulseIcon },
+  { href: "/settings", label: "Настройки", icon: GearSixIcon },
   { href: "/sandbox", label: "Песочница", icon: FlaskIcon },
 ];
 
