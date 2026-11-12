@@ -225,3 +225,155 @@ def test_a_collection_cut_by_a_restart_is_forgotten(db):
 
     view = CompanyService(db).segments_view()
     assert {s.status for s in view.segments} == {"new"}
+
+
+@pytest.mark.parametrize("status", [403, 429, 500])
+def test_a_refused_card_fails_the_segment_rather_than_shrinking_it(db, gis, status):
+    found = site(gis, "almaty", "653", [[branch(1), branch(2)]], pages_promised=1,
+                 ceiling=False)
+    found[domain.FIRM_CARD.format(city="almaty", branch_id="b2")] = pages.HttpStatusError(
+        status, "url")
+
+    segment = collect(db, pages.FakePages(found))[("almaty", "653")]
+
+    assert segment.status == "failed"
+    assert str(status) in segment.error
+    assert companies_of(db) == {}
+
+
+def test_a_branch_listed_on_two_pages_is_one_branch(db, gis):
+    fake = pages.FakePages(site(gis, "almaty", "653", [[branch(1), branch(2)], [branch(2)]],
+                                pages_promised=2, ceiling=False))
+
+    segment = collect(db, fake)[("almaty", "653")]
+
+    assert (segment.status, segment.branches) == ("collected", 2)
+
+
+def test_six_pages_promised_and_given_are_not_a_ceiling(db, gis):
+    listing = [[branch(p)] for p in range(6)]
+    fake = pages.FakePages(site(gis, "almaty", "653", listing, pages_promised=6, ceiling=False))
+
+    segment = collect(db, fake)[("almaty", "653")]
+
+    assert (segment.status, segment.branches, segment.capped) == ("collected", 6, False)
+
+
+def test_a_rubric_of_one_page_without_current_page_is_collected(db, gis):
+    url = domain.RUBRIC_PAGE.format(city="almaty", rubric="653", page=1)
+    found = site(gis, "almaty", "653", [[branch(1)]], pages_promised=1, ceiling=False)
+    found[url] = found[url].replace('"currentPage": 1', '"currentPage": null')
+
+    segment = collect(db, pages.FakePages(found))[("almaty", "653")]
+
+    assert (segment.status, segment.branches) == ("collected", 1)
+
+
+def test_reasons_tell_the_operator_what_happened(db, gis):
+    found = {domain.RUBRIC_PAGE.format(city="almaty", rubric="653", page=1): "<html></html>",
+             domain.RUBRIC_PAGE.format(city="almaty", rubric="339", page=1):
+                 pages.HttpStatusError(404, "url")}
+
+    segments = collect(db, pages.FakePages(found), rubrics=("653", "339"))
+
+    assert "вёрстка источника поменялась" in segments[("almaty", "653")].error
+    assert "id рубрики" in segments[("almaty", "339")].error
+
+
+def test_a_bug_fails_its_segment_and_the_next_one_is_collected(db, gis):
+    found = site(gis, "almaty", "339", [[branch(1)]], pages_promised=1, ceiling=False)
+    found[domain.RUBRIC_PAGE.format(city="almaty", rubric="653", page=1)] = RuntimeError("bug")
+
+    segments = collect(db, pages.FakePages(found), rubrics=("653", "339"))
+
+    assert segments[("almaty", "653")].status == "failed"
+    assert "Внутренняя ошибка" in segments[("almaty", "653")].error
+    assert segments[("almaty", "339")].status == "collected"
+
+
+def test_a_failure_while_writing_leaves_nothing_of_the_segment(db, gis, monkeypatch):
+    from companies.repository import CompanyRepository
+    found = site(gis, "almaty", "653", [[branch(1), branch(2)]], pages_promised=1,
+                 ceiling=False)
+    link = CompanyRepository.link_segment
+    calls = []
+
+    def fail_on_second(self, branch_id, segment):
+        calls.append(branch_id)
+        if len(calls) == 2:
+            raise RuntimeError("disk")
+        link(self, branch_id, segment)
+
+    monkeypatch.setattr(CompanyRepository, "link_segment", fail_on_second)
+    segment = collect(db, pages.FakePages(found))[("almaty", "653")]
+
+    assert (segment.status, segment.branches) == ("failed", 0)
+    assert [db.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+            for t in ("companies", "branches", "branch_contacts", "branch_segments")] == [0] * 4
+
+
+def test_a_successful_retry_clears_the_reason(db, gis):
+    collect(db, pages.FakePages({}))
+    fake = pages.FakePages(site(gis, "almaty", "653", [[branch(1)]], pages_promised=1,
+                                ceiling=False))
+
+    segment = collect(db, fake)[("almaty", "653")]
+
+    assert (segment.status, segment.error) == ("collected", None)
+
+
+def test_the_time_is_kept_in_utc(db, gis):
+    from datetime import timedelta, timezone
+    almaty = datetime(2026, 11, 12, 15, 0, tzinfo=timezone(timedelta(hours=5)))
+    service = CompanyService(db)
+    service.save_segments(SegmentSettings(cities=["almaty"], rubrics=["653"]))
+    service.collect(pages.FakePages({}), service.claim(almaty), lambda: almaty)
+
+    assert db.execute("SELECT updated_at FROM segments").fetchone()[0] == "2026-11-12T10:00:00+00:00"
+
+
+def test_a_known_branch_found_again_gets_fresh_fields_and_contacts(db, gis):
+    first = site(gis, "almaty", "653", [[branch(1, reviews=3)]], pages_promised=1,
+                 ceiling=False, contacts={"b1": [("phone", "+77010000001")]})
+    collect(db, pages.FakePages(first))
+    again = site(gis, "almaty", "339", [[branch(1, name="Альфа Плюс", reviews=9)]],
+                 pages_promised=1, ceiling=False,
+                 contacts={"b1": [("whatsapp", "https://wa.me/77010000002")]})
+
+    collect(db, pages.FakePages(again), rubrics=("653", "339"))
+
+    assert rows(db, "SELECT name, review_count, company_id FROM branches") == [
+        ("Альфа Плюс", 9, "2gis:o1")]
+    assert rows(db, "SELECT kind, handle FROM branch_contacts") == [("whatsapp", "+77010000002")]
+
+
+def test_only_collecting_segments_are_forgotten_and_only_new_and_failed_are_claimed(db, gis):
+    from companies.repository import CompanyRepository
+    from companies.schemas import Segment
+    repo = CompanyRepository(db)
+    for rubric in ("1", "2", "3", "4"):
+        repo.claim(Segment("almaty", rubric), NOW)
+    repo.finish(Segment("almaty", "2"), 1, False, NOW)
+    repo.fail(Segment("almaty", "3"), "сеть", NOW)
+    db.execute("UPDATE segments SET status = 'new' WHERE rubric = '4'")
+    db.commit()
+
+    public.forget_interrupted_collection(db)
+    statuses = dict(rows(db, "SELECT rubric, status FROM segments"))
+    assert statuses == {"1": "new", "2": "collected", "3": "failed", "4": "new"}
+
+    service = CompanyService(db)
+    service.save_segments(SegmentSettings(cities=["almaty"], rubrics=["1", "2", "3", "4"]))
+    assert service.claim(NOW) == [("almaty", "1"), ("almaty", "3"), ("almaty", "4")]
+
+
+def test_the_facade_collects_the_chosen_segments_not_collected_yet(db, gis):
+    CompanyService(db).save_segments(SegmentSettings(cities=["almaty"], rubrics=["653"]))
+    fake = pages.FakePages(site(gis, "almaty", "653", [[branch(1)]], pages_promised=1,
+                                ceiling=False))
+
+    public.collect_chosen(db, fake, lambda: NOW)
+    public.collect_chosen(db, fake, lambda: NOW)
+
+    assert len(fake.requested) == 2  # the list page and the card, once
+    assert [c.company_id for c in public.prioritized(db, 5)] == ["2gis:o1"]

@@ -110,3 +110,48 @@ def test_the_start_of_the_app_forgets_a_collection_cut_by_a_restart(client, stat
 
     assert {s["status"] for s in client.get("/api/companies/segments").json()["segments"]} == {
         "new"}
+
+
+def test_no_segment_chosen_is_allowed_and_collects_nothing(client, network):
+    response = client.put("/api/companies/segments", json={"cities": [], "rubrics": []})
+
+    assert response.status_code == 200
+    assert response.json()["segments"] == []
+    assert client.post("/api/companies/collect").status_code == 202
+    assert network.requested == []
+
+
+@pytest.mark.parametrize("body", [
+    {"cities": ["a" * 41], "rubrics": ["653"]},
+    {"cities": ["almaty"] * 21, "rubrics": ["653"]},
+    {"cities": ["almaty"], "rubrics": ["1"] * 201},
+    {"cities": "almaty", "rubrics": ["653"]},
+])
+def test_oversized_or_misshapen_settings_are_422_and_change_nothing(client, body):
+    assert client.put("/api/companies/segments", json=body).status_code == 422
+    assert client.get("/api/companies/segments").json()["settings"]["rubrics"] == list(
+        domain.DEFAULT_RUBRICS)
+
+
+def test_unknown_fields_are_ignored(client):
+    response = client.put("/api/companies/segments",
+                          json={"cities": ["almaty"], "rubrics": ["653"], "batch_size": 9})
+
+    assert response.status_code == 200
+    assert response.json()["settings"] == {"cities": ["almaty"], "rubrics": ["653"]}
+
+
+def test_a_failed_segment_shows_its_reason_until_a_retry_collects_it(client, network, gis):
+    client.put("/api/companies/segments", json={"cities": ["almaty"], "rubrics": ["653"]})
+    client.post("/api/companies/collect")
+    [failed] = client.get("/api/companies/segments").json()["segments"]
+    assert (failed["status"], failed["error"]) == ("failed", "2GIS ответил HTTP 404 — проверьте id рубрики")
+
+    first = domain.RUBRIC_PAGE.format(city="almaty", rubric="653", page=1)
+    second = domain.RUBRIC_PAGE.format(city="almaty", rubric="653", page=2)
+    network.pages = {first: gis.rubric([], current=1, pages=7),
+                     second: gis.rubric([], current=1, pages=7)}  # the ceiling at once
+    client.post("/api/companies/collect")
+
+    [segment] = client.get("/api/companies/segments").json()["segments"]
+    assert (segment["status"], segment["error"], segment["capped"]) == ("collected", None, True)

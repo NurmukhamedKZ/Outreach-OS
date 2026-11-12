@@ -1,21 +1,26 @@
 from datetime import UTC, datetime
 
 from companies import public
-from companies.domain import Placement, ListedBranch
+from companies.domain import ListedBranch, Placement
 from companies.repository import CompanyRepository
+from companies.schemas import Segment
 
 NOW = datetime(2026, 11, 12, 10, 0, tzinfo=UTC)
 
 
-def company(db, company_id, contacts, reviews=0, branches=1):
+def company(db, company_id, contacts, reviews=0, branches=1, segment=Segment("almaty", "653")):
+    """A company found in `segment` (one of the default ones unless given)."""
     repo = CompanyRepository(db)
+    repo.claim(segment, NOW)
     repo.add_company(company_id, f"Компания {company_id}", "almaty", NOW)
     for n in range(branches):
         branch_id = f"{company_id}-{n}"
-        repo.add_branch(ListedBranch(branch_id, None, "Филиал", None, "Абая, 1", reviews),
+        count = reviews[n] if isinstance(reviews, list) else reviews
+        repo.add_branch(ListedBranch(branch_id, None, "Филиал", None, "Абая, 1", count),
                         "almaty", f"https://2gis.kz/almaty/firm/{branch_id}",
                         Placement(company_id, "self" if n == 0 else "org_id", 1.0))
         repo.replace_contacts(branch_id, contacts)
+        repo.link_segment(branch_id, segment)
     db.commit()
 
 
@@ -59,3 +64,25 @@ def test_a_company_comes_with_its_contacts_and_branches(db):
                      {"branch_id": "a-1", "name": "Филиал", "address": "Абая, 1",
                       "source_url": "https://2gis.kz/almaty/firm/a-1", "rule": "org_id",
                       "confidence": 1.0}]}
+
+
+def test_a_company_of_an_unticked_segment_is_not_offered(db):
+    company(db, "chosen", [("whatsapp", "+77010000001")])
+    company(db, "unticked", [("whatsapp", "+77010000002")], segment=Segment("astana", "653"))
+
+    assert [c.company_id for c in public.prioritized(db, 10)] == ["chosen"]
+
+
+def test_the_review_count_is_the_largest_of_the_branches(db):
+    company(db, "a", [("whatsapp", "+77010000001")], reviews=[3, 40, 7], branches=3)
+
+    assert public.prioritized(db, 1)[0].review_count == 40
+
+
+def test_equal_companies_are_ordered_by_id_and_nothing_is_given_for_no_room(db):
+    company(db, "b", [("whatsapp", "+77010000002")])
+    company(db, "a", [("whatsapp", "+77010000001")])
+
+    assert [c.company_id for c in public.prioritized(db, 5)] == ["a", "b"]
+    assert public.prioritized(db, 0) == []
+    assert public.prioritized(db, -1) == []

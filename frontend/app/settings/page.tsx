@@ -5,7 +5,7 @@
  * опрашивает API, пока идёт сбор, и не использует SSE (#4, решение 14).
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
   fetchSegments,
@@ -57,6 +57,8 @@ function Segments() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  // Ответ опроса, ушедшего до сохранения, старше ответа самого сохранения.
+  const saves = useRef(0);
 
   const adopt = useCallback((next: SegmentsView) => {
     setView(next);
@@ -66,7 +68,7 @@ function Segments() {
   }, []);
 
   useEffect(() => {
-    fetchSegments().then(adopt).catch((failure) => setError(String(failure)));
+    fetchSegments().then(adopt).catch((failure) => setError(messageOf(failure)));
   }, [adopt]);
 
   const collecting = view?.segments.some((s) => s.status === "collecting") ?? false;
@@ -75,7 +77,12 @@ function Segments() {
   useEffect(() => {
     if (!collecting) return;
     const timer = setInterval(() => {
-      fetchSegments().then(setView).catch(() => undefined);
+      const before = saves.current;
+      fetchSegments()
+        .then((next) => {
+          if (saves.current === before) setView(next);
+        })
+        .catch((failure) => setError(messageOf(failure)));
     }, POLL_MS);
     return () => clearInterval(timer);
   }, [collecting]);
@@ -103,6 +110,7 @@ function Segments() {
   const save = () => {
     setError(null);
     setSaving(true);
+    saves.current += 1;
     saveSegments(draft)
       .then((next) => {
         adopt(next);
@@ -110,7 +118,7 @@ function Segments() {
       })
       .catch((failure) => {
         const code = failure instanceof ApiError ? failure.code : undefined;
-        setError((code && ERROR_TEXT[code]) ?? String(failure));
+        setError((code && ERROR_TEXT[code]) || messageOf(failure));
       })
       .finally(() => setSaving(false));
   };
@@ -119,6 +127,11 @@ function Segments() {
   const cityName = (id: string) => view.cities.find((c) => c.id === id)?.name ?? id;
   const rubricName = (id: string) => view.rubrics.find((r) => r.id === id)?.name ?? `Рубрика ${id}`;
   const rubrics = [...view.rubrics, ...extra.map((id) => ({ id, name: `Рубрика ${id}` }))];
+  // Сохранённый город, которого нет в справочнике, должен сниматься галочкой.
+  const cities = [
+    ...view.cities,
+    ...draft.cities.filter((id) => !view.cities.some((c) => c.id === id)).map((id) => ({ id, name: id })),
+  ];
 
   return (
     <section className="card settings-section" aria-labelledby="segments-title">
@@ -130,7 +143,7 @@ function Segments() {
 
       <h3>Города</h3>
       <div className="settings-checks">
-        {view.cities.map((city) => (
+        {cities.map((city) => (
           <label key={city.id} className="settings-check">
             <input
               type="checkbox"
@@ -218,4 +231,8 @@ function Segments() {
       )}
     </section>
   );
+}
+
+function messageOf(failure: unknown) {
+  return failure instanceof Error ? failure.message : String(failure);
 }

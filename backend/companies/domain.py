@@ -7,10 +7,12 @@ threshold there was set against live data of August 2026 and stays as it was.
 
 import json
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
+from typing import Any
 
+from companies.exceptions import UnexpectedPageError
 from core import contacts
 
 RUBRIC_PAGE = "https://2gis.kz/{city}/rubric/{rubric}/page/{page}"
@@ -52,6 +54,9 @@ RUBRIC_ID = re.compile(r"[0-9]{1,9}")
 
 INITIAL_STATE = re.compile(r"var initialState = JSON\.parse\('(.*?)'\);", re.S)
 CONTACT_KINDS = ("phone", "website", "email", "instagram", "whatsapp")
+PHONE_KINDS = ("phone", "whatsapp")
+# A branch id goes into a card address: nothing that could change its path.
+BRANCH_ID = re.compile(r"[0-9A-Za-z_]+")
 
 # A phone shared by many branches is a business centre or a call centre, a
 # domain shared by twenty is a marketplace: both would glue half the base together.
@@ -75,18 +80,6 @@ KAZAKH_PREFIXES = ("+76", "+77")
 PHONE_LENGTH = 12
 
 
-class UnexpectedPageError(Exception):
-    """A 2GIS page has no state or not the expected shape."""
-
-
-class SubstitutedPageError(UnexpectedPageError):
-    """2GIS answered the first list page with another page."""
-
-    def __init__(self, current: int | None):
-        super().__init__(f"page {current} instead of the first")
-        self.current = current
-
-
 @dataclass(frozen=True)
 class ListedBranch:
     branch_id: str
@@ -108,7 +101,7 @@ class RubricPage:
     branches: list[ListedBranch]
 
 
-def parse_state(html: str) -> dict:
+def parse_state(html: str) -> dict[str, Any]:
     """Return initialState: a JS string with JSON inside; only JS escaping is undone.
 
     Raises:
@@ -119,8 +112,8 @@ def parse_state(html: str) -> dict:
         raise UnexpectedPageError("no initialState on the page")
     try:
         return json.loads(re.sub(r"\\(['\\])", r"\1", found.group(1)))
-    except ValueError as error:
-        raise UnexpectedPageError(f"initialState is no JSON: {error}") from None
+    except ValueError:
+        raise UnexpectedPageError("initialState is no JSON") from None
 
 
 def parse_rubric_page(html: str) -> RubricPage:
@@ -138,7 +131,7 @@ def parse_rubric_page(html: str) -> RubricPage:
         for branch_id, node in entities.items():
             data = node.get("data") or {}
             org = data.get("org")
-            if not org:  # stops and ad blocks come in the same branch
+            if not org or not BRANCH_ID.fullmatch(branch_id):  # stops and ads come here too
                 continue
             reviews = data.get("reviews") or {}
             branches.append(ListedBranch(
@@ -147,7 +140,8 @@ def parse_rubric_page(html: str) -> RubricPage:
                 review_count=reviews.get("general_review_count") or 0))
         return RubricPage(meta["total"], meta["pages"], meta.get("currentPage"), branches)
     except (KeyError, TypeError, AttributeError, StopIteration) as error:
-        raise UnexpectedPageError(f"not a rubric list: {error!r}") from None
+        # The type only: the message of a lookup error may quote the page.
+        raise UnexpectedPageError(f"not a rubric list: {type(error).__name__}") from None
 
 
 def parse_firm_card(html: str, branch_id: str) -> list[tuple[str, str]]:
@@ -161,10 +155,14 @@ def parse_firm_card(html: str, branch_id: str) -> list[tuple[str, str]]:
     state = parse_state(html)
     try:
         groups = state["data"]["entity"]["profile"][branch_id]["data"].get("contact_groups")
+        return _contacts(groups or [])
     except (KeyError, TypeError, AttributeError) as error:
-        raise UnexpectedPageError(f"not the card of the branch: {error!r}") from None
+        raise UnexpectedPageError(f"not the card of the branch: {type(error).__name__}") from None
+
+
+def _contacts(groups: list[dict[str, Any]]) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
-    for group in groups or []:
+    for group in groups:
         for contact in group.get("contacts") or []:
             kind = contact.get("type")
             if kind not in CONTACT_KINDS:
@@ -175,6 +173,9 @@ def parse_firm_card(html: str, branch_id: str) -> list[tuple[str, str]]:
             try:
                 handle = contacts.canonical(raw)
             except ValueError:
+                continue
+            # A wa.me/message link or a phone field with words carries no number to write to.
+            if kind in PHONE_KINDS and not handle.startswith("+"):
                 continue
             if (kind, handle) not in found:
                 found.append((kind, handle))
@@ -246,7 +247,11 @@ def group_branches(identities: Mapping[str, Identity]) -> dict[str, list[str]]:
     return groups
 
 
-def _join_by(identities, union, keys_of, cap: int | None) -> None:
+Union = Callable[[str, str], None]
+
+
+def _join_by(identities: Mapping[str, Identity], union: Union,
+             keys_of: Callable[[Identity], list[str | None]], cap: int | None) -> None:
     buckets: dict[str, list[str]] = {}
     for branch_id, data in sorted(identities.items()):
         for key in keys_of(data):
@@ -259,7 +264,8 @@ def _join_by(identities, union, keys_of, cap: int | None) -> None:
             union(members[0], other)
 
 
-def _join_similar_names(identities, union, find) -> None:
+def _join_similar_names(identities: Mapping[str, Identity], union: Union,
+                        find: Callable[[str], str]) -> None:
     """Join similar names within a city: the weakest rule, so it goes last.
 
     Candidates are narrowed by city and first letter, or the comparison is
@@ -348,6 +354,9 @@ def assign(identities: Mapping[str, Identity], companies_of: Mapping[str, str],
     """
     result = Assignment()
     taken = set(taken)
+    members_of: dict[str, list[str]] = {}
+    for branch_id, company_id in sorted(companies_of.items()):
+        members_of.setdefault(company_id, []).append(branch_id)
     for members in group_branches(identities).values():
         newcomers = [b for b in members if b not in companies_of]
         if not newcomers:
@@ -357,8 +366,8 @@ def assign(identities: Mapping[str, Identity], companies_of: Mapping[str, str],
             company_id = existing[0]
             if len(existing) > 1:
                 result.conflicts.append(tuple(existing))
-            company = [b for b in companies_of if companies_of[b] == company_id] + newcomers
-            representative = min(b for b in companies_of if companies_of[b] == company_id)
+            company = members_of[company_id] + newcomers
+            representative = members_of[company_id][0]
         else:
             company_id = pick_company_id(identities, newcomers)
             if company_id in taken:
@@ -394,8 +403,9 @@ def normalize_domain(url: str | None) -> str | None:
 def normalize_instagram(raw: str | None) -> str | None:
     if not raw:
         return None
-    handle = raw.strip().lower().rstrip("/").split("/")[-1].lstrip("@")
-    return handle.split("?")[0] or None
+    # instagram.com/name/?igshid=… is the usual shared link: the query goes first.
+    path = re.split(r"[?#]", raw.strip().lower(), maxsplit=1)[0]
+    return path.rstrip("/").split("/")[-1].lstrip("@") or None
 
 
 def _first(values: Iterable[str | None]) -> str | None:

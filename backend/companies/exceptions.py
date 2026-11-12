@@ -13,3 +13,18 @@ class InvalidRubricError(DomainError):
 
     code = "errors.rubricInvalid"
     status_code = 422
+
+
+class UnexpectedPageError(Exception):
+    """A 2GIS page has no state or not the expected shape.
+
+    Not a DomainError: the collection turns it into the segment's failure reason.
+    """
+
+
+class SubstitutedPageError(UnexpectedPageError):
+    """2GIS answered the first list page with another page."""
+
+    def __init__(self, current: int | None) -> None:
+        super().__init__(f"page {current} instead of the first")
+        self.current = current

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from companies.domain import ListedBranch, Placement
-from companies.schemas import Branch, Contact, Segment, SegmentStatus
+from companies.schemas import Branch, Company, Contact, Segment, SegmentStatus
 
 RETRYABLE = (SegmentStatus.NEW, SegmentStatus.FAILED)
 
@@ -17,16 +17,6 @@ class StoredBranch:
     name: str
     city: str
     contacts: list[tuple[str, str]]
-
-
-@dataclass(frozen=True)
-class StoredCompany:
-    company_id: str
-    name: str
-    city: str
-    branches: list[Branch]
-    contacts: list[Contact]
-    review_count: int
 
 
 def _utc(moment: datetime) -> str:
@@ -126,7 +116,16 @@ class CompanyRepository:
             "INSERT INTO branch_segments (branch_id, city, rubric) VALUES (?, ?, ?)"
             " ON CONFLICT DO NOTHING", (branch_id, *segment))
 
-    def companies(self) -> list[StoredCompany]:
+    def company_segments(self) -> dict[str, set[Segment]]:
+        """Return the segments each company was found in."""
+        found: dict[str, set[Segment]] = {}
+        for company_id, city, rubric in self._db.execute(
+                "SELECT DISTINCT b.company_id, s.city, s.rubric FROM branch_segments s"
+                " JOIN branches b USING (branch_id)"):
+            found.setdefault(company_id, set()).add(Segment(city, rubric))
+        return found
+
+    def companies(self) -> list[Company]:
         """Return every company with its branches and contacts, each sorted."""
         branches: dict[str, list[Branch]] = {}
         reviews: dict[str, int] = {}
@@ -142,7 +141,9 @@ class CompanyRepository:
                 "SELECT DISTINCT b.company_id, c.kind, c.handle FROM branch_contacts c"
                 " JOIN branches b USING (branch_id) ORDER BY b.company_id, c.kind, c.handle"):
             contacts.setdefault(company_id, []).append(Contact(kind=kind, handle=handle))
-        return [StoredCompany(company_id, name, city, branches.get(company_id, []),
-                              contacts.get(company_id, []), reviews.get(company_id, 0))
+        return [Company(company_id=company_id, name=name, city=city,
+                        review_count=reviews.get(company_id, 0),
+                        contacts=contacts.get(company_id, []),
+                        branches=branches.get(company_id, []))
                 for company_id, name, city in self._db.execute(
                     "SELECT company_id, name, city FROM companies ORDER BY company_id")]

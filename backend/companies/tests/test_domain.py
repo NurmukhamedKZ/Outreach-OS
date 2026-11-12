@@ -159,3 +159,147 @@ def test_reachable_means_a_whatsapp_or_a_mobile():
     assert domain.is_reachable([("phone", "+77750009131")])
     assert not domain.is_reachable([("phone", "+77272960782"), ("email", "a@b.kz"),
                                     ("website", "https://a.kz")])
+
+
+def test_a_branch_id_that_could_change_the_card_address_is_dropped(gis):
+    page = domain.parse_rubric_page(gis.rubric([{"id": "../x", "org": "1", "name": "А"},
+                                                {"id": "1?u=x", "org": "2", "name": "Б"},
+                                                {"id": "70000001037962810", "org": "3",
+                                                 "name": "В"}], current=1))
+
+    assert [b.branch_id for b in page.branches] == ["70000001037962810"]
+
+
+def test_a_whatsapp_or_phone_without_a_number_is_no_channel(gis):
+    html = gis.card("1", [("whatsapp", "https://wa.me/message/ABCDEF"),
+                          ("phone", "звоните в офис"), ("whatsapp", "https://wa.me/77010000001")])
+
+    assert domain.parse_firm_card(html, "1") == [("whatsapp", "+77010000001")]
+
+
+def test_a_card_reads_url_and_text_values_and_no_groups_as_no_contacts(gis):
+    html = gis.page_of({"data": {"entity": {"profile": {"1": {"data": {"contact_groups": [
+        {"contacts": [{"type": "website", "url": "https://a.kz"},
+                      {"type": "email", "text": "a@a.kz"}]}]}}}}}})
+
+    assert domain.parse_firm_card(html, "1") == [("website", "https://a.kz"),
+                                                 ("email", "a@a.kz")]
+    assert domain.parse_firm_card(gis.card("1", []), "1") == []
+    empty = gis.page_of({"data": {"entity": {"profile": {"1": {"data": {"contact_groups": None}}}}}})
+    assert domain.parse_firm_card(empty, "1") == []
+
+
+@pytest.mark.parametrize("state", [
+    {"data": {}}, {"data": {"search": {"profile": {}}, "entity": {"profile": {}}}},
+    {"data": {"search": {"profile": {"q": {"data": {"pages": 1}}}}, "entity": {"profile": {}}}},
+])
+def test_a_state_of_another_shape_is_unexpected(gis, state):
+    with pytest.raises(domain.UnexpectedPageError):
+        domain.parse_rubric_page(gis.page_of(state))
+
+
+def test_broken_state_json_and_a_card_of_another_branch_are_unexpected(gis):
+    with pytest.raises(domain.UnexpectedPageError):
+        domain.parse_rubric_page("var initialState = JSON.parse('{oops');")
+    with pytest.raises(domain.UnexpectedPageError):
+        domain.parse_firm_card(gis.card("1", []), "2")
+    weird = gis.page_of({"data": {"entity": {"profile": {"1": {"data": {
+        "contact_groups": ["not a group"]}}}}}})
+    with pytest.raises(domain.UnexpectedPageError):
+        domain.parse_firm_card(weird, "1")
+
+
+@pytest.mark.parametrize("raw,host", [
+    ("https://www.Alfa.KZ/about?x=1", "alfa.kz"), ("alfa.kz:8080", "alfa.kz"),
+    ("http://alfa.kz/", "alfa.kz"), ("https://taplink.cc/alfa", None), ("", None),
+])
+def test_a_domain_is_the_bare_host(raw, host):
+    assert domain.normalize_domain(raw) == host
+
+
+@pytest.mark.parametrize("raw,handle", [
+    ("https://instagram.com/alfa_kz/?igshid=abc", "alfa_kz"), ("@Alfa_KZ", "alfa_kz"),
+    ("https://www.instagram.com/alfa_kz/", "alfa_kz"), ("alfa_kz#top", "alfa_kz"), ("", None),
+])
+def test_an_instagram_is_the_bare_name(raw, handle):
+    assert domain.normalize_instagram(raw) == handle
+
+
+def test_a_name_drops_legal_forms_quotes_and_yo():
+    assert domain.normalize_name("ТОО «Учёт и Право», ИП") == "учет и право"
+    assert domain.normalize_name("Alfa LLP") == "alfa"
+
+
+def test_a_phone_shared_by_exactly_three_branches_still_joins():
+    shared = {key: ident(name=name, phones=["+77272000000"])
+              for key, name in zip("abc", ("Альфа", "Бета", "Гамма"))}
+    assert groups(shared) == [["a", "b", "c"]]
+
+
+def test_a_domain_shared_by_more_than_twenty_branches_is_a_marketplace():
+    def on_domain(count):
+        return {f"{n:02}": ident(name=f"{chr(0x410 + n)}фирма", domain_="shop.kz")
+                for n in range(count)}
+
+    assert len(groups(on_domain(20))) == 1
+    assert len(groups(on_domain(21))) == 21
+
+
+@pytest.mark.parametrize("left,right,joined", [
+    ("Мой бухгалтер", "Мой бухгалтер kz", True),        # 0.897
+    ("Альфа Консалтинг", "Альфа Консалтинг Плюс", False),  # 0.865
+    ("Бухучёт", "Бухучет", True),                        # 1.0 after ё
+])
+def test_names_join_from_the_similarity_threshold(left, right, joined):
+    assert (groups({"a": ident(name=left), "b": ident(name=right)}) == [["a", "b"]]) is joined
+
+
+def test_a_whatsapp_number_does_not_join_branches():
+    a = domain.identity(None, "Альфа", "almaty", [("whatsapp", "+77010000001")])
+    b = domain.identity(None, "Бета", "almaty", [("whatsapp", "+77010000001")])
+
+    assert groups({"a": a, "b": b}) == [["a"], ["b"]]
+
+
+@pytest.mark.parametrize("own,rule", [
+    (ident(name="Бета", domain_="alfa.kz"), ("domain", 1.0)),
+    (ident(name="Бета", instagram="alfa"), ("instagram", 1.0)),
+    (ident(name="Бета", phones=["+77010000001"]), ("phone", 0.9)),
+])
+def test_each_exact_rule_is_named(own, rule):
+    head = ident(org="1", name="Альфа", domain_="alfa.kz", instagram="alfa",
+                 phones=["+77010000001"])
+
+    assert domain.link_reason({"a": head, "b": own}, "a", "b", ["a", "b"]) == rule
+
+
+def test_a_fuzzy_link_is_measured_against_the_closest_member():
+    identities = {"a": ident(name="Мой бухгалтер"), "b": ident(name="Мой бухгалтер kz"),
+                  "c": ident(name="Мой бухгалтер kz плюс")}
+
+    rule, confidence = domain.link_reason(identities, "a", "c", ["a", "b", "c"])
+
+    assert rule == "name_city_fuzzy"
+    assert confidence == round(domain._similarity("мой бухгалтер kz", "мой бухгалтер kz плюс"), 3)
+
+
+def test_the_company_id_prefers_domain_then_org_then_instagram():
+    assert domain.pick_company_id({"a": ident(org="1", domain_="b.kz"),
+                                   "b": ident(domain_="a.kz")}, ["a", "b"]) == "dom:a.kz"
+    assert domain.pick_company_id({"a": ident(org="1", instagram="x")}, ["a"]) == "2gis:1"
+    assert domain.pick_company_id({"a": ident(instagram="x")}, ["a"]) == "ig:x"
+    assert domain.pick_company_id({"a": ident()}, ["a"]) == "branch:a"
+
+
+def test_placed_branches_never_move():
+    identities = {"a": ident(org="1", name="Альфа"), "b": ident(org="1", name="Альфа")}
+
+    assert domain.assign(identities, {"a": "x", "b": "y"}, {"x", "y"}) == domain.Assignment()
+
+
+@pytest.mark.parametrize("phone,mobile", [
+    ("+76000000000", True), ("+77300000000", True), ("+7701000000", False),
+    ("+770100000001", False),
+])
+def test_a_mobile_has_twelve_characters_and_a_kazakh_prefix(phone, mobile):
+    assert domain.is_mobile(phone) is mobile

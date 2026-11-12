@@ -215,3 +215,14 @@ def test_fake_records_the_cookies_of_each_request():
     fake.get(URL, headers={"Accept": "application/json"})
 
     assert fake.cookies == [{"dg5_museum_accept": "true"}, None]
+
+
+def test_empty_cookies_and_headers_are_not_sent(network, source):
+    net = network(response())
+    calls = []
+    original = net.get
+    net.get = lambda url, **kwargs: calls.append(kwargs) or original(url, **kwargs)
+
+    source.get(URL, cookies={}, headers={})
+
+    assert calls == [{"impersonate": "chrome"}]

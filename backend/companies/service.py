@@ -1,17 +1,16 @@
 import logging
 import sqlite3
 from collections.abc import Callable, Collection
-from contextlib import closing
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from pathlib import Path
 
 from companies import domain
-from companies.domain import ListedBranch, SubstitutedPageError, UnexpectedPageError
-from companies.exceptions import InvalidCityError, InvalidRubricError
+from companies.domain import ListedBranch
+from companies.exceptions import (InvalidCityError, InvalidRubricError, SubstitutedPageError,
+                                  UnexpectedPageError)
 from companies.repository import CompanyRepository
 from companies.schemas import (CatalogItem, Company, Segment, SegmentSettings, SegmentState,
                                SegmentStatus, SegmentsView)
-from core import db as core_db
 from core import operator_settings
 from core.pages import BotCheckError, FetchError, HttpStatusError, Pages
 
@@ -19,6 +18,13 @@ log = logging.getLogger(__name__)
 
 MODULE = "companies"
 Found = list[tuple[ListedBranch, list[tuple[str, str]]]]
+# Cards wait on the network, not on the pace: one at a time a request took
+# 1.7 s against the 0.15 s 2GIS allows. The pace stays with the page adapter, so
+# more threads do not bring a captcha closer (the old collect.py measured 16).
+MAX_WORKERS = 16
+# A card that is gone drops its branch; any other refusal (403, 429) fails the
+# segment, or a throttled source would silently shrink it.
+GONE = (404, 410)
 
 
 class CompanyService:
@@ -31,6 +37,7 @@ class CompanyService:
     # --- segments -----------------------------------------------------------
 
     def settings(self) -> SegmentSettings:
+        """Return the chosen cities and rubrics, defaults until the operator saves."""
         return operator_settings.load(self._db, MODULE, SegmentSettings)
 
     def save_segments(self, settings: SegmentSettings) -> SegmentsView:
@@ -92,19 +99,23 @@ class CompanyService:
         """Collect claimed segments one by one; a failure stays with its segment.
 
         Each segment ends collected or failed with a reason for the operator.
-        Network goes first, then one transaction writes the segment's finds.
+        Network goes first, then one transaction writes the segment's finds. The
+        one broad except is deliberate: a bug must not leave a segment collecting.
         """
         for segment in segments:
             try:
                 found, capped = self._fetch(pages, segment)
                 with self._db:
+                    # Write lock before reading the known branches: a second
+                    # collection of other segments must not place them too.
+                    self._db.execute("BEGIN IMMEDIATE")
                     self._store(segment, found, now())
                     self._repo.finish(segment, len(found), capped, now())
                 log.info("segment %s/%s collected: %d branches", *segment, len(found))
             except (FetchError, UnexpectedPageError) as error:
                 log.warning("segment %s/%s failed: %r", *segment, error)
                 self._fail(segment, _reason(error), now())
-            except Exception:  # a bug must not leave the segment collecting forever
+            except Exception:
                 log.exception("segment %s/%s failed unexpectedly", *segment)
                 self._fail(segment, "Внутренняя ошибка сбора, подробности в логе", now())
 
@@ -113,27 +124,23 @@ class CompanyService:
             self._repo.fail(segment, reason, now)
 
     def _fetch(self, pages: Pages, segment: Segment) -> tuple[Found, bool]:
-        """Return the segment's branches with their card contacts and the ceiling mark.
-
-        A card that is gone (non-200) drops its branch; any other failure fails
-        the segment.
-        """
+        """Return the segment's branches with their card contacts and the ceiling mark."""
         listed, capped = self._list(pages, segment)
-        found = []
-        for branch in listed:
-            url = domain.FIRM_CARD.format(city=segment.city, branch_id=branch.branch_id)
+        with ThreadPoolExecutor(MAX_WORKERS) as pool:
+            futures = [pool.submit(_card, pages, segment, branch) for branch in listed]
             try:
-                html = pages.get(url, cookies=domain.GIS_COOKIE).text
-            except HttpStatusError as error:
-                log.warning("card of branch %s skipped: HTTP %d", branch.branch_id, error.status)
-                continue
-            found.append((branch, domain.parse_firm_card(html, branch.branch_id)))
-        return found, capped
+                cards = [future.result() for future in futures]
+            except BaseException:
+                for future in futures:  # a bot check: stop asking the source
+                    future.cancel()
+                raise
+        return [card for card in cards if card is not None], capped
 
     def _list(self, pages: Pages, segment: Segment) -> tuple[list[ListedBranch], bool]:
         """Return the rubric's branches up to the pagination ceiling and whether it was hit."""
         first = self._page(pages, segment, 1)
-        if first.current != 1:
+        # A rubric of one page may come without currentPage at all.
+        if first.current not in (1, None):
             raise SubstitutedPageError(first.current)
         branches = list(first.branches)
         last = min(first.pages, domain.PAGE_LIMIT)
@@ -180,25 +187,38 @@ class CompanyService:
     # --- companies ------------------------------------------------------------
 
     def prioritized(self, limit: int, exclude: Collection[str]) -> list[Company]:
-        """Return reachable companies in the order of research, skipping `exclude`."""
+        """Return reachable companies of the chosen segments in the order of research.
+
+        A company of a segment the operator has unticked stays in the base but
+        is not offered; `exclude` skips companies already given out.
+        """
+        chosen = set(_segments(self.settings()))
+        in_chosen = {company_id for company_id, segments in self._repo.company_segments().items()
+                     if segments & chosen}
         ranked = []
         for company in self._repo.companies():
             handles = [(c.kind, c.handle) for c in company.contacts]
-            if company.company_id in exclude or not domain.is_reachable(handles):
+            if (company.company_id in exclude or company.company_id not in in_chosen
+                    or not domain.is_reachable(handles)):
                 continue
             ranked.append((domain.priority_key(handles, company.review_count,
                                                company.company_id), company))
         ranked.sort(key=lambda pair: pair[0])
-        return [Company(company_id=c.company_id, name=c.name, city=c.city,
-                        review_count=c.review_count, contacts=c.contacts, branches=c.branches)
-                for _key, c in ranked[:limit]]
+        return [company for _key, company in ranked[:max(limit, 0)]]
 
 
-def collect_in_background(path: Path, pages: Pages, segments: list[Segment],
-                          now: Callable[[], datetime]) -> None:
-    """Collect claimed segments on a connection of their own, off the request."""
-    with closing(core_db.connect(path)) as db:
-        CompanyService(db).collect(pages, segments, now)
+def _card(pages: Pages, segment: Segment,
+          branch: ListedBranch) -> tuple[ListedBranch, list[tuple[str, str]]] | None:
+    """Return the branch with its card contacts, or None when the card is gone."""
+    url = domain.FIRM_CARD.format(city=segment.city, branch_id=branch.branch_id)
+    try:
+        html = pages.get(url, cookies=domain.GIS_COOKIE).text
+    except HttpStatusError as error:
+        if error.status not in GONE:
+            raise
+        log.warning("card of branch %s skipped: HTTP %d", branch.branch_id, error.status)
+        return None
+    return branch, domain.parse_firm_card(html, branch.branch_id)
 
 
 def _segments(settings: SegmentSettings) -> list[Segment]:
