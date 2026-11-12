@@ -13,7 +13,12 @@ log = logging.getLogger(__name__)
 
 HOME = Path(__file__).resolve().parent.parent
 
-MODES = ("off", "replies", "full")
+# От «ничего не уходит» к «уходит всё». `manual` — модель только готовит
+# черновики, уходит то, что оператор поставил в очередь кнопкой.
+MODES = ("off", "manual", "replies", "full")
+
+# Kill switch закрыт: стоит даже то, что уже в очереди.
+OFF = "off"
 
 # Kill switch отдельным файлом, а не строкой в config.toml: автопилот
 # выключается кнопкой за секунду, а config.toml правит человек — робот, лезущий
@@ -33,8 +38,11 @@ def autopilot() -> str:
         mode = OVERRIDE.read_text(encoding="utf-8").strip()
         if mode in MODES:
             return mode
-        log.warning("в %s лежит неизвестный режим %r — беру значение из config.toml",
+        # Fail closed, а не откат на config.toml: умолчание там — manual, и
+        # битый файл поверх выбранного «Стоп» отправил бы стоящую очередь.
+        log.warning("в %s лежит неизвестный режим %r — держу отправку (off)",
                     OVERRIDE, mode)
+        return OFF
     return load()["autopilot"]["mode"]
 
 

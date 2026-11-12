@@ -184,7 +184,7 @@ flowchart TB
 
   FE_THREADS --> THREADS_ROUTES
   FE_SENDER --> QUEUE_SVC
-  FE_SENDER -.->|"autopilot: off/replies/full,<br/>файл-kill switch"| AUTOPILOT["sender/autopilot"]
+  FE_SENDER -.->|"autopilot: off/manual/replies/full,<br/>файл-kill switch"| AUTOPILOT["sender/autopilot"]
   AUTOPILOT -.-> WORKER_SEND
 
   %% ============================================================

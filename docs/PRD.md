@@ -26,8 +26,8 @@
 `segment_id`, `fit_score`, `intent_score`, `best_channel`, `why_now`, `profile`.
 
 **Состояние Системы №3.** Очередь исходящих (`outbox`), воркер с гейтами окна
-10:00–18:00 Asia/Almaty и режимы `autopilot` (`off | replies | full`, файл-переключатель
-— kill switch) реализованы; доставка по кнопке оператора и при `full` идёт через один
+10:00–18:00 Asia/Almaty и режимы `autopilot` (`off | manual | replies | full`, файл-переключатель
+— kill switch; умолчание `manual` — уходит только поставленное оператором) реализованы; доставка по кнопке оператора и при `full` идёт через один
 путь (`sender/services/queue.py`). Входящие (вебхук с дедупом по `provider_id` и
 стоп-словами до модели), агент-продавец (`writer/services/seller.py`, четыре
 предохранителя в `sender/services/incoming.py`) и каденция follow-up

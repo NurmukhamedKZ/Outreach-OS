@@ -82,8 +82,10 @@ async def test_a_matured_thread_gets_a_draft_and_a_queued_row(matured, monkeypat
     assert matured.execute("SELECT kind FROM outbox").fetchone()[0] == "followup"
 
 
-async def test_autopilot_off_leaves_the_draft_for_the_button(matured, monkeypatch):
-    monkeypatch.setattr(sender_config, "autopilot", lambda: "replies")
+@pytest.mark.parametrize("mode", ["off", "manual", "replies"])
+async def test_short_of_full_autopilot_the_touch_waits_for_the_button(matured, monkeypatch,
+                                                                     mode):
+    monkeypatch.setattr(sender_config, "autopilot", lambda: mode)
     пишет(monkeypatch, FakeDraft())
 
     assert await followup.touch_one(matured, FakeTransport(), CONFIG, NOW) == "touched"

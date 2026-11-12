@@ -23,7 +23,7 @@ from writer.services import (agent, config as writer_config,
 log = logging.getLogger(__name__)
 
 # Follow-up будит человека, который нам не отвечал: он уходит сам только на
-# полном автопилоте. В `replies` остаётся черновиком под кнопку.
+# полном автопилоте. В `manual` и `replies` остаётся черновиком под кнопку.
 FULL_MODES = ("full",)
 
 KIND = "followup"

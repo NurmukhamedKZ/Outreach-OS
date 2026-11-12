@@ -1,5 +1,7 @@
 [autopilot]
-mode = "off"                    # off | replies | full; он же kill switch
+# off | manual | replies | full; он же kill switch. manual — уходит только
+# поставленное оператором кнопкой, автомат сам в очередь ничего не ставит.
+mode = "manual"
 
 [window]
 timezone = "Asia/Almaty"

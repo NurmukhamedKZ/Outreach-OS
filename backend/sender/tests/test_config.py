@@ -15,10 +15,17 @@ def test_load_carries_warmup_calendar_from_spec():
     assert warmup["ceiling"] == 30
 
 
-def test_autopilot_starts_off():
-    """Kill switch по умолчанию закрыт: система, приезжающая в 'full',
-    начала бы писать лидам в момент первого запуска."""
-    assert config.load()["autopilot"]["mode"] == "off"
+def test_autopilot_starts_manual():
+    """По умолчанию автомат сам ничего не ставит в очередь: система,
+    приезжающая в 'full', начала бы писать лидам в момент первого запуска.
+    Уходит только то, что оператор подтвердил кнопкой."""
+    assert config.load()["autopilot"]["mode"] == "manual"
+
+
+def test_modes_go_from_stop_to_full_autopilot():
+    """Порядок — от «ничего не уходит» к «уходит всё»: в нём их показывает
+    переключатель на странице «Отправка»."""
+    assert config.MODES == ("off", "manual", "replies", "full")
 
 
 def test_reply_window_is_round_the_clock_by_default():
@@ -54,18 +61,23 @@ def switch(tmp_path, monkeypatch):
 
 
 def test_autopilot_defaults_to_the_config_file(switch):
-    assert config.autopilot() == "off"
+    assert config.autopilot() == "manual"
 
 
-def test_override_wins_over_the_config(switch):
-    config.set_autopilot("replies")
-    assert config.autopilot() == "replies"
-    assert switch.read_text(encoding="utf-8").strip() == "replies"
+@pytest.mark.parametrize("mode", ["off", "replies", "full"])
+def test_override_wins_over_the_config(switch, mode):
+    config.set_autopilot(mode)
+    assert config.autopilot() == mode
+    assert switch.read_text(encoding="utf-8").strip() == mode
 
 
-def test_garbage_in_the_override_falls_back_to_the_config(switch):
+@pytest.mark.parametrize("default", ["off", "manual", "replies", "full"])
+def test_garbage_in_the_override_stops_sending(switch, monkeypatch, default):
     """Битый файл не имеет права включить отправку: неизвестное значение —
-    это «мы не знаем режим», а не «шли всё подряд»."""
+    это «мы не знаем режим», а не «шли всё подряд». Откат на config.toml
+    открыл бы kill switch сам: поверх выбранного «Стоп» ушло бы то, что
+    стоит в очереди, — умолчание-то уже не off."""
+    monkeypatch.setattr(config, "load", lambda: {"autopilot": {"mode": default}})
     switch.write_text("fulll\n", encoding="utf-8")
     assert config.autopilot() == "off"
 

@@ -428,9 +428,20 @@ export type WarmupLogRow = {
   updated_at: string;
 };
 
+export type AutopilotMode = "off" | "manual" | "replies" | "full";
+
+/** Порядок — от «ничего не уходит» к «уходит всё»: в нём режимы стоят на
+ * переключателях «Отправки» и песочницы. */
+export const AUTOPILOT_LABELS: Record<AutopilotMode, string> = {
+  off: "Стоп",
+  manual: "Ручной",
+  replies: "Только ответы",
+  full: "Полный автопилот",
+};
+
 export type SenderStatus = {
   status: string;
-  autopilot: "off" | "replies" | "full";
+  autopilot: AutopilotMode;
   numbers: SenderNumber[];
   queue: { queued: number; sent_today: number; overdue: number };
   threads: { waiting: number; escalated: number };
@@ -465,7 +476,7 @@ export function fetchQueue(threadId?: string) {
   return json<{ queue: QueueRow[]; recent: QueueRow[] }>(`/api/sender/queue${query}`);
 }
 
-export function setAutopilot(mode: "off" | "replies" | "full") {
+export function setAutopilot(mode: AutopilotMode) {
   return post<{ autopilot: string }>("/api/sender/autopilot", { mode });
 }
 
