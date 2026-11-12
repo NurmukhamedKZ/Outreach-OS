@@ -12,13 +12,14 @@
 """
 
 import sqlite3
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import sqlite_tools
 
-KINDS = ("escalated", "draft", "stuck")
+KINDS = ("escalated", "draft", "stuck", "backup")
 
 NO_REASON = "причина не сохранилась"
 STUCK_WHY = "не знаем, ушло ли — проверь в телефоне"
@@ -38,7 +39,7 @@ def use(state_db: Path | None, leads_db: Path | None = None) -> None:
 @dataclass(frozen=True)
 class Task:
     """Задача оператора. `href` не здесь: куда ведёт строка — вопрос фронтенда."""
-    kind: str            # escalated | draft | stuck
+    kind: str            # escalated | draft | stuck | backup (без компании и треда)
     company_id: str
     company_name: str
     thread_id: str
@@ -92,34 +93,46 @@ DRAFT_SQL = (
 )
 
 
-def tasks(limit: int = 50) -> list[dict]:
+def tasks(limit: int = 50, backup_why: str | None = None) -> list[dict]:
     """Задачи в порядке срочности: эскалированный тред важнее непроверенного
     черновика — правило предметной области, и оно принадлежит бэкенду, а не
-    странице."""
+    странице.
+
+    `backup_why` — почему бэкап требует человека (решает модуль backup); задача
+    встаёт после тредов, которые ждут сейчас, и перед черновиками.
+    """
     if _state is None:
         raise RuntimeError("tasks.use() не вызван: путь к state.db неизвестен")
+    backup = ([Task("backup", "", "Бэкап", "", None, backup_why, None)]
+              if backup_why else [])
+    urgent, drafts, names = _thread_tasks()
+    rows = (urgent + backup + drafts)[:limit]
+    return [asdict(replace(row, company_name=names(row.company_id)))
+            if row.company_id else asdict(row) for row in rows]
+
+
+def _thread_tasks() -> tuple[list[Task], list[Task], Callable[[str], str]]:
+    """Задачи тредов: срочные (эскалация, застрявшее) и черновики — и имена их компаний."""
     if not Path(_state).exists():
         # Чистая установка: sender/writer ещё не написали ни строки. sqlite3 в
         # режиме ro на отсутствующем файле бросает — страница отвечала бы 500
         # вместо «задач нет».
-        return []
+        return [], [], str
     with closing(sqlite_tools.connect_readonly(_state, _leads)) as db:
         if not sqlite_tools.has_table(db, "threads"):
-            return []
-        rows = [Task("escalated", r["company_id"], "", r["thread_id"], r["our_number"],
-                     r["status_reason"] or NO_REASON, r["at"])
-                for r in db.execute(_escalated_sql(db))]
+            return [], [], str
+        urgent = [Task("escalated", r["company_id"], "", r["thread_id"], r["our_number"],
+                       r["status_reason"] or NO_REASON, r["at"])
+                  for r in db.execute(_escalated_sql(db))]
         if sqlite_tools.has_table(db, "outbox"):
-            rows += [Task("stuck", r["company_id"], "", r["thread_id"], r["our_number"],
-                         STUCK_WHY, r["at"])
-                    for r in db.execute(STUCK_SQL)]
-        rows += [Task("draft", r["company_id"], "", r["thread_id"], None,
-                     DRAFT_WHY, r["at"])
-                for r in db.execute(DRAFT_SQL)]
-        rows = rows[:limit]
-        names = _names(db, {row.company_id for row in rows})
-        return [asdict(replace(row, company_name=names.get(row.company_id, row.company_id)))
-                for row in rows]
+            urgent += [Task("stuck", r["company_id"], "", r["thread_id"], r["our_number"],
+                            STUCK_WHY, r["at"])
+                       for r in db.execute(STUCK_SQL)]
+        drafts = [Task("draft", r["company_id"], "", r["thread_id"], None,
+                       DRAFT_WHY, r["at"])
+                  for r in db.execute(DRAFT_SQL)]
+        found = _names(db, {row.company_id for row in urgent + drafts})
+    return urgent, drafts, lambda company_id: found.get(company_id, company_id)
 
 
 def _names(db: sqlite3.Connection, company_ids: set[str]) -> dict[str, str]:

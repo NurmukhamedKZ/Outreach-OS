@@ -21,16 +21,20 @@ const TASK_LABEL: Record<Task["kind"], string> = {
   escalated: "ждёт вас",
   stuck: "проверить в телефоне",
   draft: "проверить черновик",
+  backup: "сделать бэкап",
 };
 
 const TASK_TONE: Record<Task["kind"], "stop" | "attention"> = {
   escalated: "stop",
   stuck: "stop",
   draft: "attention",
+  backup: "attention",
 };
 
-/** Куда ведёт задача. Черновик проверяют на «Холодных», диалог — в «Диалогах». */
+/** Куда ведёт задача. Черновик проверяют на «Холодных», диалог — в «Диалогах»,
+ *  бэкап — на «Процессах». */
 function hrefOf(task: Task) {
+  if (task.kind === "backup") return "/activity";
   return task.kind === "draft"
     ? "/cold"
     : `/threads?company=${encodeURIComponent(task.company_id)}`;
@@ -44,6 +48,11 @@ function plural(n: number) {
   if (mod10 === 1) return "задача";
   if (mod10 >= 2 && mod10 <= 4) return "задачи";
   return "задач";
+}
+
+/** «Требует» согласуется с числом так же, как «задача»: 1, 21, 31 — единственное. */
+function requires(n: number) {
+  return n % 10 === 1 && n % 100 !== 11 ? "требует" : "требуют";
 }
 
 export default function Overview() {
@@ -70,7 +79,7 @@ export default function Overview() {
             ? "смотрим, что требуется…"
             : tasks.length === 0
               ? "задач нет — автомат справляется сам"
-              : `${tasks.length} ${plural(tasks.length)} требуют вас`}
+              : `${tasks.length} ${plural(tasks.length)} ${requires(tasks.length)} вас`}
         </span>
       </header>
 
@@ -85,11 +94,13 @@ export default function Overview() {
           >
             <span className="row-text">
               <span className="inbox-name">{task.company_name}</span>
-              <span className="inbox-sub">{task.why}</span>
-              <span className="inbox-sub mono">
-                {task.thread_id}
-                {task.our_number ? ` · пишем с ${task.our_number}` : ""}
-              </span>
+              <span className="inbox-sub task-why">{task.why}</span>
+              {task.thread_id && (
+                <span className="inbox-sub mono">
+                  {task.thread_id}
+                  {task.our_number ? ` · пишем с ${task.our_number}` : ""}
+                </span>
+              )}
             </span>
             <span className={`tone is-${TASK_TONE[task.kind]}`}>{TASK_LABEL[task.kind]}</span>
           </Link>
