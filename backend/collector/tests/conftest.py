@@ -11,6 +11,7 @@ import activity
 import collector.services.store as engine
 import collector.services.storage as storage
 import paths
+from core import db as core_db
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"   # collector/fixtures
 
@@ -21,6 +22,7 @@ def stores(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "DERIVED", tmp_path / "derived.db")
     monkeypatch.setattr(paths, "PRODUCTION_STATE", tmp_path / "state.db")
     activity.use(tmp_path / "state.db")          # журнал пишет в ту же state.db
+    core_db.migrate(tmp_path / "state.db")       # отказы: таблица refusals и view suppression
     db = engine.connect()
     yield db
     db.close()

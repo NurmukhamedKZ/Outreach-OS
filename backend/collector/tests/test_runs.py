@@ -88,8 +88,8 @@ def test_generated_tables_survive(stores):
     """Отказ, тред и ответ модели на месте после нового прогона."""
     db = stores
     # отказ
-    db.execute("INSERT INTO state.suppression (handle, added_at, reason)"
-               " VALUES ('+77010000000', '2026-08-10', 'просил')")
+    db.execute("INSERT INTO state.refusals (handle, reason, refused_at)"
+               " VALUES ('+77010000000', 'просил', '2026-08-10T00:00:00+00:00')")
     # тред + сообщение
     db.execute("INSERT INTO state.threads (thread_id, company_id, seed, created_at)"
                " VALUES ('+77010000001', 'c1', '{}', '2026-08-10')")
@@ -104,7 +104,7 @@ def test_generated_tables_survive(stores):
     db.execute("INSERT INTO companies_all (run_id, company_id, name_norm)"
                " VALUES (?, 'c1', 'А')", (run_id,))
     engine.activate_run(db, run_id)
-    assert db.execute("SELECT count(*) FROM state.suppression").fetchone()[0] == 1
+    assert db.execute("SELECT count(*) FROM state.refusals").fetchone()[0] == 1
     assert db.execute("SELECT count(*) FROM state.messages").fetchone()[0] == 1
     assert db.execute("SELECT count(*) FROM state.llm_answers").fetchone()[0] == 1
 

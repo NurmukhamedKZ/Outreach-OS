@@ -1,4 +1,4 @@
-"""Веб отдаёт тот же отбор, что CSV, и отказ из state.suppression не течёт.
+"""Веб отдаёт тот же отбор, что CSV, и отказ из state.refusals не течёт.
 
 У веба своя копия правил (services/leads.py) — проверка того, что она не
 разъехалась с правилами выдачи. F19/F21 не про формат, а про закон.
@@ -40,12 +40,12 @@ def test_web_leads_share_rules_with_csv(stores):
 
 
 def test_refusal_does_not_leak_to_web(stores):
-    """F21: отказ из state.suppression не доходит до веб-выдачи."""
+    """F21: отказ из state.refusals не доходит до веб-выдачи."""
     from collector.routes import leads as web_leads
     db = stores
     _published_run(db)
-    db.execute("INSERT INTO state.suppression (handle, added_at, reason)"
-               " VALUES ('+77010000001', '2026-08-10', 'просил')")
+    db.execute("INSERT INTO state.refusals (handle, reason, refused_at)"
+               " VALUES ('+77010000001', 'просил', '2026-08-10T00:00:00+00:00')")
     db.commit()
     web = web_leads.leads(limit=10)["leads"]
     assert web == [], f"{len(web)} лидов из suppression в веб-выдаче (F21)"

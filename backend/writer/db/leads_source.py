@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import date
 
 import paths
+from refusals import public as refusals
 
 CHANNEL_PRIORITY = ("whatsapp", "phone")
 
@@ -234,7 +235,8 @@ def dialable(handle):
 def best_channel(channels, suppressed):
     for kind in CHANNEL_PRIORITY:
         for channel_kind, handle in channels:
-            if channel_kind != kind or handle in suppressed:
+            # Refusals are kept in canonical form, contacts in the 2GIS spelling.
+            if channel_kind != kind or refusals.canonical(handle) in suppressed:
                 continue
             if len(re.sub(r"\D", "", handle)) < MIN_PHONE_DIGITS:
                 continue

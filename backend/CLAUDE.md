@@ -96,6 +96,8 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 | `schemas.py` | общая база `Schema` (обрезка пробелов) и `Timestamp` (только с зоной, хранится в UTC); схемы ответа модели наследуют не её, а `llm_schema.LLMSchema` |
 | `pages.py` | адаптер сбора: `Pages` (Protocol), `ScraplingPages`, `FakePages`, `FetchError` и наследники |
 | `model.py` | адаптер модели: `Model` (Protocol), `OpenRouterModel`, `FakeModel`, `ModelError`, `ModelKeyMissingError` |
+| `phones.py` | каноническая форма телефона: `canonical(raw)` → `+7XXXXXXXXXX` без `+`, с `+` — 10–15 цифр как набраны (как `numbers.normalize`), иначе `ValueError("errors.phoneInvalid")`; `PHONE` — форма телефона, `WHATSAPP_LINK` — номер из ссылки `wa.me`/`api.whatsapp.com`. Старые копии `resolve.e164` и `numbers.normalize` живут до #7 и #13 |
+| `contacts.py` | каноническая форма контакта: `canonical(raw)` — телефон и ссылка WhatsApp на него → телефон, остальное — без пробелов по краям и в нижнем регистре; пустой, короче трёх символов или кривой телефон — `ValueError("errors.handleInvalid")` |
 
 - **Настройки модуля** — Pydantic-схема с умолчаниями у каждого поля. `load` накладывает сохранённое на умолчания, неизвестные ключи игнорирует, значение, которое схема больше не принимает, заменяет умолчанием с предупреждением в логе. Кэша нет — правка действует со следующего вызова. `save` пишет раздел целиком и не коммитит: транзакцию держит сервис модуля.
 - **`ScraplingPages(paths.PAGES, now=clock.now)`** — один на процесс, собирается в сборщике приложения: темп принадлежит хосту, и два экземпляра удвоили бы его. Повторный запрос в сеть не ходит, страница проверки робота и не-200 не сохраняются, любой сбой сети и кривой адрес — `FetchError`. Темпы по хостам — константы `HOST_INTERVALS` в `pages.py`. Откат на `http://` при ошибке сертификата — забота вызывающего (сайты компаний), не адаптера.
@@ -124,6 +126,7 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 - Применяются программно: при старте приложения (`collector/api.py::prepare_database`) и при создании базы прогона песочницы. Отдельного шага деплоя нет.
 - Миграцию одновременно добавляет один кодер. Перед пушем — свежий `main` и `uv run alembic heads`: голова одна.
 - Тест модуля с новой таблицей проверяет цикл upgrade → downgrade → upgrade (образец — `core/tests/test_db.py`).
+- Пересоздание таблицы в batch-режиме теряет её триггеры: ревизия, которая пересоздаёт `refusals`, создаёт заново `refusals_never_delete`, `refusals_never_update` и `refusals_keep_the_first` (`0002`), иначе тест схемы модуля упадёт.
 
 ## Фоновые задачи
 

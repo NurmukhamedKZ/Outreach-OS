@@ -119,7 +119,7 @@ export default function Overview() {
               <b>{stats.sourcing.available}</b>
             </div>
             <div className="metric-row">
-              <span>отказов (suppression)</span>
+              <span>отказов</span>
               <b>{stats.sourcing.suppressed}</b>
             </div>
           </section>

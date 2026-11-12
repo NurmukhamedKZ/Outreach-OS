@@ -21,7 +21,7 @@ export default function RefusalForm({
   const [shown, setShown] = useState(channel?.handle ?? null);
 
   // Конвейер «Холодных» переиспользует форму на следующей компании. Причина
-  // отказа уходит в suppression, который не очищается: перенести недописанный
+  // отказа уходит в список отказов, который не очищается: перенести недописанный
   // текст про прошлую компанию на новую значит записать туда неправду.
   if (shown !== (channel?.handle ?? null)) {
     setShown(channel?.handle ?? null);
@@ -54,6 +54,7 @@ export default function RefusalForm({
           onChange={(event) => setReason(event.target.value)}
           placeholder={`Причина отказа для ${channel.handle}`}
           minLength={3}
+          maxLength={500}
           required
         />
         <button type="submit" disabled={sending || reason.trim().length < 3}>
@@ -61,8 +62,8 @@ export default function RefusalForm({
         </button>
       </form>
       <p className="note">
-        Запись уходит в <code className="mono">state.suppression</code> и переживает
-        пересборку базы. Отменить нельзя — список не очищается.
+        Запись уходит в список отказов и переживает пересборку базы. Отменить
+        нельзя — список не очищается.
       </p>
       {failure && <p className="failure">{failure}</p>}
     </div>

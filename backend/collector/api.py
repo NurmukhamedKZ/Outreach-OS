@@ -5,7 +5,7 @@
 
 В derived.db пишет только rebuild (прогонами), в state.db — джобы, отказы и
 переписка. Единственное, что возвращается в систему от человека, — отказ, и он
-уходит в state.suppression (невосстановимый слой), так что пересборка его не
+уходит в модуль refusals (невосстановимый слой), так что пересборка его не
 затрагивает.
 
 Живость экрана — тоже часть API: при старте поднимается воркер джобов
@@ -15,7 +15,7 @@
 """
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -23,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import activity
 import analytics
+import clock
 import paths
 import sandbox
 import tasks
@@ -30,13 +31,12 @@ from config import settings
 from core import db as core_db
 from core.errors import DomainError, domain_error_handler
 from collector.routes import (activity as activity_routes, analytics as analytics_routes, events, jobs, leads,
-                              operations, pipeline, runs, stats, suppression, tasks as tasks_routes)
+                              operations, pipeline, runs, stats, tasks as tasks_routes)
 from collector.services import events as bus
 from collector.services import jobs as queue
-from collector.services import suppression as suppression_service
 from collector.services import store
-from collector.db import lead as lead_store
 from collector.services.pipeline import OPERATIONS, PIPELINES
+from refusals import api as refusals_api, public as refusals
 from sender.routes import sender, webhook as sender_webhook
 from sender.services import refusal as sender_refusal
 from writer.db import thread_store
@@ -50,17 +50,15 @@ PIPELINES["write"] = {"title": "Черновики топ-N", "steps": ("writer.
 
 
 def _write_refusal(handle: str, reason: str) -> bool:
-    """Шов к юридическому контуру: отказ, найденный системой 3, пишет система 1.
+    """Шов к юридическому контуру: отказ, найденный системой 3, пишет refusals.
 
-    Здесь же, а не импортом из sender'а: collector системе 3 недоступен (тест
-    графа импортов части 1), и api.py — единственное место, где обе системы
-    вообще видят друг друга.
+    Здесь же, а не импортом из sender'а: система 3 не знает других модулей
+    (тест графа импортов), а api.py — единственное место, где они видят друг
+    друга. True — отказ стоит, новый он или повтор.
     """
-    db = lead_store.connect()
-    try:
-        return suppression_service.refuse(db, handle, reason)
-    finally:
-        db.close()
+    with closing(core_db.connect(paths.state_db())) as db:
+        refusals.record(db, handle, reason, clock.now())
+    return True
 
 
 sender_refusal.use(_write_refusal)
@@ -149,7 +147,7 @@ app.include_router(runs.router)
 app.include_router(jobs.router)
 app.include_router(events.router)
 app.include_router(stats.router)
-app.include_router(suppression.router)
+app.include_router(refusals_api.router)
 app.include_router(writer.router)
 app.include_router(sender.router)
 app.include_router(sender_webhook.router)

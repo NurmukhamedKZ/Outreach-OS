@@ -27,7 +27,7 @@ def test_create_makes_a_database_with_all_three_schemas():
     with sqlite3.connect(run.path) as db:
         tables = {row[0] for row in
                   db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    assert {"threads", "messages", "outbox", "numbers", "suppression",
+    assert {"threads", "messages", "outbox", "numbers", "refusals",
             "sandbox_meta", "operator_settings", "alembic_version"} <= tables
 
 
