@@ -179,8 +179,21 @@ def test_a_sales_vacancy_on_the_site_gives_the_hiring_signal_and_others_do_not()
     ]), [], pages)
 
     [signal] = found.signals
-    assert (signal.type, signal.url, signal.observed_at) == (
-        SignalType.SITE_HIRING_SALES, "https://a.kz/vacancies", NOW - timedelta(days=2))
+    assert (signal.type, signal.quote, signal.url, signal.observed_at) == (
+        SignalType.SITE_HIRING_SALES, "Ищем менеджера по продажам", "https://a.kz/vacancies",
+        NOW - timedelta(days=2))
+
+
+def test_two_sales_vacancies_give_one_signal_and_an_invented_one_is_rejected():
+    pages = [page("Ищем менеджера по продажам. Ищем маркетолога в отдел продаж")]
+    found = domain.findings(answer(vacancies=[
+        {"role": "менеджер", "quote": "Ищем менеджера по продажам", "sales": True},
+        {"role": "маркетолог", "quote": "Ищем маркетолога в отдел продаж", "sales": True},
+        {"role": "выдумано", "quote": "Ищем директора по развитию", "sales": True},
+    ]), [], pages)
+
+    assert [s.quote for s in found.signals] == ["Ищем менеджера по продажам"]
+    assert found.rejected == 1
 
 
 def test_hidden_prices_are_a_signal_only_when_the_site_was_read():
@@ -355,3 +368,66 @@ def test_the_same_quote_twice_is_one_hook():
     ("http://intranet/", False), ("http://printer.local/", False), ("http://[::1]/", False)])
 def test_only_addresses_on_the_internet_are_public(url, public):
     assert domain.is_public(url) is public
+
+
+@pytest.mark.parametrize("answer_field,answered", [({"text": ""}, False), ({}, False),
+                                                   ({"text": "Спасибо"}, True), ("Спасибо", True)])
+def test_an_empty_official_answer_is_no_answer(answer_field, answered):
+    import json
+    body = json.dumps({"reviews": [{"text": "Плохо", "rating": 1, "official_answer": answer_field,
+                                    "date_created": "2026-11-01T10:00:00+05:00"}]})
+
+    assert domain.parse_reviews(body, CARD)[0].answered is answered
+
+
+def test_review_dates_are_moments_whatever_the_offset_and_naive_is_utc():
+    body = ('{"reviews": [{"text": "a", "date_created": "2026-11-01T12:00:00+07:00"},'
+            ' {"text": "b", "date_created": "2026-11-01T10:00:00+05:00"},'
+            ' {"text": "c", "date_created": "2026-11-01T05:00:00"}]}')
+
+    dates = {r.created_at for r in domain.parse_reviews(body, CARD)}
+
+    assert dates == {datetime(2026, 11, 1, 5, 0, tzinfo=UTC)}
+
+
+def test_no_reviews_list_is_no_reviews():
+    assert domain.parse_reviews('{"reviews": null}', CARD) == []
+
+
+def test_a_quote_of_twelve_characters_is_enough_and_eleven_is_not():
+    text = "Звоните нам: 1234567890 — ждём"
+
+    assert domain.contains(text, "1234567890 —")
+    assert not domain.contains(text, "1234567890 ")
+
+
+def test_at_most_five_hooks_are_kept():
+    quotes = [f"зацепка номер {n} из текста" for n in range(6)]
+    found = domain.findings(answer(hooks=[{"angle": str(n), "quote": q}
+                                          for n, q in enumerate(quotes)]),
+                            [], [page(" ".join(quotes))])
+
+    assert [h.angle for h in found.dossier.hooks] == ["0", "1", "2", "3", "4"]
+
+
+def test_a_signal_quote_is_cleaned_of_edge_quotes_and_spaces():
+    found = domain.findings(answer(complaints=[
+        {"type": "не дозвонились", "quote": "  «не дозвонился до офиса   вообще» "}]),
+        [review("Звонил, не дозвонился до офиса вообще")], [])
+
+    assert found.signals[0].quote == "не дозвонился до офиса вообще"
+
+
+def test_a_page_too_large_is_cut_for_the_markers():
+    html = "<p>x</p>" + " " * domain.HTML_LIMIT + "<script src='cdn.bitrix24.kz'></script>"
+
+    [cut] = domain.site_pages([("https://a.kz/", html, NOW)])
+
+    assert len(cut.html) == domain.HTML_LIMIT
+    assert domain.findings(answer(), [], [cut]).signals == []
+
+
+@pytest.mark.parametrize("url", ["http://localhost./", "http://db.internal/",
+                                 "http://app.localhost/"])
+def test_local_names_are_not_public(url):
+    assert not domain.is_public(url)

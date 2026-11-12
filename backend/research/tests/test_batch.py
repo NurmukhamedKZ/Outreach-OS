@@ -74,7 +74,8 @@ def test_a_batch_runs_from_start_to_leads(db, world, two_companies):
     assert a.channel.model_dump() == {"kind": "whatsapp", "handle": "+77010000001"}
     assert {c.signal for c in a.breakdown} == {"reviews_missed_lead", "site_hiring_sales",
                                                "site_no_pricing", "crm_widget"}
-    assert a.score == round(sum(c.contribution for c in a.breakdown), 3)
+    # 5·2^(-2/30) for the two-day-old review, 3 + 1.5 + 3 for what the site shows today.
+    assert a.score == 12.274
     # The site was read today, the review is two days old: the freshest hook wins.
     assert (a.why_now.quote, a.why_now.url) == (SITE_HOOK, "https://a.kz/")
     assert leads[1].channel.handle == "+77010000002"
@@ -482,3 +483,121 @@ def test_a_site_in_the_local_network_is_not_read(db, world):
 
     assert not any("127.0.0.1" in url for url in pages.requested)
     assert all("Сайт не собран" in call.messages[1][1] for call in model.calls)
+
+
+def companies_with_reviews(db, world, names):
+    """Companies researched in the order given: the earlier, the more reviews."""
+    for n, name in enumerate(names):
+        world.add_company(db, name, [("whatsapp", f"+770100000{n:02d}")], reviews=len(names) - n)
+    return world.FakePages({world.reviews_url(f"{name}-0"): world.reviews_body(
+        (HOOK, "2026-11-10T10:00:00+05:00", False)) for name in names})
+
+
+def test_a_success_between_model_failures_resets_the_count(db, world, monkeypatch):
+    monkeypatch.setattr(service_module, "MAX_WORKERS", 1)
+    pages = companies_with_reviews(db, world, "abcde")
+    good, bad = world.answer(hooks=[HOOK]), ModelError("research: APIError")
+    model = world.Answers(dict(zip([f"Компания {n}" for n in "abcde"],
+                                   [bad, good, bad, bad, good])))
+
+    service, _ = run(db, pages, model, world)
+
+    batch = service.current()
+    assert (batch.status, batch.error) == ("done", None)
+    assert [c.status for c in batch.companies] == ["failed", "done", "failed", "failed", "done"]
+
+
+def test_a_stop_asked_before_a_restart_does_not_stop_the_resumed_batch(db, world):
+    pages = companies_with_reviews(db, world, "a")
+    service = ResearchService(db)
+    batch_id = service.start(world.now)
+    service.stop()
+    service.forget_interrupted()
+
+    assert service.start(world.now) == batch_id
+    service.run(batch_id, pages, world.Answers({"Компания a": world.answer(hooks=[HOOK])}),
+                clock(world))
+
+    assert service.current().status == "done"
+
+
+def test_a_stop_during_the_collection_takes_no_companies(db, world, state, monkeypatch):
+    companies_with_reviews(db, world, "a")
+
+    def collect_and_stop(_db, _pages, _now):
+        with closing(core_db.connect(state)) as other:
+            ResearchService(other).stop()
+
+    monkeypatch.setattr(service_module.companies, "collect_chosen", collect_and_stop)
+
+    service, _ = run(db, world.FakePages({}), world.Answers({}), world)
+
+    batch = service.current()
+    assert (batch.status, batch.companies) == ("stopped", [])
+
+
+def test_a_batch_that_breaks_off_is_interrupted_and_resumed_by_the_next_start(db, world,
+                                                                              monkeypatch):
+    companies_with_reviews(db, world, "a")
+
+    def broken(*_args):
+        raise RuntimeError("a bug")
+
+    monkeypatch.setattr(service_module.companies, "prioritized", broken)
+    service, batch_id = run(db, world.FakePages({}), world.Answers({}), world)
+
+    assert service.current().status == "interrupted"
+    assert service.start(world.now) == batch_id
+
+
+def test_inner_pages_that_fail_or_land_in_the_local_network_are_left_out(db, world):
+    from core.pages import Page
+    world.add_company(db, "a", [("whatsapp", "+77010000001"), ("website", "https://a.kz")])
+    home = ("<a href='/uslugi'>Услуги</a><a href='/ceny'>Цены</a><a href='/komanda'>Команда</a>"
+            f"<p>{SITE_HOOK}</p>")
+    pages = world.FakePages({
+        "https://a.kz/": home,
+        "https://a.kz/uslugi": FetchError("timed out"),
+        "https://a.kz/ceny": Page(text="<p>Внутренний прайс сервера</p>",
+                                  final_url="http://192.168.1.10/ceny", fetched_at=world.now),
+        "https://a.kz/komanda": "<p>Наша команда бухгалтеров</p>"})
+    model = world.Answers({"Компания a": world.answer(hooks=[SITE_HOOK])})
+
+    service, _ = run(db, pages, model, world)
+
+    human = model.calls[0].messages[1][1]
+    assert "Внутренний прайс" not in human and "Наша команда бухгалтеров" in human
+    assert service.current().companies[0].status == "done"
+
+
+def test_a_site_that_times_out_is_not_retried_over_http(db, world):
+    world.add_company(db, "a", [("whatsapp", "+77010000001"), ("website", "https://a.kz")])
+    pages = world.FakePages({"https://a.kz/": FetchError("https://a.kz/: timed out")})
+
+    run(db, pages, world.Answers({"Компания a": world.answer(hooks=[HOOK])}), world)
+
+    assert "http://a.kz/" not in pages.requested
+
+
+def test_reviews_gone_are_no_reviews_and_none_are_asked_without_a_count(db, world):
+    world.add_company(db, "gone", [("whatsapp", "+77010000001")], reviews=3)
+    world.add_company(db, "none", [("whatsapp", "+77010000002")], reviews=0)
+    pages = world.FakePages({world.reviews_url("gone-0"): HttpStatusError(410, "u"),
+                             world.reviews_url("none-0"): world.reviews_body(
+                                 (HOOK, "2026-11-10T10:00:00+05:00", False))})
+
+    service, _ = run(db, pages, world.Answers({}), world)
+
+    assert world.reviews_url("none-0") not in pages.requested
+    assert [c.error[:13] for c in service.current().companies] == ["Нечего читать"] * 2
+
+
+def test_the_first_reason_of_a_batch_stays(db, world):
+    from research.repository import ResearchRepository
+    repo = ResearchRepository(db)
+    batch_id = ResearchService(db).start(world.now)
+
+    repo.halt(batch_id, "первая причина")
+    repo.halt(batch_id, "вторая причина")
+
+    assert ResearchService(db).current().error == "первая причина"

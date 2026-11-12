@@ -142,9 +142,12 @@ def parse_reviews(body: str, card_url: str) -> list[Review]:
             # A review without a date cannot be weighed; the rest of the page still can.
             if not isinstance(item.get("date_created"), str):
                 continue
+            created = datetime.fromisoformat(item["date_created"])
             reviews.append(Review(
                 url=card_url, text=(item.get("text") or "").strip(), rating=item.get("rating"),
-                created_at=datetime.fromisoformat(item["date_created"]).astimezone(UTC),
+                # Without an offset the machine's zone would be guessed: take UTC instead.
+                created_at=(created.astimezone(UTC) if created.tzinfo
+                            else created.replace(tzinfo=UTC)),
                 answered=_answered(item.get("official_answer"))))
         return reviews
     # No "reviews" key is a refusal in a 200 ({"meta": {"code": 403}}), not "no reviews".
