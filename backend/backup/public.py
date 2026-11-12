@@ -1,7 +1,7 @@
 """Facade of backup for the app assembler and the operator's task list."""
 
-import asyncio
 from datetime import datetime
+from threading import Event
 
 import clock
 from backup.service import CHECK_SECONDS, BackupService, tick
@@ -18,12 +18,13 @@ def now() -> datetime:
     return clock.now() - clock.offset()
 
 
-async def loop(service: BackupService) -> None:
-    """Check hourly and back up when the last good snapshot is a day old or missing.
+def loop(service: BackupService, stop: Event) -> None:
+    """Check hourly until `stop` is set; back up when the last good snapshot is a day old or missing.
 
-    The first check is at start, so a backend that was down for days backs up
-    at once; a failed run is retried on the next hour.
+    Runs in a thread of its own (ADR 0005). The first check is at start, so a
+    backend that was down for days backs up at once; a failed run is retried
+    on the next hour.
     """
-    while True:
-        await asyncio.to_thread(tick, service, now())
-        await asyncio.sleep(CHECK_SECONDS)
+    while not stop.is_set():
+        tick(service, now())
+        stop.wait(CHECK_SECONDS)

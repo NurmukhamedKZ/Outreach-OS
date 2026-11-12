@@ -1,4 +1,4 @@
-import asyncio
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -76,13 +76,13 @@ def test_today_lists_the_backup_task(client, state, monkeypatch):
     assert "ни разу" in rows[0]["why"]
 
 
-async def test_the_daemon_backs_up_at_start(service, icloud, monkeypatch):
-    async def stop(_seconds):
-        raise asyncio.CancelledError
-    monkeypatch.setattr(asyncio, "sleep", stop)
+def test_the_daemon_backs_up_at_start_and_stops_on_the_flag(service):
+    class StopAfterOneCheck(threading.Event):
+        def wait(self, timeout=None):
+            self.set()
+            return True
 
-    with pytest.raises(asyncio.CancelledError):
-        await backup.loop(service)
+    backup.loop(service, StopAfterOneCheck())  # returns: the flag ends the loop
 
     assert service.status().snapshots == 1
 

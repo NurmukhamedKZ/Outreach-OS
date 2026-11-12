@@ -15,6 +15,7 @@
 """
 
 import asyncio
+import threading
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
 
@@ -120,14 +121,18 @@ async def lifespan(_app: FastAPI):
     # Шина событий приезжает в sender параметром — тот же шов, что монтирует
     # его роутеры и подключает операцию writer'а в общий реестр.
     sending = asyncio.create_task(sender.send_queue(bus.publish))
-    backing_up = asyncio.create_task(backup.loop(app.state.backup))
+    # A thread, not a task (ADR 0005): copying blocks for seconds. Daemon, so a
+    # copy in progress does not hold shutdown; its temp folder is cleaned next run.
+    stop_backup = threading.Event()
+    threading.Thread(target=backup.loop, args=(app.state.backup, stop_backup),
+                     name="backup", daemon=True).start()
     yield
     queue.cancel_current()  # без этого фоновый поток текущей джобы держит процесс живым
     worker.cancel()
     monitor.cancel()
     warming.cancel()
     sending.cancel()
-    backing_up.cancel()
+    stop_backup.set()
 
 
 app = FastAPI(
