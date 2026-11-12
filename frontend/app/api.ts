@@ -115,8 +115,13 @@ export function fetchLead(companyId: string) {
   return json<LeadDetail>(`/api/leads/${encodeURIComponent(companyId)}`);
 }
 
+/** Отказ в той форме, в какой его хранит бэкенд: контакт уже приведён к
+ *  канонической форме, `refused_at` — ISO 8601 в UTC. */
+export type Refusal = { handle: string; reason: string; refused_at: string };
+
+/** Повтор по тому же контакту не ошибка: бэкенд вернёт первую запись (200). */
 export function refuse(handle: string, reason: string) {
-  return json<{ handle: string; added: boolean }>("/api/suppression", {
+  return json<Refusal>("/api/refusals", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ handle, reason }),

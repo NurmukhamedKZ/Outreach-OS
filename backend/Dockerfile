@@ -11,6 +11,7 @@ COPY config.py llm_schema.py logctx.py logging_setup.py observability.py \
      activity.py analytics.py clock.py paths.py tasks.py sqlite_tools.py main.py ./
 COPY alembic.ini ./
 COPY core/ core/
+COPY refusals/ refusals/
 COPY migrations/ migrations/
 COPY collector/ collector/
 COPY writer/ writer/

@@ -84,7 +84,7 @@ Main ведёт тикеты сам и зовёт пользователя то�
 
 - **Модель субагентов осей:** `sonnet` (пять ревьюеров на Opus съедают лимит и падают с 429).
 - **Доменные edge cases** (ось «Баги», сверх общих): граница окна 10:00–18:00 и суток в Asia/Almaty; повторная доставка вебхука (дедуп по `provider_id`); отказ лида в любой момент — проверяется до выдачи и до отправки; лид без канала (F19); падение посреди прогона `rebuild` или посреди тика; перезапуск процесса; пустое или медиа-входящее; номер в неканонической форме; смена `autopilot` при непустой очереди; кэш-хит ответа модели против нового платного вызова.
-- **Чувствительные пути** (ось «Безопасность» запускается, только если дифф их трогает): `backend/sender/` (самые чувствительные — `services/gates.py`, `services/worker.py`, вебхук, `transport.py`, `node/`), `backend/collector/services/suppression.py`, `backend/collector/services/pipeline/export.py`, `backend/config.py`, `backend/collector/db/schema.sql` и миграции, `backend/sandbox/`.
+- **Чувствительные пути** (ось «Безопасность» запускается, только если дифф их трогает): `backend/sender/` (самые чувствительные — `services/gates.py`, `services/worker.py`, вебхук, `transport.py`, `node/`), `backend/refusals/`, `backend/collector/services/pipeline/export.py`, `backend/config.py`, `backend/collector/db/schema.sql` и миграции, `backend/sandbox/`.
 - **Правила безопасности:** `CLAUDE.md`, «Безопасность».
 
 ## Ручной QA

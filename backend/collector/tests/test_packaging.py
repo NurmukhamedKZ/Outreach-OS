@@ -40,8 +40,15 @@ def test_api_imports_only_modules_that_exist_at_top_level():
         assert (BACKEND / f"{name}.py").exists()
 
 
-def test_dockerfile_copies_core_and_migrations():
-    """Без них образ падает на импорте ядра или на миграции при старте."""
+def test_dockerfile_copies_every_package_and_migrations():
+    """Без них образ падает на импорте модуля или на миграции при старте.
+
+    Пакеты — каталоги с __init__.py: новый модуль предметной области (core,
+    refusals, дальше companies…) попадает под проверку сам.
+    """
     dockerfile = DOCKERFILE.read_text(encoding="utf-8")
-    for needed in ("core/", "migrations/", "alembic.ini"):
+    packages = sorted(path.parent.name for path in BACKEND.glob("*/__init__.py"))
+    assert {"core", "refusals"} <= set(packages)
+    for needed in (*(f"COPY {name}/ {name}/" for name in packages),
+                   "migrations/", "alembic.ini"):
         assert needed in dockerfile, needed
