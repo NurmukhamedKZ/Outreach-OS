@@ -30,6 +30,7 @@ services:
     volumes:
       # Сырьё и базы — невосстановимые или производные слои (см. CLAUDE.md),
       # им место на хосте, а не в слоях образа.
+      - ./backend/data:/app/data
       - ./backend/collector/data:/app/collector/data
       - ./backend/collector/config.toml:/app/collector/config.toml
       - ./backend/writer/config.toml:/app/writer/config.toml

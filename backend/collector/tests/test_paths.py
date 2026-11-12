@@ -12,11 +12,15 @@ def test_production_database_by_default():
     assert paths.state_db().name == "state.db"
 
 
-def test_production_path_lives_in_collector_data():
-    """Путь тот же, что раньше называла константа store.STATE: переезда файла
-    эта задача не делает."""
-    assert paths.PRODUCTION_STATE.parent.name == "data"
-    assert paths.PRODUCTION_STATE.parent.parent.name == "collector"
+def test_data_layer_lives_in_backend_data():
+    """#9: единая база, страницы и прогоны песочницы — в одном каталоге данных;
+    старый конвейер читает свои raw/ и derived.db в collector/data до #13."""
+    backend = paths.DATA.parent
+    assert paths.DATA == backend / "data"
+    assert (backend / "main.py").exists()
+    assert paths.PRODUCTION_STATE == paths.DATA / "state.db"
+    assert paths.PAGES == paths.DATA / "pages"
+    assert paths.SANDBOX_RUNS == paths.DATA / "sandbox"
 
 
 def test_run_overrides_production_and_none_returns_it_back(tmp_path):

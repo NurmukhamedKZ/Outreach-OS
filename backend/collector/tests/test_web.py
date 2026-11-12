@@ -57,6 +57,29 @@ def test_the_refusal_seam_is_registered_on_import():
     assert refusal._hook is not None
 
 
+def test_startup_prepares_the_database_before_the_first_request(tmp_path):
+    """#9: миграции Alembic и схема переписки — до первого запроса, на пустом
+    каталоге данных; повторный старт ничего не ломает."""
+    import sqlite3
+
+    from collector import api
+
+    path = tmp_path / "data" / "state.db"
+    api.prepare_database(path)
+    api.prepare_database(path)
+
+    with sqlite3.connect(path) as db:
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master")}
+    assert {"operator_settings", "alembic_version", "threads", "messages"} <= tables
+
+
+def test_domain_errors_reach_the_client_as_code_and_detail():
+    from collector import api
+    from core.errors import DomainError, domain_error_handler
+
+    assert api.app.exception_handlers[DomainError] is domain_error_handler
+
+
 def test_stats_report_what_waits_for_a_human():
     from collector.services import metrics
 

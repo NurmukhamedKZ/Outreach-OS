@@ -16,6 +16,7 @@
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +27,8 @@ import paths
 import sandbox
 import tasks
 from config import settings
+from core import db as core_db
+from core.errors import DomainError, domain_error_handler
 from collector.routes import (activity as activity_routes, analytics as analytics_routes, events, jobs, leads,
                               operations, pipeline, runs, stats, suppression, tasks as tasks_routes)
 from collector.services import events as bus
@@ -75,16 +78,26 @@ WEB_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 WEB_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1):\d+$"
 
 
+def prepare_database(path: Path) -> None:
+    """Схема до первого запроса: миграции Alembic новых модулей, затем схема
+    переписки.
+
+    Схему переписки доливает её владелец — и кто-то обязан позвать его до
+    первого входящего. Тик системы 3 читает и пишет threads.stage на своём
+    соединении, а её миграция чужих колонок не создаёт (и не должна: колонка,
+    созданная раньше владельца, украла бы у его миграции разметку старых
+    строк). Здесь же, а не в самом sender'е, по той же причине, по которой
+    здесь живут остальные швы: api.py — единственное место, где системы
+    видят друг друга. migrate() создаёт и каталог данных: на свежем клоне
+    его нет, а sqlite3 без каталога базу не откроет.
+    """
+    core_db.migrate(path)
+    thread_store.connect(path).close()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Схему переписки доливает её владелец — и кто-то обязан позвать его до
-    # первого входящего. Тик системы 3 читает и пишет threads.stage на своём
-    # соединении, а её миграция чужих колонок не создаёт (и не должна: колонка,
-    # созданная раньше владельца, украла бы у его миграции разметку старых
-    # строк). Здесь же, а не в самом sender'е, по той же причине, по которой
-    # здесь живут остальные швы: api.py — единственное место, где системы
-    # видят друг друга.
-    thread_store.connect(paths.state_db()).close()
+    prepare_database(paths.state_db())
     queue.fail_orphans()
     worker = asyncio.create_task(queue.worker_loop())
     monitor = asyncio.create_task(sender.monitor_numbers())
@@ -105,6 +118,8 @@ app = FastAPI(
     description="Лиды по Казахстану",
     lifespan=lifespan,
 )
+# Только новые доменные исключения: формат ошибок старых роутов не меняется.
+app.add_exception_handler(DomainError, domain_error_handler)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=WEB_ORIGINS,

@@ -9,6 +9,9 @@ RUN uv sync --frozen --no-dev
 # collector/writer/sender импортируют их напрямую (`from config import settings`).
 COPY config.py llm_schema.py logctx.py logging_setup.py observability.py \
      activity.py analytics.py clock.py paths.py tasks.py sqlite_tools.py main.py ./
+COPY alembic.ini ./
+COPY core/ core/
+COPY migrations/ migrations/
 COPY collector/ collector/
 COPY writer/ writer/
 COPY sender/ sender/

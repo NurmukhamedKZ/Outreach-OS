@@ -11,7 +11,13 @@
 
 from pathlib import Path
 
-PRODUCTION_STATE = Path(__file__).resolve().parent / "collector" / "data" / "state.db"
+# Каталог данных один на продукт (#9): единая база, скачанные страницы, базы
+# прогонов песочницы. Старый конвейер читает свои raw/ и derived.db в
+# collector/data до #13.
+DATA = Path(__file__).resolve().parent / "data"
+PRODUCTION_STATE = DATA / "state.db"
+PAGES = DATA / "pages"
+SANDBOX_RUNS = DATA / "sandbox"
 
 _run: Path | None = None
 
