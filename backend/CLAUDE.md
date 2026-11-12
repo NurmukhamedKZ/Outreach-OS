@@ -114,8 +114,8 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 
 ## Async
 
-- Доступ к базе синхронный: роуты, которые ходят в базу, — обычный `def`, FastAPI исполняет их в пуле потоков. `async def` — только для роутов без базы и блокирующих вызовов.
-- Адаптеры сбора и модели синхронные (scrapling, LangChain); из `async`-кода — через `asyncio.to_thread`.
+- **Асинхронный код не пишем** (ADR 0005): роуты — обычный `def`, FastAPI исполняет их в пуле потоков; фоновые демоны — потоки с синхронным циклом и флагом остановки, а не `asyncio`-задачи; внешние вызовы — синхронными клиентами (`httpx.Client`). Адаптеры сбора и модели синхронные (scrapling, LangChain).
+- Асинхронный `sender` (транспорт, демоны в `lifespan`, вебхук) и SSE `collector` написаны до правила и переписываются в #7. До этого в их `async def` новая работа с базой идёт только через `asyncio.to_thread`.
 
 ## Миграции
 
@@ -169,7 +169,7 @@ uv run python main.py                     # FastAPI, порт 8787
 
 | Анти-паттерн | Почему плохо | Как надо |
 |---|---|---|
-| `requests`, `time.sleep`, синхронный `open()` в `async def` | Блокирует event loop всего процесса | httpx.AsyncClient, `asyncio.sleep`, `asyncio.to_thread` |
+| `async def` в новом коде | Одна блокирующая операция внутри замораживает весь процесс (ADR 0005) | Обычный `def`, демон — поток |
 | `json_encoders` в `ConfigDict` | Удалён в Pydantic v2 | `@field_serializer` |
 | `Field(ge=1, default=None)` | Ограничение противоречит умолчанию | Обязательное или `X \| None` |
 | `x: T = Depends(...)` | Устаревшая форма | `Annotated[T, Depends(...)]` |
