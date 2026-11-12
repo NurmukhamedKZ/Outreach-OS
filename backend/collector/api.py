@@ -41,6 +41,7 @@ from collector.services.pipeline import OPERATIONS, PIPELINES
 from companies import api as companies_api, public as companies
 from core.pages import ScraplingPages
 from refusals import api as refusals_api, public as refusals
+from research import api as research_api, public as research
 from sender.routes import sender, webhook as sender_webhook
 from sender.services import refusal as sender_refusal
 from writer.db import thread_store
@@ -108,6 +109,7 @@ def prepare_database(path: Path) -> None:
     thread_store.connect(path).close()
     with closing(core_db.connect(path)) as db:
         companies.forget_interrupted_collection(db)
+        research.forget_interrupted(db)
 
 
 @asynccontextmanager
@@ -167,6 +169,7 @@ app.include_router(events.router)
 app.include_router(stats.router)
 app.include_router(refusals_api.router)
 app.include_router(companies_api.router)
+app.include_router(research_api.router)
 app.include_router(backup_api.router)
 app.include_router(writer.router)
 app.include_router(sender.router)

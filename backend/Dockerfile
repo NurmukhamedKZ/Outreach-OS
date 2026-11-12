@@ -13,6 +13,7 @@ COPY alembic.ini ./
 COPY core/ core/
 COPY refusals/ refusals/
 COPY companies/ companies/
+COPY research/ research/
 COPY backup/ backup/
 COPY migrations/ migrations/
 COPY collector/ collector/

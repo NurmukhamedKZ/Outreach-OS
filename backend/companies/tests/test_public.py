@@ -86,3 +86,34 @@ def test_equal_companies_are_ordered_by_id_and_nothing_is_given_for_no_room(db):
     assert [c.company_id for c in public.prioritized(db, 5)] == ["a", "b"]
     assert public.prioritized(db, 0) == []
     assert public.prioritized(db, -1) == []
+
+
+def test_companies_are_found_by_id_whatever_the_segment(db):
+    company(db, "a", [("whatsapp", "+77010000001")])
+    company(db, "unticked", [("phone", "+77272960782")], segment=Segment("astana", "653"))
+
+    found = public.by_id(db, ["unticked", "a", "nobody"])
+
+    assert sorted(found) == ["a", "unticked"]
+    assert found["a"].name == "Компания a"
+
+
+def test_the_channel_is_whatsapp_first_then_a_mobile_and_none_for_a_city_line(db):
+    company(db, "both", [("phone", "+77010000009"), ("whatsapp", "+77010000001")])
+    company(db, "mobile", [("email", "a@b.kz"), ("phone", "+77010000002")])
+    company(db, "city", [("phone", "+77272960782"), ("email", "c@d.kz")])
+    found = public.by_id(db, ["both", "mobile", "city"])
+
+    assert public.channel(found["both"]).model_dump() == {"kind": "whatsapp",
+                                                          "handle": "+77010000001"}
+    assert public.channel(found["mobile"]).handle == "+77010000002"
+    assert public.channel(found["city"]) is None
+
+
+def test_the_site_is_the_company_domain_not_a_social_network(db):
+    company(db, "a", [("website", "https://instagram.com/a"), ("website", "http://www.a.kz/x")])
+    company(db, "social", [("website", "https://taplink.cc/social")])
+    found = public.by_id(db, ["a", "social"])
+
+    assert public.site_domain(found["a"]) == "a.kz"
+    assert public.site_domain(found["social"]) is None

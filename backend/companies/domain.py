@@ -424,10 +424,21 @@ def is_mobile(phone: str) -> bool:
             and not phone.startswith(CITY_CODE_PREFIXES))
 
 
+def channel(handles: Iterable[tuple[str, str]]) -> tuple[str, str] | None:
+    """Return the contact to write to in WhatsApp: a WhatsApp one, else a mobile."""
+    handles = list(handles)
+    return (next((h for h in handles if h[0] == "whatsapp"), None)
+            or next((h for h in handles if h[0] == "phone" and is_mobile(h[1])), None))
+
+
 def is_reachable(handles: Iterable[tuple[str, str]]) -> bool:
     """Return True when the company can be written to in WhatsApp."""
-    return any(kind == "whatsapp" or (kind == "phone" and is_mobile(handle))
-               for kind, handle in handles)
+    return channel(handles) is not None
+
+
+def site_domain(handles: Iterable[tuple[str, str]]) -> str | None:
+    """Return the company's own site host; a social network or a widget is none."""
+    return _first(normalize_domain(h) for k, h in handles if k == "website")
 
 
 def priority_key(handles: Iterable[tuple[str, str]], review_count: int,

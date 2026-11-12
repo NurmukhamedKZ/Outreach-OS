@@ -186,6 +186,10 @@ class CompanyService:
 
     # --- companies ------------------------------------------------------------
 
+    def by_id(self, company_ids: Collection[str]) -> dict[str, Company]:
+        """Return the companies with these ids, whatever segment they came from."""
+        return {c.company_id: c for c in self._repo.companies(set(company_ids))}
+
     def prioritized(self, limit: int, exclude: Collection[str]) -> list[Company]:
         """Return reachable companies of the chosen segments in the order of research.
 
