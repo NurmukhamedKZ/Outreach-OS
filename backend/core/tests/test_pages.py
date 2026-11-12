@@ -1,0 +1,135 @@
+"""Page adapter with the network call replaced: scrapling never leaves the process."""
+
+import time
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+import pytest
+from curl_cffi.curl import CurlError
+
+from core import pages
+
+URL = "https://2gis.kz/almaty/firm/70000001017502602"
+FETCHED_AT = datetime(2026, 11, 12, 9, 0, tzinfo=timezone.utc)
+
+
+class Network:
+    """Stands in for scrapling's Fetcher and counts what reached the network."""
+
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.requested: list[str] = []
+
+    def get(self, url, **kwargs):
+        self.requested.append(url)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+def response(html="<html>ok</html>", landed=URL, status=200):
+    return SimpleNamespace(status=status, url=landed, html_content=html)
+
+
+@pytest.fixture
+def network(monkeypatch):
+    def install(*responses):
+        fake = Network(*responses)
+        monkeypatch.setattr(pages, "Fetcher", fake)
+        return fake
+    return install
+
+
+@pytest.fixture
+def source(tmp_path):
+    return pages.ScraplingPages(tmp_path / "pages", now=lambda: FETCHED_AT,
+                                intervals={}, default_interval=0)
+
+
+def test_page_carries_text_final_url_and_fetch_time(network, source):
+    network(response(landed=URL + "/tab/info"))
+
+    page = source.get(URL)
+
+    assert page == pages.Page(text="<html>ok</html>", final_url=URL + "/tab/info",
+                              fetched_at=FETCHED_AT)
+
+
+def test_second_request_is_served_from_files_without_network(network, source, tmp_path):
+    net = network(response(landed=URL + "/tab/info"))
+    first = source.get(URL)
+
+    again = pages.ScraplingPages(tmp_path / "pages", now=lambda: datetime.now(timezone.utc))
+    assert again.get(URL) == first
+    assert net.requested == [URL]
+
+
+def test_bot_check_page_is_refused_and_never_stored(network, source):
+    net = network(response(landed="https://2gis.kz/captcha?back=x"), response())
+
+    with pytest.raises(pages.BotCheckError):
+        source.get(URL)
+    assert source.get(URL).text == "<html>ok</html>"
+    assert net.requested == [URL, URL]
+
+
+def test_non_200_is_an_error_with_status_and_nothing_is_stored(network, source):
+    net = network(response(status=404), response())
+
+    with pytest.raises(pages.HttpStatusError) as error:
+        source.get(URL)
+    assert error.value.status == 404
+    source.get(URL)
+    assert len(net.requested) == 2
+
+
+def test_network_failure_surfaces_as_fetch_error(network, source):
+    network(CurlError("Failed to connect"))
+
+    with pytest.raises(pages.FetchError):
+        source.get(URL)
+
+
+def test_corrupted_page_is_fetched_again(network, source, tmp_path):
+    net = network(response(html="<html>first</html>"), response(html="<html>second</html>"))
+    source.get(URL)
+    for stored in (tmp_path / "pages").glob("*.html.gz"):
+        stored.write_bytes(b"not gzip at all")
+
+    assert source.get(URL).text == "<html>second</html>"
+    assert len(net.requested) == 2
+
+
+def test_same_host_waits_its_interval_other_hosts_do_not():
+    pacer = pages.Pacer({"2gis.kz": 0.2}, default=0)
+
+    started = time.monotonic()
+    pacer.wait("https://2gis.kz/almaty/rubric/653")
+    pacer.wait("https://example.kz/")
+    assert time.monotonic() - started < 0.1
+
+    pacer.wait("https://public.2gis.kz/almaty/rubric/653/page/2")
+    pacer.wait("https://2gis.kz/almaty/rubric/653/page/3")
+    assert time.monotonic() - started >= 0.2
+
+
+def test_longest_host_suffix_wins():
+    pacer = pages.Pacer({"2gis.kz": 0.15, "reviews.2gis.kz": 1.0}, default=0.5)
+
+    assert pacer.interval_for("2gis.kz") == 0.15
+    assert pacer.interval_for("api.reviews.2gis.kz") == 1.0
+    assert pacer.interval_for("site.kz") == 0.5
+
+
+def test_fake_returns_known_pages_and_404_for_the_rest():
+    fake = pages.FakePages({URL: "<html>card</html>",
+                            "https://down.kz/": pages.FetchError("timeout")})
+
+    assert fake.get(URL).text == "<html>card</html>"
+    assert fake.get(URL).final_url == URL
+    with pytest.raises(pages.FetchError):
+        fake.get("https://down.kz/")
+    with pytest.raises(pages.HttpStatusError):
+        fake.get("https://unknown.kz/")
+    assert fake.requested == [URL, URL, "https://down.kz/", "https://unknown.kz/"]
