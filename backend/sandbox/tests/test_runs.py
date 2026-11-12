@@ -28,7 +28,7 @@ def test_create_makes_a_database_with_all_three_schemas():
         tables = {row[0] for row in
                   db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert {"threads", "messages", "outbox", "numbers", "suppression",
-            "sandbox_meta"} <= tables
+            "sandbox_meta", "operator_settings", "alembic_version"} <= tables
 
 
 def test_create_seeds_one_number_warmed_or_new():

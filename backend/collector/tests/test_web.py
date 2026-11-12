@@ -4,6 +4,8 @@
 разъехалась с правилами выдачи. F19/F21 не про формат, а про закон.
 """
 
+import pytest
+
 import activity
 import collector.services.store as engine
 
@@ -55,6 +57,77 @@ def test_the_refusal_seam_is_registered_on_import():
     from sender.services import refusal
 
     assert refusal._hook is not None
+
+
+@pytest.fixture
+def startup(tmp_path, monkeypatch):
+    """Lifespan with the daemons replaced: they talk to Node and the job queue."""
+    import asyncio
+
+    import paths
+    from collector import api
+
+    async def idle(*_args):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(api.queue, "worker_loop", idle)
+    monkeypatch.setattr(api.queue, "fail_orphans", lambda: None)
+    monkeypatch.setattr(api.queue, "cancel_current", lambda: None)
+    for daemon in ("monitor_numbers", "warm_numbers", "send_queue"):
+        monkeypatch.setattr(api.sender, daemon, idle)
+    monkeypatch.setattr(paths, "PRODUCTION_STATE", tmp_path / "data" / "state.db")
+    monkeypatch.setattr(paths, "LEGACY_STATE", tmp_path / "collector" / "state.db")
+    return api
+
+
+async def test_startup_prepares_the_database_before_the_first_request(startup, tmp_path):
+    """#9: Alembic revisions and the thread schema before the first request, on an
+    empty data directory; a second start changes nothing."""
+    import sqlite3
+
+    path = tmp_path / "data" / "state.db"
+    for _ in range(2):
+        async with startup.lifespan(startup.app):
+            pass
+
+    with sqlite3.connect(path) as db:
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master")}
+    assert {"operator_settings", "alembic_version", "threads", "messages"} <= tables
+
+
+async def test_startup_refuses_while_the_old_database_is_in_place(startup, tmp_path):
+    """Refusals (F21) live in the old file: starting on a fresh one would hide them."""
+    legacy = tmp_path / "collector" / "state.db"
+    legacy.parent.mkdir()
+    legacy.write_bytes(b"")
+
+    with pytest.raises(startup.LegacyDatabaseError) as error:
+        async with startup.lifespan(startup.app):
+            pass
+    assert "mv" in str(error.value)
+    assert not (tmp_path / "data" / "state.db").exists()
+
+
+def test_domain_errors_reach_the_client_as_code_and_detail():
+    from fastapi.testclient import TestClient
+
+    from collector import api
+    from core.errors import DomainError
+
+    class Probe(DomainError):
+        code = "errors.probe"
+        status_code = 409
+
+    def raise_probe() -> None:
+        raise Probe("probe")
+
+    api.app.add_api_route("/api/__probe_domain_error", raise_probe)
+    try:
+        response = TestClient(api.app).get("/api/__probe_domain_error")
+    finally:
+        api.app.router.routes.pop()
+    assert response.status_code == 409
+    assert response.json() == {"code": "errors.probe", "detail": "probe"}
 
 
 def test_stats_report_what_waits_for_a_human():

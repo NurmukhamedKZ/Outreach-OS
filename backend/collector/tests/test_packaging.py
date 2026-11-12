@@ -38,3 +38,10 @@ def test_api_imports_only_modules_that_exist_at_top_level():
     assert imported & local, "в api.py не осталось импортов модулей верхнего уровня"
     for name in imported & local:
         assert (BACKEND / f"{name}.py").exists()
+
+
+def test_dockerfile_copies_core_and_migrations():
+    """Без них образ падает на импорте ядра или на миграции при старте."""
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    for needed in ("core/", "migrations/", "alembic.ini"):
+        assert needed in dockerfile, needed

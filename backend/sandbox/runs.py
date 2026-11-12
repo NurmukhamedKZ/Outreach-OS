@@ -21,10 +21,11 @@ import analytics
 import clock
 import paths
 from collector.services import store
+from core import db as core_db
 from sender.db import migrate, numbers
 from writer.db import thread_store
 
-RUNS_DIR = Path(__file__).resolve().parent.parent / "collector" / "data" / "sandbox"
+RUNS_DIR = paths.SANDBOX_RUNS
 
 # Наш номер в песочнице один: пул проверяется прогревом и монитором, а не
 # количеством SIM, и второй номер добавил бы только выбор в гейте.
@@ -178,9 +179,10 @@ def shift(seconds: int) -> Run:
 
 
 def _apply_schemas(path: Path) -> None:
-    """Три владельца по очереди. Порядок не случаен: threads и messages
-    создаёт система 2, и колонки состояния системы 3 доливаются в уже
-    существующие таблицы — как и при боевом старте процесса."""
+    """Миграции Alembic и три старых владельца по очереди. Порядок не случаен:
+    threads и messages создаёт система 2, и колонки состояния системы 3
+    доливаются в уже существующие таблицы — как и при боевом старте процесса."""
+    core_db.migrate(path)
     thread_store.connect(path).close()
     with closing(sqlite3.connect(path)) as db:
         db.executescript(store.state_schema())

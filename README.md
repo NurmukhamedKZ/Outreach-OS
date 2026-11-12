@@ -92,9 +92,13 @@ SSE `GET /api/events`. Исполнение одно за раз (`rebuild` пе
 
 - **`data/derived.db`** — пересобираемое: `runs`, `current_run`, `*_all` + view
   (`db/schema.sql`, DERIVED-часть). Собирается прогонами `rebuild.run`.
-- **`data/state.db`** — невосстановимое: отказы (`state.suppression`), очередь
-  джобов (`state.jobs`), переписка системы 2, ответы модели (`state.llm_answers`).
-  Схема через `CREATE TABLE IF NOT EXISTS`, `DROP` запрещён.
+- **`backend/data/state.db`** — невосстановимое: отказы (`state.suppression`),
+  очередь джобов (`state.jobs`), переписка системы 2, ответы модели
+  (`state.llm_answers`), таблицы новых модулей. Схема новых модулей — Alembic
+  (`backend/migrations/`, применяется при старте), старые таблицы — через
+  `CREATE TABLE IF NOT EXISTS`, `DROP` запрещён. До #9 файл лежал в
+  `backend/collector/data/`; пока он там, приложение не стартует и подсказывает
+  команду переноса.
 
 ## suppression — юридический контур
 

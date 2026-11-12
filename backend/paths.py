@@ -11,7 +11,15 @@
 
 from pathlib import Path
 
-PRODUCTION_STATE = Path(__file__).resolve().parent / "collector" / "data" / "state.db"
+# One data directory for the product (#9): the database, downloaded pages and
+# sandbox run databases. The old pipeline reads its raw/ and derived.db in
+# collector/data until #13.
+DATA = Path(__file__).resolve().parent / "data"
+PRODUCTION_STATE = DATA / "state.db"
+PAGES = DATA / "pages"
+SANDBOX_RUNS = DATA / "sandbox"
+# Where the database lived before #9; startup refuses while it is there (#13 drops this).
+LEGACY_STATE = Path(__file__).resolve().parent / "collector" / "data" / "state.db"
 
 _run: Path | None = None
 

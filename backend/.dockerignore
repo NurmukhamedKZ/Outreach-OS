@@ -2,6 +2,7 @@
 **/.venv
 sender/node
 collector/data
+data
 .env
 .env.local
 __pycache__
