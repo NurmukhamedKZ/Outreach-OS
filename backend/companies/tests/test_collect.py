@@ -72,13 +72,16 @@ def test_a_rubric_shorter_than_the_limit_is_not_capped(db, gis):
 
 
 def test_pages_promised_beyond_the_limit_mark_the_ceiling(db, gis):
-    listing = [[branch(p)] for p in range(domain.PAGE_LIMIT)]
+    listing = [[branch(p, name=f"{NAMES[p % len(NAMES)]} {p}")]
+               for p in range(domain.PAGE_LIMIT)]
     fake = pages.FakePages(site(gis, "almaty", "653", listing, pages_promised=56,
                                 ceiling=False))
 
     segment = collect(db, fake)[("almaty", "653")]
 
-    assert (segment.status, segment.branches, segment.capped) == ("collected", 6, True)
+    assert (segment.status, segment.branches, segment.capped) == (
+        "collected", domain.PAGE_LIMIT, True)
+    assert len(fake.requested) == 2 * domain.PAGE_LIMIT  # no page past the limit
 
 
 def test_branches_of_one_org_are_one_company_with_the_rule_recorded(db, gis):
