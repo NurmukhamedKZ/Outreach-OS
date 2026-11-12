@@ -57,7 +57,10 @@ async def handle_one(db, transport, config: dict, now: datetime) -> str | None:
     if row["handle_attempts"] >= config["limits"]["max_handle_attempts"]:
         return await _escalate(db, thread, row, now,
                                "не смогли обработать входящее три раза")
-    if thread["auto_replies"] >= config["limits"]["auto_replies_per_thread"]:
+    # Лимит стережёт разговор без присмотра: в `off` и `manual` ответ читает
+    # оператор, и счётчик, оставшийся от `replies`, черновик не отменяет.
+    if (thread["auto_replies"] >= config["limits"]["auto_replies_per_thread"]
+            and sender_config.autopilot() in REPLY_MODES):
         return await _escalate(db, thread, row, now,
                                "автомат уже отвечал своими словами")
 
@@ -92,7 +95,10 @@ async def _answer(db, transport, thread: dict, row: dict, text: str,
                                "ответ длиннее лимита или содержит цену")
     # Режим читается один раз: счётчик и постановка обязаны решаться одним
     # значением, иначе переключение посреди хода дало бы автоответ без счёта.
-    automatic = sender_config.autopilot() in REPLY_MODES
+    # Лимит — ещё раз здесь: режим могли сменить на `replies`, пока думала
+    # модель, и проверка в handle_one тогда прошла под другим режимом.
+    automatic = (sender_config.autopilot() in REPLY_MODES
+                 and thread["auto_replies"] < config["limits"]["auto_replies_per_thread"])
     with db:
         conversation.add_draft(db, thread["thread_id"], text, ANGLE)
         # Предохранитель стережёт разговор без присмотра. Черновик, который

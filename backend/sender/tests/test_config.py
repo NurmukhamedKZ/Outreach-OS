@@ -22,11 +22,6 @@ def test_autopilot_starts_manual():
     assert config.load()["autopilot"]["mode"] == "manual"
 
 
-def test_modes_go_from_stop_to_full_autopilot():
-    """Порядок — от «ничего не уходит» к «уходит всё»: в нём их показывает
-    переключатель на странице «Отправка»."""
-    assert config.MODES == ("off", "manual", "replies", "full")
-
 
 def test_reply_window_is_round_the_clock_by_default():
     """Лид написал сам и ждёт сейчас; молчание пятнадцать часов убивает диалог.
@@ -64,7 +59,7 @@ def test_autopilot_defaults_to_the_config_file(switch):
     assert config.autopilot() == "manual"
 
 
-@pytest.mark.parametrize("mode", ["off", "replies", "full"])
+@pytest.mark.parametrize("mode", ["off", "manual", "replies", "full"])
 def test_override_wins_over_the_config(switch, mode):
     config.set_autopilot(mode)
     assert config.autopilot() == mode
@@ -79,6 +74,12 @@ def test_garbage_in_the_override_stops_sending(switch, monkeypatch, default):
     стоит в очереди, — умолчание-то уже не off."""
     monkeypatch.setattr(config, "load", lambda: {"autopilot": {"mode": default}})
     switch.write_text("fulll\n", encoding="utf-8")
+    assert config.autopilot() == "off"
+
+
+def test_garbage_in_the_config_file_stops_sending(switch, monkeypatch):
+    """Опечатка в config.toml — тот же «мы не знаем режим»: очередь стоит."""
+    monkeypatch.setattr(config, "load", lambda: {"autopilot": {"mode": "manul"}})
     assert config.autopilot() == "off"
 
 

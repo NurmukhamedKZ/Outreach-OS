@@ -64,7 +64,7 @@ export default function Sender() {
       <header className="page-head">
         <h1>Отправка</h1>
         <span className="page-sub">
-          система 3 · автопилот: {status?.autopilot ?? "…"}
+          система 3 · автопилот: {status ? AUTOPILOT_LABELS[status.autopilot] ?? status.autopilot : "…"}
         </span>
       </header>
 
