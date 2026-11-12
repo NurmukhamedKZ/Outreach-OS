@@ -534,13 +534,13 @@ CTA, Inter + JetBrains Mono (`next/font`), hairline-границы, тёмные
 
 Факты о проекте для воркфлоу (ветки, команды проверок, QA) — `docs/agents/workflow.md`. Процедуры — в скиллах плагина `workflow` (репо `NurmukhamedKZ/claude-workflow`, включён в `.claude/settings.json`), а не здесь. Меняется процесс — правка в репо плагина; меняется факт о проекте — правка `workflow.md`.
 
-**Main грилит, кодер пишет код.** Main-сессия берёт тикет через `/workflow:launch-main`: изучает код, грилит пользователя (`grill-me` / `grill-with-docs`), пишет спеку в тело issue («Решения грилинга»), выбирает effort, показывает спеку и **только после подтверждения пользователя** создаёт worktree и запускает кодера `/workflow:launch-coder <N>`. Кодер ведёт тикет до PR: `/tdd`, `/workflow:review-axes`, `/workflow:manual-qa`. `/implement` не используем — его заменяет `/workflow:launch-coder`.
+**Main ведёт тикеты сам, кодер пишет код.** Main-сессия берёт тикет через `/workflow:launch-main`: изучает код, спрашивает пользователя только о решениях из списка «Когда звать пользователя» (`docs/agents/workflow.md`, «Автономия main»), остальное решает сама, пишет спеку в тело issue («Решения грилинга»), выбирает effort, создаёт worktree и запускает кодера `/workflow:launch-coder <N>`. Кодер ведёт тикет до PR: `/tdd`, `/workflow:review-axes`, `/workflow:manual-qa`; с main переписывается через `cmux agent message`. Main мержит PR по «Условиям мержа» и сразу берёт следующий тикет. `/implement` не используем — его заменяет `/workflow:launch-coder`.
 
 - Тикеты — sub-issues #3 со связями «blocked by». Брать только тикет, все блокеры которого закрыты. Один тикет — одна ветка `ticket/<номер>-<slug>` от свежей `main`, один кодер в своём worktree.
 - **Сначала падающий тест, потом код** (`/tdd`) во всех частях репо.
 - **Сначала ревью, потом PR.** Ветка не пушится и PR не открывается, пока не пройден `/workflow:review-axes` и не закоммичены исправления.
 - **Документацию обновляй тем же PR, что и код:** затронутые `CLAUDE.md`, `backend/CLAUDE.md`, `docs/PRD.md`, `docs/TRD.md`, `docs/agents/workflow.md`.
-- Мержит пользователь: тикеты в `main` — squash.
+- Мержит main-сессия: тикеты в `main` — squash, по «Условиям мержа» из `docs/agents/workflow.md`. Пользователь получает доклад после каждого мержа.
 
 ## Отладка
 
