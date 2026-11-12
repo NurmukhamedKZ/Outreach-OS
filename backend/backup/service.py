@@ -63,7 +63,7 @@ class BackupService:
         """Return why the data is not protected, ready for the operator, or None."""
         status = self.status()
         if not status.enabled:
-            return f"бэкап выключен: нет каталога iCloud Drive {self.target.parent}"
+            return "бэкап выключен: нет каталога iCloud Drive"
         if status.last_at is None:
             return "бэкап ни разу не записался — причина в журнале «Процессов»"
         if now - status.last_at >= OVERDUE_AFTER:
