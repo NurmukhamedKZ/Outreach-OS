@@ -15,6 +15,7 @@
 """
 
 import asyncio
+import threading
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
 
@@ -27,6 +28,7 @@ import clock
 import paths
 import sandbox
 import tasks
+from backup import api as backup_api, public as backup
 from config import settings
 from core import db as core_db
 from core.errors import DomainError, domain_error_handler
@@ -119,12 +121,18 @@ async def lifespan(_app: FastAPI):
     # Шина событий приезжает в sender параметром — тот же шов, что монтирует
     # его роутеры и подключает операцию writer'а в общий реестр.
     sending = asyncio.create_task(sender.send_queue(bus.publish))
+    # A thread, not a task (ADR 0005): copying blocks for seconds. Daemon, so a
+    # copy in progress does not hold shutdown; its temp folder is cleaned next run.
+    stop_backup = threading.Event()
+    threading.Thread(target=backup.loop, args=(app.state.backup, stop_backup),
+                     name="backup", daemon=True).start()
     yield
     queue.cancel_current()  # без этого фоновый поток текущей джобы держит процесс живым
     worker.cancel()
     monitor.cancel()
     warming.cancel()
     sending.cancel()
+    stop_backup.set()
 
 
 app = FastAPI(
@@ -134,6 +142,10 @@ app = FastAPI(
 )
 # One page adapter per process: the pace belongs to the host, two would double it.
 app.state.pages = ScraplingPages(paths.PAGES, now=clock.now)
+# One backup service per process: its lock keeps the daemon and the button apart.
+# The production database, never a sandbox run's.
+app.state.backup = backup.BackupService(settings.backup_dir, paths.PRODUCTION_STATE,
+                                        paths.PAGES, paths.SESSIONS)
 # New domain errors only: old routes keep their error format.
 app.add_exception_handler(DomainError, domain_error_handler)
 app.add_middleware(
@@ -155,6 +167,7 @@ app.include_router(events.router)
 app.include_router(stats.router)
 app.include_router(refusals_api.router)
 app.include_router(companies_api.router)
+app.include_router(backup_api.router)
 app.include_router(writer.router)
 app.include_router(sender.router)
 app.include_router(sender_webhook.router)

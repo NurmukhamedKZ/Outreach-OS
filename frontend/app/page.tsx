@@ -21,16 +21,20 @@ const TASK_LABEL: Record<Task["kind"], string> = {
   escalated: "ждёт вас",
   stuck: "проверить в телефоне",
   draft: "проверить черновик",
+  backup: "сделать бэкап",
 };
 
 const TASK_TONE: Record<Task["kind"], "stop" | "attention"> = {
   escalated: "stop",
   stuck: "stop",
   draft: "attention",
+  backup: "attention",
 };
 
-/** Куда ведёт задача. Черновик проверяют на «Холодных», диалог — в «Диалогах». */
+/** Куда ведёт задача. Черновик проверяют на «Холодных», диалог — в «Диалогах»,
+ *  бэкап — на «Процессах». */
 function hrefOf(task: Task) {
+  if (task.kind === "backup") return "/activity";
   return task.kind === "draft"
     ? "/cold"
     : `/threads?company=${encodeURIComponent(task.company_id)}`;
@@ -86,10 +90,12 @@ export default function Overview() {
             <span className="row-text">
               <span className="inbox-name">{task.company_name}</span>
               <span className="inbox-sub">{task.why}</span>
-              <span className="inbox-sub mono">
-                {task.thread_id}
-                {task.our_number ? ` · пишем с ${task.our_number}` : ""}
-              </span>
+              {task.thread_id && (
+                <span className="inbox-sub mono">
+                  {task.thread_id}
+                  {task.our_number ? ` · пишем с ${task.our_number}` : ""}
+                </span>
+              )}
             </span>
             <span className={`tone is-${TASK_TONE[task.kind]}`}>{TASK_LABEL[task.kind]}</span>
           </Link>

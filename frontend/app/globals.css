@@ -1147,6 +1147,35 @@ a.nav-item:hover {
   color: var(--success);
 }
 
+.backup-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 14px 20px;
+  margin-bottom: 18px;
+  font-size: 14px;
+}
+
+.backup-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.backup-target {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.backup-error {
+  color: var(--error);
+  font-size: 12px;
+}
+
 .feed {
   display: flex;
   flex-direction: column;

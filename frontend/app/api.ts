@@ -260,7 +260,8 @@ export function fetchStats() {
 
 /** Что требуется от человека сейчас. Порядок задаёт бэкенд — по срочности. */
 export type Task = {
-  kind: "escalated" | "draft" | "stuck";
+  /** backup — без компании и треда: company_id и thread_id пустые. */
+  kind: "escalated" | "draft" | "stuck" | "backup";
   company_id: string;
   company_name: string;
   thread_id: string;
@@ -271,6 +272,26 @@ export type Task = {
 
 export function fetchTasks(limit = 50) {
   return json<{ tasks: Task[] }>(`/api/tasks?limit=${limit}`);
+}
+
+/** Бэкап невосстановимого слоя в папку iCloud Drive (#8). */
+export type BackupStatus = {
+  enabled: boolean;
+  running: boolean;
+  target: string;
+  last_at: string | null;
+  snapshots: number;
+};
+
+export type BackupSnapshot = { name: string; taken_at: string; pages_added: number };
+
+export function fetchBackup() {
+  return json<BackupStatus>("/api/backup");
+}
+
+/** 409 errors.backupRunning — уже идёт; 503 errors.backupDisabled — папки нет. */
+export function runBackup() {
+  return json<BackupSnapshot>("/api/backup", { method: "POST" });
 }
 
 export type ActivityEvent = {
