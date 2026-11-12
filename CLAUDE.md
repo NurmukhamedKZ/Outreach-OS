@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Перед любым изменением кода спроси пользователя, создавать ли для этих изменений отдельный git worktree.** Не начинай правки, пока не получишь ответ. Исключение — кодер, запущенный `/workflow:launch-main`: он уже в worktree.
+**Перед любым изменением кода спроси пользователя, создавать ли для этих изменений отдельный git worktree.** Не начинай правки, пока не получишь ответ. Исключения: кодер, запущенный `/workflow:launch-main`, — он уже в worktree; main-сессия с маленьким изменением (`docs/agents/workflow.md`, «Маленькое изменение — сразу, без тикета») — она всегда делает его в своём worktree, не спрашивая.
 
 **Worktree создаются только внутри проекта:** `git worktree add .claude/worktrees/<ветка-без-слешей> -b <ветка>`. Папка `.claude/worktrees/` — в `.gitignore`.
 
