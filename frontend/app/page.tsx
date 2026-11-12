@@ -50,6 +50,11 @@ function plural(n: number) {
   return "задач";
 }
 
+/** «Требует» согласуется с числом так же, как «задача»: 1, 21, 31 — единственное. */
+function requires(n: number) {
+  return n % 10 === 1 && n % 100 !== 11 ? "требует" : "требуют";
+}
+
 export default function Overview() {
   const { stats, jobs, refreshTick } = useLive();
   const [tasks, setTasks] = useState<Task[] | null>(null);
@@ -74,7 +79,7 @@ export default function Overview() {
             ? "смотрим, что требуется…"
             : tasks.length === 0
               ? "задач нет — автомат справляется сам"
-              : `${tasks.length} ${plural(tasks.length)} требуют вас`}
+              : `${tasks.length} ${plural(tasks.length)} ${requires(tasks.length)} вас`}
         </span>
       </header>
 
@@ -89,7 +94,7 @@ export default function Overview() {
           >
             <span className="row-text">
               <span className="inbox-name">{task.company_name}</span>
-              <span className="inbox-sub">{task.why}</span>
+              <span className="inbox-sub task-why">{task.why}</span>
               {task.thread_id && (
                 <span className="inbox-sub mono">
                   {task.thread_id}
