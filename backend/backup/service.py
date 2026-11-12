@@ -9,7 +9,7 @@ import logging
 import shutil
 import sqlite3
 from collections.abc import Iterator
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
@@ -21,8 +21,11 @@ from backup.schemas import BackupStatus, Snapshot
 log = logging.getLogger(__name__)
 
 ACTOR = "backup"
+# One snapshot per UTC day for the last KEEP days: a burst of manual runs
+# replaces today's snapshot instead of pushing two weeks of history out.
 KEEP = 14
 EVERY = timedelta(days=1)
+CHECK_SECONDS = 3600
 OVERDUE_AFTER = timedelta(days=2)
 NAME_FORMAT = "%Y-%m-%dT%H%M%SZ"
 MIRROR = "pages"
@@ -38,14 +41,15 @@ class BackupService:
         self.sessions = sessions
         self._lock = Lock()
 
-    @property
-    def enabled(self) -> bool:
-        # The folder itself is ours to create; its parent (iCloud Drive) is not.
-        return self.target.parent.is_dir()
-
     def status(self) -> BackupStatus:
-        names = self._snapshots() if self.enabled else []
-        return BackupStatus(enabled=self.enabled, running=self._lock.locked(),
+        """Return what is on disk now; an unreachable folder reads as disabled."""
+        try:
+            # The folder itself is ours to create; its parent (iCloud Drive) is not.
+            enabled = self.target.parent.is_dir()
+            names = self._snapshots() if enabled else []
+        except OSError:
+            enabled, names = False, []
+        return BackupStatus(enabled=enabled, running=self._lock.locked(),
                             target=str(self.target),
                             last_at=_moment(names[-1]) if names else None,
                             snapshots=len(names))
@@ -56,14 +60,15 @@ class BackupService:
         return last is None or now - last >= EVERY
 
     def overdue(self, now: datetime) -> str | None:
-        """Return why the operator should look at the backup, or None when it is fine."""
+        """Return why the data is not protected, ready for the operator, or None."""
         status = self.status()
         if not status.enabled:
-            return f"бэкап выключен: нет папки {self.target.parent}"
+            return f"бэкап выключен: нет каталога iCloud Drive {self.target.parent}"
         if status.last_at is None:
-            return "бэкапа ещё не было"
+            return "бэкап ни разу не записался — причина в журнале «Процессов»"
         if now - status.last_at >= OVERDUE_AFTER:
-            return f"удачного бэкапа не было с {status.last_at:%d.%m %H:%M} UTC"
+            return (f"удачного бэкапа не было с {status.last_at:%d.%m %H:%M} UTC —"
+                    " бэкап падает или бэкенд не работал")
         return None
 
     @contextmanager
@@ -81,37 +86,51 @@ class BackupService:
             self._lock.release()
 
     def run(self, now: datetime) -> Snapshot:
-        """Write a snapshot, check it, then drop the oldest beyond KEEP; journal the outcome.
+        """Write a snapshot, check it, then drop what falls out of rotation; journal the outcome.
+
+        The journal is written quietly: a snapshot that is on disk must not
+        answer as a failure because the journal's database was busy.
 
         Raises:
-            BackupRunningError: another backup is being written.
-            BackupDisabledError: the backup folder's parent does not exist.
+            BackupRunningError: another backup is being written, or this second's
+                snapshot already is.
+            BackupDisabledError: the backup folder's parent is not reachable.
             BackupFailedError: copying failed or the copy is not intact; older
                 snapshots are untouched.
         """
         with self.running():
-            if not self.enabled:
-                reason = f"нет папки {self.target.parent}"
-                activity.record(ACTOR, "disabled", detail=reason)
+            if not self.status().enabled:
+                reason = f"нет каталога {self.target.parent}"
+                activity.record_quietly(ACTOR, "disabled", detail=reason)
                 raise BackupDisabledError(f"бэкап выключен: {reason}")
             name = now.astimezone(UTC).strftime(NAME_FORMAT)
+            if (self.target / name).exists():
+                raise BackupRunningError("снимок этой секунды уже записан")
             try:
                 snapshot = Snapshot(name=name, taken_at=now, pages_added=self._write(name))
             except (OSError, sqlite3.Error, BackupFailedError) as error:
                 log.exception("backup %s failed", name)
-                activity.record(ACTOR, "failed", subject=name, detail=str(error))
-                raise BackupFailedError(f"бэкап не записан: {error}") from error
-            self._rotate()
-            activity.record(ACTOR, "done", subject=name,
-                            detail=f"новых страниц: {snapshot.pages_added}")
+                activity.record_quietly(ACTOR, "failed", subject=name, detail=str(error))
+                # The reason is in the journal; the answer carries no paths.
+                raise BackupFailedError("бэкап не записан — причина в журнале «Процессов»") \
+                    from error
+            detail = f"новых страниц: {snapshot.pages_added}"
+            try:
+                self._rotate()
+            except OSError as error:
+                log.warning("backup rotation failed: %s", error)
+                detail += f"; старые снимки не удалены: {error}"
+            activity.record_quietly(ACTOR, "done", subject=name, detail=detail)
             return snapshot
 
     def _write(self, name: str) -> int:
-        self.target.mkdir(exist_ok=True)
+        self.target.mkdir(mode=0o700, exist_ok=True)
+        # A process killed mid-backup leaves its temp folder under another name.
+        for leftover in self.target.glob(".*.tmp"):
+            shutil.rmtree(leftover, ignore_errors=True)
         added = _mirror(self.pages, self.target / MIRROR)
         # Assembled aside and renamed: a half-written snapshot never looks like one.
         tmp = self.target / f".{name}.tmp"
-        shutil.rmtree(tmp, ignore_errors=True)
         tmp.mkdir()
         try:
             copy = tmp / "state.db"
@@ -120,22 +139,21 @@ class BackupService:
             with closing(sqlite3.connect(self.database)) as source, \
                     closing(sqlite3.connect(copy)) as target:
                 source.backup(target)
+                # One self-contained file: no -wal/-shm beside it to restore by mistake.
+                target.execute("PRAGMA journal_mode=DELETE")
             if not intact(copy):
                 raise BackupFailedError("копия базы не прошла integrity_check")
             if self.sessions.is_dir():
                 # ponytail: plain copy, Baileys may be writing a key file right now;
-                # KEEP snapshots cover one torn file.
+                # a vanished file fails this run and the next hour retries.
                 shutil.copytree(self.sessions, tmp / "sessions")
-            final = self.target / name
-            if final.exists():
-                raise BackupFailedError(f"снимок {name} уже есть")
-            tmp.rename(final)
+            tmp.rename(self.target / name)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
         return added
 
     def _rotate(self) -> None:
-        for name in self._snapshots()[:-KEEP]:
+        for name in stale(self._snapshots()):
             shutil.rmtree(self.target / name)
 
     def _snapshots(self) -> list[str]:
@@ -143,6 +161,13 @@ class BackupService:
             return []
         return sorted(path.name for path in self.target.iterdir()
                       if path.is_dir() and _is_snapshot(path.name))
+
+
+def stale(names: list[str]) -> list[str]:
+    """Return snapshots to drop: all but the newest of each of the last KEEP UTC days."""
+    newest_of_day = {name[:10]: name for name in sorted(names)}
+    kept = set(sorted(newest_of_day.values())[-KEEP:])
+    return [name for name in names if name not in kept]
 
 
 def intact(path: Path) -> bool:
@@ -155,12 +180,11 @@ def intact(path: Path) -> bool:
 
 
 def tick(service: BackupService, now: datetime) -> None:
-    """Back up when due; any outcome is already in the journal, so nothing is raised."""
+    """Back up when due; every outcome is already in the journal, so nothing is raised."""
     try:
         if service.due(now):
-            service.run(now)
-    except (BackupDisabledError, BackupFailedError, BackupRunningError):
-        pass
+            with suppress(BackupDisabledError, BackupFailedError, BackupRunningError):
+                service.run(now)
     except Exception:
         log.exception("backup tick crashed")
         activity.record_crash(ACTOR)
@@ -172,8 +196,11 @@ def _mirror(pages: Path, mirror: Path) -> int:
     if not pages.is_dir():
         return added
     for page in pages.rglob("*"):
+        if page.is_symlink() or not page.is_file() or page.name.endswith(".tmp"):
+            continue
         copy = mirror / page.relative_to(pages)
-        if not page.is_file() or page.name.endswith(".tmp") or copy.exists():
+        # iCloud's "optimise storage" swaps a file for a .name.icloud placeholder.
+        if copy.exists() or copy.with_name(f".{copy.name}.icloud").exists():
             continue
         copy.parent.mkdir(parents=True, exist_ok=True)
         tmp = copy.with_name(f"{copy.name}.tmp")

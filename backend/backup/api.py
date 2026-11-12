@@ -1,6 +1,6 @@
 from fastapi import APIRouter, status
 
-import clock
+from backup import public as backup
 from backup.dependencies import BackupDep
 from backup.schemas import BackupStatus, Snapshot
 
@@ -15,8 +15,8 @@ def backup_status(service: BackupDep) -> BackupStatus:
 
 @router.post("", status_code=status.HTTP_201_CREATED,
              summary="Back up the database, pages and WhatsApp sessions now",
-             responses={409: {"description": "errors.backupRunning: a backup is being written"},
-                        503: {"description": "errors.backupDisabled: no iCloud Drive folder"},
+             responses={409: {"description": "errors.backupRunning: a backup is being written or was this second"},
+                        503: {"description": "errors.backupDisabled: the iCloud Drive folder is unreachable"},
                         500: {"description": "errors.backupFailed: not written or not intact"}})
 def backup_now(service: BackupDep) -> Snapshot:
-    return service.run(clock.now())
+    return service.run(backup.now())

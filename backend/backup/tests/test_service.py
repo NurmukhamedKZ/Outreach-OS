@@ -31,6 +31,9 @@ def test_a_snapshot_holds_the_database_and_the_sessions(service, icloud):
     assert snapshot.name == "2026-11-12T090000Z"
     assert (icloud / snapshot.name / "state.db").exists()
     assert (icloud / snapshot.name / "sessions" / "+77001112233" / "creds.json").read_text() == "{}"
+    # One self-contained database file: no -wal/-shm to restore by mistake.
+    assert sorted(path.name for path in (icloud / snapshot.name).iterdir()) == ["sessions",
+                                                                                "state.db"]
     assert snapshots(icloud) == [snapshot.name]
 
 
@@ -82,7 +85,7 @@ def test_a_broken_copy_fails_and_leaves_nothing(service, icloud, monkeypatch):
     assert activity.recent()[0]["outcome"] == "failed"
 
 
-def test_rotation_keeps_the_newest_and_waits_for_a_good_one(service, icloud, monkeypatch):
+def test_rotation_keeps_one_per_day_and_waits_for_a_good_one(service, icloud, monkeypatch):
     for day in range(KEEP):
         service.run(NOW + timedelta(days=day))
     oldest = snapshots(icloud)[0]
@@ -158,7 +161,7 @@ def test_overdue_after_two_days_or_when_off(service, sources, tmp_path):
 
     state, pages, sessions = sources
     off = BackupService(tmp_path / "none" / "x", state, pages, sessions)
-    assert "выключен" in off.overdue(NOW)
+    assert "нет каталога iCloud Drive" in off.overdue(NOW)
 
 
 def test_tick_runs_only_when_due_and_survives_failure(service, icloud, monkeypatch):
@@ -169,3 +172,93 @@ def test_tick_runs_only_when_due_and_survives_failure(service, icloud, monkeypat
     monkeypatch.setattr(backup_service, "intact", lambda path: False)
     backup_service.tick(service, NOW + timedelta(days=1))  # does not raise
     assert activity.recent()[0]["outcome"] == "failed"
+
+
+def test_a_burst_of_manual_runs_leaves_the_previous_days_untouched(service, icloud):
+    for day in range(KEEP):
+        service.run(NOW + timedelta(days=day))
+    before = snapshots(icloud)
+
+    today = NOW + timedelta(days=KEEP)
+    for second in range(15):
+        last = service.run(today + timedelta(seconds=second))
+
+    assert snapshots(icloud) == before[1:] + [last.name]
+
+
+def test_a_second_run_in_the_same_second_is_refused_and_keeps_the_first(service, icloud):
+    first = service.run(NOW)
+
+    with pytest.raises(BackupRunningError):
+        service.run(NOW)
+
+    assert snapshots(icloud) == [first.name]
+    assert activity.recent()[0]["outcome"] == "done"
+
+
+def test_without_sessions_the_snapshot_holds_the_database(sources, icloud, tmp_path):
+    state, pages, _ = sources
+    snapshot = BackupService(icloud, state, pages, tmp_path / "no-sessions").run(NOW)
+
+    assert sorted(path.name for path in (icloud / snapshot.name).iterdir()) == ["state.db"]
+
+
+def test_temp_files_and_links_are_not_mirrored(service, sources, icloud, tmp_path):
+    _, pages, _ = sources
+    (pages / "c.html.gz.1f2e.tmp").write_bytes(b"half written")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("not a page")
+    (pages / "link.html.gz").symlink_to(outside)
+
+    assert service.run(NOW).pages_added == 1
+    assert sorted(path.name for path in (icloud / "pages").iterdir()) == ["a.html.gz"]
+
+
+def test_an_evicted_icloud_page_is_not_copied_again(service, icloud):
+    service.run(NOW)
+    (icloud / "pages" / "a.html.gz").rename(icloud / "pages" / ".a.html.gz.icloud")
+
+    assert service.run(NOW + timedelta(days=1)).pages_added == 0
+
+
+def test_a_temp_folder_left_by_a_killed_run_is_cleaned(service, icloud):
+    icloud.mkdir()
+    (icloud / ".2026-11-11T090000Z.tmp").mkdir()
+
+    service.run(NOW)
+
+    assert not list(icloud.glob(".*.tmp"))
+
+
+def test_an_unreachable_folder_reads_as_disabled(service, icloud):
+    service.run(NOW)
+    icloud.chmod(0)
+    try:
+        assert not service.status().enabled
+        assert "выключен" in service.overdue(NOW)
+    finally:
+        icloud.chmod(0o700)
+
+
+def test_a_busy_journal_does_not_fail_a_written_snapshot(service, icloud):
+    activity.use(None)  # every journal write now raises
+
+    snapshot = service.run(NOW)
+
+    assert snapshots(icloud) == [snapshot.name]
+
+
+def test_a_crashing_tick_is_journaled(service, monkeypatch):
+    def broken(now):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(service, "due", broken)
+
+    backup_service.tick(service, NOW)
+
+    assert activity.recent()[0]["outcome"] == "crashed"
+
+
+def test_stale_keeps_the_newest_of_each_of_the_last_days():
+    names = ["2026-11-01T090000Z", "2026-11-01T120000Z", "2026-11-02T090000Z"]
+
+    assert backup_service.stale(names) == ["2026-11-01T090000Z"]

@@ -4,11 +4,18 @@ import asyncio
 from datetime import datetime
 
 import clock
-from backup.service import BackupService, tick
+from backup.service import CHECK_SECONDS, BackupService, tick
 
-__all__ = ["BackupService", "loop", "overdue"]
+__all__ = ["BackupService", "loop", "now"]
 
-CHECK_SECONDS = 3600
+
+def now() -> datetime:
+    """Return real time: a sandbox run shifts the product's clock, the backup lives outside it.
+
+    A snapshot named three days ahead would sort after real ones and push them
+    out of rotation.
+    """
+    return clock.now() - clock.offset()
 
 
 async def loop(service: BackupService) -> None:
@@ -18,10 +25,5 @@ async def loop(service: BackupService) -> None:
     at once; a failed run is retried on the next hour.
     """
     while True:
-        await asyncio.to_thread(tick, service, clock.now())
+        await asyncio.to_thread(tick, service, now())
         await asyncio.sleep(CHECK_SECONDS)
-
-
-def overdue(service: BackupService, now: datetime) -> str | None:
-    """Return why the operator should look at the backup, or None when it is fine."""
-    return service.overdue(now)

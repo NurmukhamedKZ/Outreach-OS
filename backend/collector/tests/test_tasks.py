@@ -139,6 +139,8 @@ def test_an_overdue_backup_is_a_task_after_threads_and_before_drafts(db):
 
     assert [row["kind"] for row in rows] == ["escalated", "backup", "draft"]
     assert rows[1]["why"] == "бэкапа ещё не было"
+    assert (rows[1]["company_name"], rows[1]["thread_id"]) == ("Бэкап", "")
+    assert rows[0]["company_name"] == "c-escalated"
 
 
 def test_an_overdue_backup_shows_even_on_a_clean_install(tmp_path):

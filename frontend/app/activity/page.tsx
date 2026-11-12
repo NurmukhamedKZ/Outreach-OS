@@ -189,7 +189,7 @@ function BackupRow() {
           {backup === null
           ? "…"
           : !backup.enabled
-            ? "выключен: нет папки iCloud Drive"
+            ? "выключен: нет каталога iCloud Drive"
             : backup.last_at
               ? `последний ${WHEN_DAY.format(new Date(backup.last_at))} · снимков ${backup.snapshots}`
               : "ещё не было"}

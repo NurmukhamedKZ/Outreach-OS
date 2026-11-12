@@ -27,6 +27,7 @@ import clock
 import paths
 import sandbox
 import tasks
+from backup import api as backup_api, public as backup
 from config import settings
 from core import db as core_db
 from core.errors import DomainError, domain_error_handler
@@ -36,7 +37,6 @@ from collector.services import events as bus
 from collector.services import jobs as queue
 from collector.services import store
 from collector.services.pipeline import OPERATIONS, PIPELINES
-from backup import api as backup_api, public as backup
 from companies import api as companies_api, public as companies
 from core.pages import ScraplingPages
 from refusals import api as refusals_api, public as refusals

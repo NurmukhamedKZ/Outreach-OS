@@ -110,8 +110,14 @@ SSE `GET /api/events`. Исполнение одно за раз (`rebuild` пе
 папки iCloud Drive (Docker, не Mac) — бэкап выключен, и на «Сегодня» висит
 задача.
 
-Раскладка: `<UTC-время>/state.db` и `<UTC-время>/sessions/` — снимок, хранятся
-14 последних; `pages/` — общее зеркало страниц, докладывается только новыми.
+Раскладка: `<UTC-время>/state.db` и `<UTC-время>/sessions/` — снимок, хранится
+последний удачный за каждые из 14 последних суток UTC; `pages/` — общее зеркало
+страниц, докладывается только новыми.
+
+В снимке — ключи сессий WhatsApp и переписка с лидами: включите в iCloud
+«Расширенную защиту данных» (Advanced Data Protection), иначе ключи
+шифрования хранит Apple. `backend/.env` в бэкап не входит — храните ключи
+отдельно.
 
 Восстановление — бэкенд и Node остановлены, снимок — самый свежий:
 
@@ -122,7 +128,13 @@ rm -f data/state.db-wal data/state.db-shm
 cp "$SNAP/state.db" data/state.db
 rm -rf sender/node/sessions && cp -R "$SNAP/sessions" sender/node/sessions
 rsync -a --ignore-existing "$SNAP/../pages/" data/pages/
+echo off > sender/autopilot
 ```
+
+Снимок отстаёт от базы до суток, и **отказы за это время пропали** (F21).
+Поэтому `autopilot` — `off` до сверки: перед тем как включать отправку,
+внесите заново отказы из переписки с момента снимка (`POST /api/refusals` или
+«Больше не писать» в карточке лида).
 
 Тот же путь проверяет тест `backup/tests/test_service.py::test_a_restored_database_returns_refusals_and_settings`.
 

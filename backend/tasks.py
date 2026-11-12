@@ -12,6 +12,7 @@
 """
 
 import sqlite3
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -104,29 +105,34 @@ def tasks(limit: int = 50, backup_why: str | None = None) -> list[dict]:
         raise RuntimeError("tasks.use() не вызван: путь к state.db неизвестен")
     backup = ([Task("backup", "", "Бэкап", "", None, backup_why, None)]
               if backup_why else [])
+    urgent, drafts, names = _thread_tasks()
+    rows = (urgent + backup + drafts)[:limit]
+    return [asdict(replace(row, company_name=names(row.company_id)))
+            if row.company_id else asdict(row) for row in rows]
+
+
+def _thread_tasks() -> tuple[list[Task], list[Task], Callable[[str], str]]:
+    """Задачи тредов: срочные (эскалация, застрявшее) и черновики — и имена их компаний."""
     if not Path(_state).exists():
         # Чистая установка: sender/writer ещё не написали ни строки. sqlite3 в
         # режиме ro на отсутствующем файле бросает — страница отвечала бы 500
         # вместо «задач нет».
-        return [asdict(row) for row in backup[:limit]]
+        return [], [], str
     with closing(sqlite_tools.connect_readonly(_state, _leads)) as db:
         if not sqlite_tools.has_table(db, "threads"):
-            return [asdict(row) for row in backup[:limit]]
-        rows = [Task("escalated", r["company_id"], "", r["thread_id"], r["our_number"],
-                     r["status_reason"] or NO_REASON, r["at"])
-                for r in db.execute(_escalated_sql(db))]
+            return [], [], str
+        urgent = [Task("escalated", r["company_id"], "", r["thread_id"], r["our_number"],
+                       r["status_reason"] or NO_REASON, r["at"])
+                  for r in db.execute(_escalated_sql(db))]
         if sqlite_tools.has_table(db, "outbox"):
-            rows += [Task("stuck", r["company_id"], "", r["thread_id"], r["our_number"],
-                         STUCK_WHY, r["at"])
-                    for r in db.execute(STUCK_SQL)]
-        rows += backup
-        rows += [Task("draft", r["company_id"], "", r["thread_id"], None,
-                     DRAFT_WHY, r["at"])
-                for r in db.execute(DRAFT_SQL)]
-        rows = rows[:limit]
-        names = _names(db, {row.company_id for row in rows if row.company_id})
-        return [asdict(replace(row, company_name=names.get(row.company_id, row.company_id)))
-                if row.company_id else asdict(row) for row in rows]
+            urgent += [Task("stuck", r["company_id"], "", r["thread_id"], r["our_number"],
+                            STUCK_WHY, r["at"])
+                       for r in db.execute(STUCK_SQL)]
+        drafts = [Task("draft", r["company_id"], "", r["thread_id"], None,
+                       DRAFT_WHY, r["at"])
+                  for r in db.execute(DRAFT_SQL)]
+        found = _names(db, {row.company_id for row in urgent + drafts})
+    return urgent, drafts, lambda company_id: found.get(company_id, company_id)
 
 
 def _names(db: sqlite3.Connection, company_ids: set[str]) -> dict[str, str]:
