@@ -97,6 +97,19 @@ def test_network_failure_or_malformed_address_surfaces_as_fetch_error(network, s
         source.get(URL)
 
 
+@pytest.mark.parametrize("failure,is_certificate", [
+    (CurlError("Failed to perform, curl: (60) SSL certificate problem: certificate has expired"),
+     True),
+    (CurlError("curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL"), True),
+    (CurlError("Failed to connect"), False)])
+def test_a_certificate_failure_is_told_apart(network, source, failure, is_certificate):
+    network(failure)
+
+    with pytest.raises(pages.FetchError) as error:
+        source.get(URL)
+    assert isinstance(error.value, pages.CertificateError) is is_certificate
+
+
 def corrupt_body(root):
     for stored in root.glob("*.html.gz"):
         stored.write_bytes(b"not gzip at all")

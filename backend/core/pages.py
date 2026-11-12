@@ -51,6 +51,13 @@ class HttpStatusError(FetchError):
         self.status = status
 
 
+class CertificateError(FetchError):
+    """The host's TLS certificate is bad: another name, expired, self-signed.
+
+    Telling it apart is for the caller: a company site may be read over http.
+    """
+
+
 class BotCheckError(FetchError):
     """The source answered 200 with an "are you a robot" page.
 
@@ -147,7 +154,10 @@ class ScraplingPages:
             response = Fetcher.get(url, impersonate="chrome", **extra)
         # curl reports a malformed address the same way (InvalidURL is a CurlError).
         except CurlError as error:
-            raise FetchError(f"{url}: {error}") from error
+            # curl names TLS failures in its message only (codes 35, 51, 58, 60…).
+            text = str(error).lower()
+            kind = CertificateError if "ssl" in text or "certificate" in text else FetchError
+            raise kind(f"{url}: {error}") from error
         if response.status != 200:
             raise HttpStatusError(response.status, url)
         landed = str(response.url)

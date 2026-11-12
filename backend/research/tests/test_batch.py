@@ -8,10 +8,11 @@ from companies import public as companies
 from core import db as core_db
 from core import operator_settings
 from core.model import ModelError
-from core.pages import FetchError, HttpStatusError
+from core.pages import CertificateError, FetchError, HttpStatusError
 from refusals import public as refusals
 from research import service as service_module
-from research.exceptions import BatchNotRunningError, BatchRunningError, CompanyNotFoundError
+from research.exceptions import (BatchNotRunningError, BatchRunningError, CompanyNotFoundError,
+                                 CompanyRefusedError)
 from research.schemas import ResearchSettings
 from research.service import ResearchService
 
@@ -120,7 +121,7 @@ def test_a_site_that_does_not_answer_leaves_the_card_and_reviews(db, world):
 def test_a_bad_certificate_falls_back_to_http(db, world):
     world.add_company(db, "a", [("whatsapp", "+77010000001"), ("website", "https://a.kz")])
     pages = world.FakePages({
-        "https://a.kz/": FetchError("https://a.kz/: SSL certificate problem"),
+        "https://a.kz/": CertificateError("https://a.kz/: SSL certificate problem"),
         "http://a.kz/": f"<p>{SITE_HOOK}</p>"})
     model = world.Answers({"Компания a": world.answer(hooks=[SITE_HOOK])})
 
@@ -129,17 +130,17 @@ def test_a_bad_certificate_falls_back_to_http(db, world):
     assert service.company("a", world.now).dossier.hooks[0].url == "http://a.kz/"
 
 
-def test_without_reviews_and_site_research_goes_by_the_card(db, world):
-    world.add_company(db, "a", [("whatsapp", "+77010000001")])
-    pages = world.FakePages({})
-    model = world.Answers({"Компания a": world.answer(hooks=["выдуманная цитата из воздуха"])})
+def test_without_reviews_and_site_the_model_is_not_asked(db, world):
+    world.add_company(db, "a", [("whatsapp", "+77010000001"), ("website", "https://a.kz")])
+    pages = world.FakePages({"https://a.kz/": FetchError("https://a.kz/: timed out")})
+    model = world.Answers({"Компания a": world.answer(hooks=[HOOK])})
 
     service, _ = run(db, pages, model, world)
 
-    assert pages.requested == []
+    assert model.calls == []
     [row] = service.current().companies
-    assert (row.status, row.rejected_quotes) == ("failed", 1)
-    assert "Отзывов нет" in model.calls[0].messages[1][1]
+    assert (row.status, row.attempt) == ("failed", 1)
+    assert row.error.startswith("Нечего читать")
 
 
 @pytest.mark.parametrize("failure,reason", [
@@ -222,7 +223,9 @@ def test_a_second_batch_while_one_runs_is_refused(db, world):
 def test_stop_lets_started_research_finish_and_leaves_the_rest(db, world, state, monkeypatch):
     monkeypatch.setattr(service_module, "MAX_WORKERS", 1)
     for name in ("a", "b", "c"):
-        world.add_company(db, name, [("whatsapp", f"+7701000000{ord(name) % 10}")])
+        world.add_company(db, name, [("whatsapp", f"+7701000000{ord(name) % 10}")], reviews=1)
+    pages = world.FakePages({world.reviews_url(f"{n}-0"): world.reviews_body(
+        (HOOK, "2026-11-10T10:00:00+05:00", False)) for n in "abc"})
 
     def stop():
         with closing(core_db.connect(state)) as other:
@@ -231,7 +234,7 @@ def test_stop_lets_started_research_finish_and_leaves_the_rest(db, world, state,
     model = world.Answers({f"Компания {n}": world.answer(hooks=["нет такой цитаты нигде"])
                            for n in "abc"}, on_call=stop)
 
-    service, _ = run(db, world.FakePages({}), model, world)
+    service, _ = run(db, pages, model, world)
 
     batch = service.current()
     assert batch.status == "stopped" and batch.stop_requested
@@ -358,3 +361,124 @@ def gis_card(branch_id: str, contacts: list[tuple[str, str]]) -> str:
     group = [{"type": kind, "value": value} for kind, value in contacts]
     return _state_page({"data": {"entity": {"profile": {branch_id: {"data": {
         "city_alias": "almaty", "contact_groups": [{"contacts": group}]}}}}}})
+
+
+def test_a_bot_check_stops_the_batch_without_spending_attempts(db, world, monkeypatch):
+    from core.pages import BotCheckError
+    monkeypatch.setattr(service_module, "MAX_WORKERS", 1)
+    world.add_company(db, "a", [("whatsapp", "+77010000001")], reviews=5)
+    world.add_company(db, "b", [("whatsapp", "+77010000002")], reviews=1)
+    pages = world.FakePages({world.reviews_url("a-0"): BotCheckError("captcha")})
+    model = world.Answers({"Компания a": world.answer(hooks=[HOOK]),
+                           "Компания b": world.answer(hooks=[HOOK])})
+
+    service, _ = run(db, pages, model, world)
+
+    batch = service.current()
+    assert (batch.status, batch.stop_requested) == ("stopped", True)
+    assert batch.error.startswith("2GIS показал проверку робота")
+    assert [(c.company_id, c.status, c.attempt) for c in batch.companies] == [
+        ("a", "pending", None), ("b", "pending", None)]
+    assert model.calls == [] and pages.requested == [world.reviews_url("a-0")]
+
+    pages.pages[world.reviews_url("a-0")] = world.reviews_body(
+        (HOOK, "2026-11-10T10:00:00+05:00", False))
+    service, _ = run(db, pages, model, world)
+
+    batch = service.current()
+    assert (batch.status, batch.error) == ("done", None)
+    assert [(c.company_id, c.attempt) for c in batch.companies] == [("a", 1), ("b", 1)]
+
+
+def test_three_model_failures_in_a_row_stop_the_batch(db, world, monkeypatch):
+    monkeypatch.setattr(service_module, "MAX_WORKERS", 1)
+    names = "abcde"
+    for name in names:
+        world.add_company(db, name, [("whatsapp", f"+7701000000{ord(name) % 10}")], reviews=1)
+    pages = world.FakePages({world.reviews_url(f"{n}-0"): world.reviews_body(
+        (HOOK, "2026-11-10T10:00:00+05:00", False)) for n in names})
+    model = world.Answers({f"Компания {n}": ModelError("research: PaymentRequired") for n in names})
+    model.by_name["Компания a"] = world.answer(hooks=[HOOK])
+
+    service, _ = run(db, pages, model, world)
+
+    batch = service.current()
+    assert batch.status == "stopped" and batch.error.startswith("Модель не отвечает")
+    assert [c.status for c in batch.companies] == ["done", "failed", "failed", "failed", "pending"]
+
+
+def test_a_refused_company_is_not_researched_again(db, world):
+    world.add_company(db, "a", [("whatsapp", "+77010000001")])
+    refusals.record(db, "+77010000001", "просили не писать", world.now)
+
+    with pytest.raises(CompanyRefusedError):
+        ResearchService(db).start_one("a", world.now)
+
+
+def test_a_refusal_while_the_batch_waited_ends_the_company_before_the_model(db, world):
+    world.add_company(db, "a", [("whatsapp", "+77010000001")], reviews=1)
+    service = ResearchService(db)
+    batch_id = service.start(world.now)
+    with db:
+        db.execute("UPDATE batches SET status = 'interrupted'")
+        db.execute("INSERT INTO batch_companies (batch_id, company_id, position, status)"
+                   " VALUES (?, 'a', 0, 'pending')", (batch_id,))
+    refusals.record(db, "+77010000001", "просили не писать", world.now)
+    model = world.Answers({"Компания a": world.answer(hooks=[HOOK])})
+
+    service.run(service.start(world.now), world.FakePages({}), model, clock(world))
+
+    assert model.calls == []
+    [row] = service.current().companies
+    assert (row.status, row.error) == ("failed", "Компания в отказах — не исследуем")
+
+
+def test_a_dossier_that_cannot_be_written_fails_its_company_not_the_batch(db, world, monkeypatch):
+    import sqlite3
+    from research.repository import ResearchRepository
+    for name in "ab":
+        world.add_company(db, name, [("whatsapp", f"+7701000000{ord(name) % 10}")], reviews=1)
+    pages = world.FakePages({world.reviews_url(f"{n}-0"): world.reviews_body(
+        (HOOK, "2026-11-10T10:00:00+05:00", False)) for n in "ab"})
+    write = ResearchRepository.add_dossier
+
+    def broken_for_a(self, company_id, *args):
+        if company_id == "a":
+            raise sqlite3.OperationalError("database is locked")
+        return write(self, company_id, *args)
+
+    monkeypatch.setattr(ResearchRepository, "add_dossier", broken_for_a)
+    model = world.Answers({f"Компания {n}": world.answer(hooks=[HOOK]) for n in "ab"})
+
+    service, _ = run(db, pages, model, world)
+
+    batch = service.current()
+    assert batch.status == "done"
+    assert [(c.company_id, c.status) for c in batch.companies] == [("a", "failed"), ("b", "done")]
+
+
+def test_nothing_to_take_ends_the_batch_with_a_reason(db, world):
+    service, _ = run(db, world.FakePages({}), world.Answers({}), world)
+
+    batch = service.current()
+    assert (batch.status, batch.companies) == ("done", [])
+    assert batch.error.startswith("Нечего исследовать")
+
+
+def test_a_site_in_the_local_network_is_not_read(db, world):
+    from core.pages import Page
+    world.add_company(db, "a", [("whatsapp", "+77010000001"), ("website", "http://127.0.0.1")],
+                      reviews=1)
+    world.add_company(db, "b", [("whatsapp", "+77010000002"), ("website", "https://b.kz")],
+                      reviews=1)
+    pages = world.FakePages({
+        **{world.reviews_url(f"{n}-0"): world.reviews_body(
+            (HOOK, "2026-11-10T10:00:00+05:00", False)) for n in "ab"},
+        "https://b.kz/": Page(text=f"<p>{SITE_HOOK}</p>", final_url="http://10.0.0.5/",
+                              fetched_at=world.now)})
+    model = world.Answers({f"Компания {n}": world.answer(hooks=[HOOK]) for n in "ab"})
+
+    run(db, pages, model, world)
+
+    assert not any("127.0.0.1" in url for url in pages.requested)
+    assert all("Сайт не собран" in call.messages[1][1] for call in model.calls)

@@ -1,6 +1,4 @@
 from enum import StrEnum
-from typing import Literal
-
 from pydantic import Field
 
 from core.schemas import Schema, Timestamp
@@ -26,6 +24,29 @@ class BatchStatus(StrEnum):
 
 
 RUNNING = (BatchStatus.COLLECTING, BatchStatus.RESEARCHING)
+
+
+class ComplaintType(StrEnum):
+    CALL_MISSED = "не дозвонились"
+    REQUEST_IGNORED = "не ответили на заявку"
+    SLOW_ANSWER = "долго ждали ответа"
+    DEADLINE_MISSED = "сорвали срок"
+    QUALITY = "качество работы"
+    PRICE = "цена"
+    OTHER = "другое"
+
+
+class Severity(StrEnum):
+    """How plainly a pain shows, the strongest first: the order sorts pains."""
+
+    EXPLICIT = "видно явно"
+    ASSUMED = "предполагается"
+    NOT_SEEN = "не видно"
+
+
+class Source(StrEnum):
+    REVIEWS = "reviews"
+    SITE = "site"
 
 
 class ResearchStatus(StrEnum):
@@ -65,8 +86,7 @@ class ResearchSettings(Schema):
 
 
 class Complaint(LLMSchema):
-    type: Literal["не дозвонились", "не ответили на заявку", "долго ждали ответа",
-                  "сорвали срок", "качество работы", "цена", "другое"]
+    type: ComplaintType
     quote: str = Field(description="ДОСЛОВНАЯ фраза из одного отзыва, не пересказ")
 
 
@@ -80,7 +100,8 @@ class Facts(LLMSchema):
     what_they_do: str = Field(description="чем занимаются, 3–6 слов")
     complaints: list[Complaint] = Field(default_factory=list)
     vacancies: list[Vacancy] = Field(default_factory=list)
-    pricing_visible: bool = Field(False, description="на сайте выложены цены")
+    # No default: a reply without it must not read as "prices hidden" and make a signal.
+    pricing_visible: bool = Field(description="на сайте выложены цены")
     decision_maker_hint: str | None = Field(None, description=(
         "имя и роль человека, принимающего решения, если они прямо названы в данных:"
         " страница «Команда», подпись под ответом на отзыв. Формат «Айгуль, основатель»."
@@ -95,7 +116,7 @@ class HookDraft(LLMSchema):
 class Pain(LLMSchema):
     statement: str = Field(description="формулировка боли")
     evidence: list[str] = Field(default_factory=list)
-    severity: Literal["видно явно", "предполагается", "не видно"]
+    severity: Severity
 
 
 class DossierDraft(LLMSchema):
@@ -124,7 +145,7 @@ class Hook(Schema):
     angle: str
     quote: str
     url: str
-    source: Literal["reviews", "site"]
+    source: Source
     observed_at: Timestamp
 
 
@@ -174,6 +195,7 @@ class BatchView(Schema):
     status: BatchStatus
     size: int
     stop_requested: bool
+    error: str | None
     started_at: Timestamp
     finished_at: Timestamp | None
     counts: dict[ResearchStatus, int]

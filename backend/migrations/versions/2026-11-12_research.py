@@ -34,6 +34,8 @@ def upgrade() -> None:
         sa.Column("stop_requested", sa.Boolean, nullable=False, server_default=sa.false()),
         sa.Column("started_at", sa.Text, nullable=False),
         sa.Column("finished_at", sa.Text),
+        # Why the batch stopped on its own, in words for the operator.
+        sa.Column("error", sa.Text),
         sa.CheckConstraint(_one_of("status", BATCH_STATUSES), name="status_known"),
         sa.CheckConstraint("size >= 1", name="size_positive"),
     )
@@ -74,6 +76,8 @@ def upgrade() -> None:
         sa.Column("created_at", sa.Text, nullable=False),
         sa.CheckConstraint("json_valid(prompt) AND json_valid(answer) AND json_valid(dossier)",
                            name="json_valid"),
+        # A company is researched once per batch: a second write is a bug, not a version.
+        sa.UniqueConstraint("company_id", "batch_id", name="one_dossier_per_batch"),
     )
     op.create_index("dossiers_by_company", "dossiers", ["company_id", "dossier_id"])
     op.create_table(

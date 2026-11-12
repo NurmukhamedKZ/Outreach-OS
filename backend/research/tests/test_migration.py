@@ -58,6 +58,16 @@ def test_the_schema_refuses_unknown_statuses_and_rows_without_their_owner(db, sq
         db.execute(sql.format(now=NOW))
 
 
+def test_a_company_has_one_dossier_per_batch(db):
+    db.execute("INSERT INTO companies VALUES ('c', 'А', 'almaty', ?)", (NOW,))
+    db.execute("INSERT INTO batches (status, size, started_at) VALUES ('done', 1, ?)", (NOW,))
+    insert = ("INSERT INTO dossiers (company_id, batch_id, model, prompt, answer, dossier,"
+              " created_at) VALUES ('c', 1, 'm', '[]', '{}', '{}', ?)")
+    db.execute(insert, (NOW,))
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute(insert, (NOW,))
+
+
 def test_a_signal_of_an_unknown_type_or_twice_the_same_type_is_refused(db):
     db.execute("INSERT INTO companies VALUES ('c', 'А', 'almaty', ?)", (NOW,))
     db.execute("INSERT INTO batches (status, size, started_at) VALUES ('done', 1, ?)", (NOW,))

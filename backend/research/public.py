@@ -22,8 +22,9 @@ def forget_interrupted(db: sqlite3.Connection) -> None:
 def leads(db: sqlite3.Connection, now: datetime) -> list[Lead]:
     """Return the leads, the highest score first, each with its dossier and channel.
 
-    A lead has a dossier with a verified hook, a WhatsApp channel and no refusal
-    on any contact; refusals are checked now, the score is counted for `now`.
+    A lead has a dossier with a verified hook, a channel to write to in WhatsApp
+    (a WhatsApp contact, else a Kazakh mobile) and no refusal on any contact;
+    refusals are checked now, the score is counted for `now`.
     """
     return ResearchService(db).leads(now)
 

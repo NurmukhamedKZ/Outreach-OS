@@ -7,14 +7,14 @@ from research.schemas import BatchView, CompanyResearch, Lead, ResearchSettings
 
 router = APIRouter(prefix="/api/research", tags=["research"])
 
-RUNNING = {409: {"description": "errors.batchRunning: a batch is already running"}}
+ALREADY_RUNNING = {409: {"description": "errors.batchRunning: a batch is already running"}}
 NO_KEY = {503: {"description": "errors.modelKeyMissing: OPENROUTER_API_KEY is empty"}}
 NOT_FOUND = {404: {"description": "errors.companyNotFound: no such company"}}
 
 
 @router.post("/batches", status_code=status.HTTP_202_ACCEPTED,
              summary="Start a batch in the background, or resume the interrupted one",
-             responses=RUNNING | NO_KEY)
+             responses=ALREADY_RUNNING | NO_KEY)
 def start_batch(background: BackgroundTasks, service: ResearchServiceDep, pages: PagesDep,
                 model: ModelDep) -> BatchView:
     # The state is in the batch tables: losing the task with the process loses
@@ -52,7 +52,9 @@ def company(company_id: str, service: ResearchServiceDep) -> CompanyResearch:
 
 @router.post("/companies/{company_id}", status_code=status.HTTP_202_ACCEPTED,
              summary="Research the company again in a batch of one, in the background",
-             responses=NOT_FOUND | RUNNING | NO_KEY)
+             responses=NOT_FOUND | NO_KEY | {
+                 409: {"description": "errors.batchRunning: a batch is already running;"
+                                      " errors.companyRefused: the company is refused"}})
 def research_again(company_id: str, background: BackgroundTasks, service: ResearchServiceDep,
                    pages: PagesDep, model: ModelDep) -> BatchView:
     batch_id = service.start_one(company_id, clock.now())

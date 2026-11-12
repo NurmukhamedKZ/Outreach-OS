@@ -94,7 +94,7 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 | `operator_settings.py` | `load(db, module, Schema)` и `save(db, module, values)` — настройки оператора (ADR 0003) |
 | `errors.py` | `DomainError` (`code`, `status_code`) и обработчик `{code, detail}`; подключён в `collector/api.py` |
 | `schemas.py` | общая база `Schema` (обрезка пробелов) и `Timestamp` (только с зоной, хранится в UTC); схемы ответа модели наследуют не её, а `llm_schema.LLMSchema` |
-| `pages.py` | адаптер сбора: `Pages` (Protocol, `get(url, *, cookies=None, headers=None)` — страница хранится по одному адресу), `ScraplingPages`, `FakePages` (пишет `requested` и `cookies`), `FetchError` и наследники |
+| `pages.py` | адаптер сбора: `Pages` (Protocol, `get(url, *, cookies=None, headers=None)` — страница хранится по одному адресу), `ScraplingPages`, `FakePages` (пишет `requested` и `cookies`), `FetchError` и наследники (`HttpStatusError`, `BotCheckError`, `CertificateError` — негодный сертификат, для отката сайта на `http://`) |
 | `model.py` | адаптер модели: `Model` (Protocol), `OpenRouterModel`, `FakeModel`, `ModelError`, `ModelKeyMissingError` |
 | `phones.py` | каноническая форма телефона: `canonical(raw)` → `+7XXXXXXXXXX` без `+`, с `+` — 10–15 цифр как набраны (как `numbers.normalize`), иначе `ValueError("errors.phoneInvalid")`; `PHONE` — форма телефона, `WHATSAPP_LINK` — номер из ссылки `wa.me`/`api.whatsapp.com`. Старые копии `resolve.e164` и `numbers.normalize` живут до #7 и #13 |
 | `contacts.py` | каноническая форма контакта: `canonical(raw)` — телефон и ссылка WhatsApp на него → телефон, остальное — без пробелов по краям и в нижнем регистре; пустой, короче трёх символов или кривой телефон — `ValueError("errors.handleInvalid")` |

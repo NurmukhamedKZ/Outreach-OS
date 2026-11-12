@@ -133,3 +133,13 @@ def test_without_a_model_key_a_batch_does_not_start(state, db, network, monkeypa
     assert response.status_code == 503
     assert response.json()["code"] == "errors.modelKeyMissing"
     assert client.get("/api/research/batches/current").json() is None
+
+
+def test_research_again_of_a_refused_company_is_409(client, company_a, db):
+    from refusals import public as refusals
+    refusals.record(db, "+77010000001", "просили не писать", NOW)
+
+    response = client.post("/api/research/companies/a")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "errors.companyRefused"

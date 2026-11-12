@@ -319,3 +319,39 @@ def test_a_quote_found_in_several_places_takes_the_freshest():
 
     [hook] = found.dossier.hooks
     assert (hook.source, hook.url) == ("site", "https://a.kz/about")
+
+
+def test_a_review_without_a_date_is_skipped_and_the_page_still_read():
+    body = ('{"reviews": [{"text": "Без даты", "rating": 1, "date_created": null},'
+            ' {"text": "С датой", "rating": 5, "date_created": "2026-11-01T10:00:00+05:00"}]}')
+
+    assert [r.text for r in domain.parse_reviews(body, CARD)] == ["С датой"]
+
+
+def test_a_refusal_in_a_200_is_not_read_as_no_reviews():
+    with pytest.raises(UnexpectedPageError):
+        domain.parse_reviews('{"meta": {"code": 403, "message": "forbidden"}}', CARD)
+
+
+def test_hidden_prices_need_a_site_with_text():
+    found = domain.findings(answer(pricing_visible=False), [], [page("", html="<div id=app>")])
+
+    assert found.signals == []
+
+
+def test_the_same_quote_twice_is_one_hook():
+    quote = "Ведём бухгалтерию двухсот компаний"
+    found = domain.findings(answer(hooks=[{"angle": "раз", "quote": quote},
+                                          {"angle": "два", "quote": f"«{quote}»"}]),
+                            [], [page(quote)])
+
+    assert [h.angle for h in found.dossier.hooks] == ["раз"]
+
+
+@pytest.mark.parametrize("url,public", [
+    ("https://a.kz/", True), ("https://8.8.8.8/", True), ("http://127.0.0.1/", False),
+    ("http://10.0.0.5/", False), ("http://192.168.1.1/x", False),
+    ("http://169.254.169.254/", False), ("http://localhost/", False),
+    ("http://intranet/", False), ("http://printer.local/", False), ("http://[::1]/", False)])
+def test_only_addresses_on_the_internet_are_public(url, public):
+    assert domain.is_public(url) is public

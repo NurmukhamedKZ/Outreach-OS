@@ -1,4 +1,5 @@
 import sqlite3
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -125,13 +126,18 @@ class CompanyRepository:
             found.setdefault(company_id, set()).add(Segment(city, rubric))
         return found
 
-    def companies(self) -> list[Company]:
-        """Return every company with its branches and contacts, each sorted."""
+    def companies(self, company_ids: Collection[str] | None = None) -> list[Company]:
+        """Return every company, or those with the given ids, with branches and contacts."""
+        if company_ids is None:
+            where, ids = "", ()
+        else:
+            ids = tuple(company_ids)
+            where = f" WHERE company_id IN ({', '.join('?' * len(ids))})"
         branches: dict[str, list[Branch]] = {}
         reviews: dict[str, int] = {}
         for row in self._db.execute(
                 "SELECT company_id, branch_id, name, address, source_url, rule, confidence,"
-                " review_count FROM branches ORDER BY branch_id"):
+                f" review_count FROM branches{where} ORDER BY branch_id", ids):
             branches.setdefault(row["company_id"], []).append(Branch.model_validate(dict(row)))
             # One count per company: 2GIS may show the org's reviews on every branch.
             reviews[row["company_id"]] = max(reviews.get(row["company_id"], 0),
@@ -139,11 +145,13 @@ class CompanyRepository:
         contacts: dict[str, list[Contact]] = {}
         for company_id, kind, handle in self._db.execute(
                 "SELECT DISTINCT b.company_id, c.kind, c.handle FROM branch_contacts c"
-                " JOIN branches b USING (branch_id) ORDER BY b.company_id, c.kind, c.handle"):
+                f" JOIN branches b USING (branch_id){where.replace('company_id', 'b.company_id')}"
+                " ORDER BY b.company_id, c.kind, c.handle", ids):
             contacts.setdefault(company_id, []).append(Contact(kind=kind, handle=handle))
         return [Company(company_id=company_id, name=name, city=city,
                         review_count=reviews.get(company_id, 0),
                         contacts=contacts.get(company_id, []),
                         branches=branches.get(company_id, []))
                 for company_id, name, city in self._db.execute(
-                    "SELECT company_id, name, city FROM companies ORDER BY company_id")]
+                    f"SELECT company_id, name, city FROM companies{where} ORDER BY company_id",
+                    ids)]

@@ -7,6 +7,7 @@ rules, never from the model's say-so (ADR 0001).
 """
 
 import html as html_lib
+import ipaddress
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -17,7 +18,8 @@ from urllib.parse import urldefrag, urljoin, urlsplit
 
 from core.model import Message
 from research.exceptions import UnexpectedPageError, UnverifiedResearchError
-from research.schemas import Contribution, Dossier, Hook, ResearchAnswer, SignalType
+from research.schemas import (Complaint, ComplaintType, Contribution, Dossier, Facts, Hook,
+                              HookDraft, ResearchAnswer, Severity, SignalType, Source)
 
 # The public key 2GIS ships in its own frontend: undocumented, it may change.
 REVIEWS_KEY = "6e7e1929-4ea9-4a5d-8c05-d601860389bd"
@@ -30,7 +32,7 @@ SITE_HOME = "https://{domain}/"
 # A fifth of small Kazakh business sites have a certificate for another name or
 # an expired one; reading a public page over http risks nothing.
 SITE_HOME_INSECURE = "http://{domain}/"
-# Matched against the link text and its address: .kz sites name paths in Latin.
+# Matched against the link text and its address alike.
 LINK_KEYWORDS = ("о компании", "услуги", "цены", "кейсы", "команда", "вакансии")
 INNER_PAGES = 6
 SITE_TEXT_LIMIT = 20_000
@@ -38,8 +40,9 @@ MAX_HOOKS = 5
 MAX_PAINS = 4
 # Shorter quotes ("цены", "трубку") are found in any text and prove nothing.
 MIN_QUOTE_LENGTH = 12
-MISSED_LEAD_TYPES = ("не дозвонились", "не ответили на заявку")
-SEVERITY_ORDER = {"видно явно": 0, "предполагается": 1, "не видно": 2}
+MISSED_LEAD_TYPES = (ComplaintType.CALL_MISSED, ComplaintType.REQUEST_IGNORED)
+# Markers are searched in the markup; a page beyond this is cut, not read whole.
+HTML_LIMIT = 2_000_000
 NO_PRICING = "цены не выложены — продают через звонок"
 # Technical markers are code, not the model: bitrix24 or gtag( never lie.
 SITE_MARKERS = [
@@ -133,12 +136,18 @@ def parse_reviews(body: str, card_url: str) -> list[Review]:
         UnexpectedPageError: the answer is no reviews list.
     """
     try:
-        data = json.loads(body[body.index("{"): body.rindex("}") + 1])
-        return [Review(url=card_url, text=(item.get("text") or "").strip(),
-                       rating=item.get("rating"),
-                       created_at=datetime.fromisoformat(item["date_created"]).astimezone(UTC),
-                       answered=_answered(item.get("official_answer")))
-                for item in data.get("reviews") or []]
+        items = json.loads(body[body.index("{"): body.rindex("}") + 1])["reviews"]
+        reviews = []
+        for item in items or []:
+            # A review without a date cannot be weighed; the rest of the page still can.
+            if not isinstance(item.get("date_created"), str):
+                continue
+            reviews.append(Review(
+                url=card_url, text=(item.get("text") or "").strip(), rating=item.get("rating"),
+                created_at=datetime.fromisoformat(item["date_created"]).astimezone(UTC),
+                answered=_answered(item.get("official_answer"))))
+        return reviews
+    # No "reviews" key is a refusal in a 200 ({"meta": {"code": 403}}), not "no reviews".
     except (ValueError, KeyError, TypeError, AttributeError) as error:
         raise UnexpectedPageError(f"not a reviews answer: {type(error).__name__}") from None
 
@@ -154,6 +163,7 @@ def freshest(reviews: Iterable[Review]) -> list[Review]:
 
 
 def strip_html(html: str) -> str:
+    """Return the text of a page as a reader sees it: no scripts, styles or tags."""
     html = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", html)
     return " ".join(html_lib.unescape(re.sub(r"(?s)<[^>]+>", " ", html)).split())
 
@@ -166,7 +176,8 @@ def site_pages(fetched: Sequence[tuple[str, str, datetime]]) -> list[SitePage]:
             break
         text = strip_html(html)[:budget]
         budget -= len(text)
-        pages.append(SitePage(url=url, html=html, text=text, fetched_at=fetched_at))
+        pages.append(SitePage(url=url, html=html[:HTML_LIMIT], text=text,
+                              fetched_at=fetched_at))
     return pages
 
 
@@ -189,6 +200,22 @@ def inner_links(html: str, home: str) -> list[str]:
     return found
 
 
+def is_public(url: str) -> bool:
+    """Return True for an address on the internet, not this machine or a private network.
+
+    A site address comes from a 2GIS card its owner fills in; it must not send
+    research into the local network. A name is trusted as given: where DNS
+    points it is not checked.
+    """
+    host = (urlsplit(url).hostname or "").rstrip(".")
+    if "." not in host or host.endswith((".localhost", ".local", ".internal")):
+        return False
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return True
+
+
 def _bare_host(url: str) -> str:
     # The port stays: a link to another port of the host is another server.
     return urlsplit(url).netloc.lower().removeprefix("www.")
@@ -207,7 +234,7 @@ def prompt(card: Card, reviews: Sequence[Review], pages: Sequence[SitePage]) -> 
              f"Отзывов в 2GIS: {card.review_count}", f"Сайт: {card.site or 'нет'}", ""]
     if reviews:
         lines.append("Отзывы (свежие сверху: [оценка] дата текст; [ОТВЕТИЛИ] — компания ответила):")
-        lines += [f"[{r.rating}] {r.created_at:%Y-%m-%d} {r.text}"
+        lines += [f"[{r.rating or '–'}] {r.created_at:%Y-%m-%d} {r.text}"
                   + (" [ОТВЕТИЛИ]" if r.answered else "") for r in reviews]
     else:
         lines.append("Отзывов нет")
@@ -244,55 +271,53 @@ def _clean(quote: str) -> str:
     return " ".join(quote.split()).strip(" \"'«»„“”")
 
 
-def findings(answer: ResearchAnswer, reviews: Sequence[Review],
-             pages: Sequence[SitePage]) -> Findings:
-    """Return what of the model's answer stands, and the signals that follow from it.
+def _review_with(reviews: Sequence[Review], quote: str,
+                 silent_only: bool = False) -> Review | None:
+    """Return the freshest review the quote stands in; `reviews` go freshest first."""
+    return next((r for r in reviews
+                 if contains(r.text, quote) and not (silent_only and r.answered)), None)
 
-    A complaint must stand in a review, a vacancy on a site page, a hook in
-    either; what does not is dropped and counted. One signal per type.
-    """
-    by_date = sorted(reviews, key=lambda r: r.created_at, reverse=True)
-    review_texts = [(r, normalized(r.text)) for r in by_date]
-    page_texts = [(p, normalized(p.text)) for p in pages]
 
-    def review_with(quote: str, silent_only: bool = False) -> Review | None:
-        core = _core(quote)
-        return next((r for r, text in review_texts
-                     if core and core in text and not (silent_only and r.answered)), None)
+def _page_with(pages: Sequence[SitePage], quote: str) -> SitePage | None:
+    return max((p for p in pages if contains(p.text, quote)), key=lambda p: p.fetched_at,
+               default=None)
 
-    def page_with(quote: str) -> SitePage | None:
-        core = _core(quote)
-        found = [p for p, text in page_texts if core and core in text]
-        return max(found, key=lambda p: p.fetched_at, default=None)
 
+def _complaint_signals(complaints: Sequence[Complaint],
+                       reviews: Sequence[Review]) -> tuple[list[Signal], int]:
+    """Return the review signals and how many complaints were not found."""
     rejected = 0
-    signals: list[Signal] = []
     missed: list[tuple[Review, str]] = []
     unanswered: list[tuple[Review, str]] = []
-    for complaint in answer.facts.complaints:
-        if not review_with(complaint.quote):
+    for complaint in complaints:
+        if not (review := _review_with(reviews, complaint.quote)):
             rejected += 1
         elif complaint.type in MISSED_LEAD_TYPES:
-            missed.append((review_with(complaint.quote), complaint.quote))
+            missed.append((review, complaint.quote))
         # A missed-lead complaint is not counted again as unanswered: one fact, one weight.
-        elif silent := review_with(complaint.quote, silent_only=True):
+        elif silent := _review_with(reviews, complaint.quote, silent_only=True):
             unanswered.append((silent, complaint.quote))
+    signals = []
     for kind, matches in ((SignalType.REVIEWS_MISSED_LEAD, missed),
                           (SignalType.REVIEWS_UNANSWERED_COMPLAINT, unanswered)):
         if matches:
             review, quote = max(matches, key=lambda match: match[0].created_at)
             signals.append(Signal(kind, review.created_at, _clean(quote), review.url))
+    return signals, rejected
 
-    hiring = None
-    for vacancy in answer.facts.vacancies:
-        if not (found := page_with(vacancy.quote)):
+
+def _site_signals(facts: Facts, pages: Sequence[SitePage]) -> tuple[list[Signal], int]:
+    """Return the site signals and how many vacancies were not found."""
+    rejected = 0
+    signals: list[Signal] = []
+    for vacancy in facts.vacancies:
+        if not (found := _page_with(pages, vacancy.quote)):
             rejected += 1
-        elif vacancy.sales and hiring is None:
-            hiring = Signal(SignalType.SITE_HIRING_SALES, found.fetched_at,
-                            _clean(vacancy.quote), found.url)
-    if hiring:
-        signals.append(hiring)
-    if pages and not answer.facts.pricing_visible:
+        elif vacancy.sales and not signals:
+            signals.append(Signal(SignalType.SITE_HIRING_SALES, found.fetched_at,
+                                  _clean(vacancy.quote), found.url))
+    # Prices are "not shown" only on a site that was read, not on an empty JS shell.
+    if any(p.text for p in pages) and not facts.pricing_visible:
         signals.append(Signal(SignalType.SITE_NO_PRICING, pages[0].fetched_at, NO_PRICING,
                               pages[0].url))
     seen: set[SignalType] = set()
@@ -302,24 +327,52 @@ def findings(answer: ResearchAnswer, reviews: Sequence[Review],
         if marked := next((p for p in pages if re.search(pattern, p.html, re.I | re.S)), None):
             seen.add(kind)
             signals.append(Signal(kind, marked.fetched_at, label, marked.url))
+    return signals, rejected
 
+
+def _hooks(drafts: Sequence[HookDraft], reviews: Sequence[Review],
+           pages: Sequence[SitePage]) -> tuple[list[Hook], int]:
+    """Return the hooks whose quote was found, dated by the place, and how many were not."""
+    rejected = 0
     hooks: list[Hook] = []
-    for draft in answer.dossier.hooks:
+    seen: set[str] = set()
+    for draft in drafts:
+        key = normalized(draft.quote).strip(QUOTE_EDGES)
+        if key in seen:
+            continue  # one hook per turn of the conversation: the same quote twice is one
+        seen.add(key)
         # Found in several places, a quote is dated by the freshest of them.
-        places = [(r.created_at, r.url, "reviews") for r in [review_with(draft.quote)] if r]
-        places += [(p.fetched_at, p.url, "site") for p in [page_with(draft.quote)] if p]
+        places = [(r.created_at, r.url, Source.REVIEWS)
+                  for r in [_review_with(reviews, draft.quote)] if r]
+        places += [(p.fetched_at, p.url, Source.SITE) for p in [_page_with(pages, draft.quote)] if p]
         if not places:
             rejected += 1
             continue
         observed_at, url, source = max(places)
         hooks.append(Hook(angle=draft.angle, quote=_clean(draft.quote), url=url, source=source,
                           observed_at=observed_at))
+    return hooks[:MAX_HOOKS], rejected
+
+
+def findings(answer: ResearchAnswer, reviews: Sequence[Review],
+             pages: Sequence[SitePage]) -> Findings:
+    """Return what of the model's answer stands, and the signals that follow from it.
+
+    A complaint must stand in a review, a vacancy on a site page, a hook in
+    either; what does not is dropped and counted. One signal per type.
+    """
+    by_date = sorted(reviews, key=lambda r: r.created_at, reverse=True)
+    review_signals, rejected_complaints = _complaint_signals(answer.facts.complaints, by_date)
+    site_signals, rejected_vacancies = _site_signals(answer.facts, pages)
+    hooks, rejected_hooks = _hooks(answer.dossier.hooks, by_date, pages)
     # Asking the model for the order is a wish; the code holds it.
-    pains = sorted(answer.dossier.pains, key=lambda p: SEVERITY_ORDER[p.severity])[:MAX_PAINS]
+    strength = list(Severity)
+    pains = sorted(answer.dossier.pains, key=lambda p: strength.index(p.severity))[:MAX_PAINS]
     dossier = Dossier(summary=answer.dossier.summary, what_they_do=answer.facts.what_they_do,
-                      hooks=hooks[:MAX_HOOKS], pains=pains, approach=answer.dossier.approach,
+                      hooks=hooks, pains=pains, approach=answer.dossier.approach,
                       decision_maker_hint=answer.facts.decision_maker_hint)
-    return Findings(dossier=dossier, signals=signals, rejected=rejected)
+    return Findings(dossier=dossier, signals=review_signals + site_signals,
+                    rejected=rejected_complaints + rejected_vacancies + rejected_hooks)
 
 
 def judge(found: Findings) -> None:

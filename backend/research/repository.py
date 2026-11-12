@@ -1,5 +1,5 @@
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Collection
 from datetime import UTC, datetime
 
 from research.domain import Signal
@@ -13,8 +13,8 @@ def _utc(moment: datetime) -> str:
     return moment.astimezone(UTC).isoformat(timespec="seconds")
 
 
-def _marks(values: Iterable) -> str:
-    return ", ".join("?" * len(list(values)))
+def _marks(values: Collection) -> str:
+    return ", ".join("?" * len(values))
 
 
 class ResearchRepository:
@@ -42,7 +42,8 @@ class ResearchRepository:
         batch_id, taken = row
         status = BatchStatus.RESEARCHING if taken else BatchStatus.COLLECTING
         cursor = self._db.execute(
-            "UPDATE batches SET status = ?, stop_requested = 0 WHERE batch_id = ? AND status = ?",
+            "UPDATE batches SET status = ?, stop_requested = 0, error = NULL"
+            " WHERE batch_id = ? AND status = ?",
             (status, batch_id, BatchStatus.INTERRUPTED))
         return batch_id if cursor.rowcount == 1 else None
 
@@ -50,12 +51,15 @@ class ResearchRepository:
         self._db.execute("UPDATE batches SET status = ? WHERE batch_id = ? AND status = ?",
                          (status, batch_id, expected))
 
-    def finish(self, batch_id: int, now: datetime) -> None:
-        """End a running batch: stopped when a stop was asked for, done otherwise."""
-        self._db.execute(
+    def finish(self, batch_id: int, now: datetime) -> bool:
+        """End a running batch: stopped when a stop was asked for, done otherwise.
+
+        Returns False when the batch was not running.
+        """
+        return self._db.execute(
             "UPDATE batches SET status = CASE WHEN stop_requested THEN ? ELSE ? END,"
             f" finished_at = ? WHERE batch_id = ? AND status IN ({_marks(RUNNING)})",
-            (BatchStatus.STOPPED, BatchStatus.DONE, _utc(now), batch_id, *RUNNING))
+            (BatchStatus.STOPPED, BatchStatus.DONE, _utc(now), batch_id, *RUNNING)).rowcount == 1
 
     def request_stop(self) -> int | None:
         """Ask the running batch to stop and return it, None when none runs."""
@@ -63,6 +67,16 @@ class ResearchRepository:
             f"UPDATE batches SET stop_requested = 1 WHERE status IN ({_marks(RUNNING)})"
             " RETURNING batch_id", RUNNING).fetchall()
         return rows[0][0] if rows else None
+
+    def note(self, batch_id: int, reason: str) -> None:
+        """Tell the operator why the batch went as it did; the first reason stays."""
+        self._db.execute("UPDATE batches SET error = coalesce(error, ?) WHERE batch_id = ?",
+                         (reason, batch_id))
+
+    def halt(self, batch_id: int, reason: str) -> None:
+        """Stop the batch on its own and say why."""
+        self._db.execute("UPDATE batches SET stop_requested = 1 WHERE batch_id = ?", (batch_id,))
+        self.note(batch_id, reason)
 
     def stop_requested(self, batch_id: int) -> bool:
         return bool(self._db.execute("SELECT stop_requested FROM batches WHERE batch_id = ?",
@@ -117,13 +131,21 @@ class ResearchRepository:
             (ResearchStatus.RESEARCHING, attempt, _utc(now), batch_id, company_id,
              ResearchStatus.PENDING)).rowcount == 1
 
-    def end(self, batch_id: int, company_id: str, status: ResearchStatus, error: str | None,
-            rejected: int, now: datetime) -> None:
+    def release(self, batch_id: int, company_id: str) -> None:
+        """Return a company being researched to pending; the attempt is not spent."""
         self._db.execute(
+            "UPDATE batch_companies SET status = ?, attempt = NULL, started_at = NULL"
+            " WHERE batch_id = ? AND company_id = ? AND status = ?",
+            (ResearchStatus.PENDING, batch_id, company_id, ResearchStatus.RESEARCHING))
+
+    def end(self, batch_id: int, company_id: str, status: ResearchStatus, error: str | None,
+            rejected: int, now: datetime) -> bool:
+        """End a company's research; False when it was not being researched."""
+        return self._db.execute(
             "UPDATE batch_companies SET status = ?, error = ?, rejected_quotes = ?,"
             " finished_at = ? WHERE batch_id = ? AND company_id = ? AND status = ?",
             (status, error, rejected, _utc(now), batch_id, company_id,
-             ResearchStatus.RESEARCHING))
+             ResearchStatus.RESEARCHING)).rowcount == 1
 
     def not_to_take(self) -> set[str]:
         """Return companies a new batch skips: researched or out of attempts."""
