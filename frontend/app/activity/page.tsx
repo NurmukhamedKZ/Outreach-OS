@@ -9,10 +9,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  ApiError,
   fetchActivity,
+  fetchBackup,
   fetchCatalogue,
+  runBackup,
   type ActivityEvent,
   type ActivityWorker,
+  type BackupStatus,
   type PipelineCatalogue,
 } from "../api";
 import { JobMonitor } from "@/components/JobMonitor";
@@ -40,6 +44,7 @@ const ACTOR_LABELS: Record<string, string> = {
   "sender.monitor": "Монитор здоровья",
   jobs: "Воркер джоб",
   webhook: "Вебхук",
+  backup: "Бэкап",
 };
 
 export default function ActivityPage() {
@@ -112,6 +117,8 @@ export default function ActivityPage() {
         ))}
       </section>
 
+      <BackupRow />
+
       <JobMonitor />
 
       <div className="controls" style={{ margin: "16px 0 12px" }}>
@@ -149,6 +156,55 @@ export default function ActivityPage() {
         <RunsHistory />
       </div>
     </>
+  );
+}
+
+/** Бэкап одной строкой: когда был последний удачный, куда и сколько снимков. */
+function BackupRow() {
+  const [backup, setBackup] = useState<BackupStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const reload = () => fetchBackup().then(setBackup).catch((e: Error) => setError(e.message));
+  useEffect(() => {
+    reload();
+  }, []);
+
+  const run = () => {
+    setBusy(true);
+    setError(null);
+    runBackup()
+      .catch((e: Error) =>
+        setError(e instanceof ApiError && e.code === "errors.backupRunning" ? "бэкап уже идёт" : e.message),
+      )
+      .then(reload)
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <section className="card backup-row">
+      <span className="backup-text">
+        <span>
+          <b>Бэкап</b>{" "}
+          {backup === null
+          ? "…"
+          : !backup.enabled
+            ? "выключен: нет папки iCloud Drive"
+            : backup.last_at
+              ? `последний ${WHEN_DAY.format(new Date(backup.last_at))} · снимков ${backup.snapshots}`
+              : "ещё не было"}
+        </span>
+        {backup && <span className="backup-target mono">{backup.target}</span>}
+        {error && <span className="backup-error">{error}</span>}
+      </span>
+      <button
+        className="btn"
+        onClick={run}
+        disabled={busy || backup === null || !backup.enabled || backup.running}
+      >
+        {busy || backup?.running ? "Идёт бэкап…" : "Сделать бэкап"}
+      </button>
+    </section>
   );
 }
 

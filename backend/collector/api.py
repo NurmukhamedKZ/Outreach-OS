@@ -36,6 +36,7 @@ from collector.services import events as bus
 from collector.services import jobs as queue
 from collector.services import store
 from collector.services.pipeline import OPERATIONS, PIPELINES
+from backup import api as backup_api, public as backup
 from companies import api as companies_api, public as companies
 from core.pages import ScraplingPages
 from refusals import api as refusals_api, public as refusals
@@ -119,12 +120,14 @@ async def lifespan(_app: FastAPI):
     # Шина событий приезжает в sender параметром — тот же шов, что монтирует
     # его роутеры и подключает операцию writer'а в общий реестр.
     sending = asyncio.create_task(sender.send_queue(bus.publish))
+    backing_up = asyncio.create_task(backup.loop(app.state.backup))
     yield
     queue.cancel_current()  # без этого фоновый поток текущей джобы держит процесс живым
     worker.cancel()
     monitor.cancel()
     warming.cancel()
     sending.cancel()
+    backing_up.cancel()
 
 
 app = FastAPI(
@@ -134,6 +137,10 @@ app = FastAPI(
 )
 # One page adapter per process: the pace belongs to the host, two would double it.
 app.state.pages = ScraplingPages(paths.PAGES, now=clock.now)
+# One backup service per process: its lock keeps the daemon and the button apart.
+# The production database, never a sandbox run's.
+app.state.backup = backup.BackupService(settings.backup_dir, paths.PRODUCTION_STATE,
+                                        paths.PAGES, paths.SESSIONS)
 # New domain errors only: old routes keep their error format.
 app.add_exception_handler(DomainError, domain_error_handler)
 app.add_middleware(
@@ -155,6 +162,7 @@ app.include_router(events.router)
 app.include_router(stats.router)
 app.include_router(refusals_api.router)
 app.include_router(companies_api.router)
+app.include_router(backup_api.router)
 app.include_router(writer.router)
 app.include_router(sender.router)
 app.include_router(sender_webhook.router)

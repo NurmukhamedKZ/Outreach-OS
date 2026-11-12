@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     sender_webhook_secret: str | None = None
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
+    # Где лежат снимки невосстановимого слоя (#8): папка в iCloud Drive. Нет её
+    # родителя (Docker, не Mac) — бэкап выключен, и это видно на «Процессах».
+    backup_dir: Path = (Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+                        / "Outreach-OS-backup")
 
 
 settings = Settings()

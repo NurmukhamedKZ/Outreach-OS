@@ -125,3 +125,25 @@ def test_a_draft_that_was_regenerated_appears_once(db):
     # Без дедупа по max(message_id) строк было бы две — прямое доказательство,
     # что копия запроса всё ещё воспроизводит именно это условие cold_drafts.
     assert drafts[0]["thread_id"] == "+77010000005"
+
+
+def test_an_overdue_backup_is_a_task_after_threads_and_before_drafts(db):
+    """Потеря базы — беда, но лид, который ждёт ответа, ждёт сейчас."""
+    _thread(db, "+77010000003", "c-draft")
+    thread_store.add_draft(db, "+77010000003", "черновик первого письма", "site_no_pricing")
+    _thread(db, "+77010000004", "c-escalated")
+    conversation.set_status(db, "+77010000004", "escalated", "интересно")
+    db.commit()
+
+    rows = tasks.tasks(backup_why="бэкапа ещё не было")
+
+    assert [row["kind"] for row in rows] == ["escalated", "backup", "draft"]
+    assert rows[1]["why"] == "бэкапа ещё не было"
+
+
+def test_an_overdue_backup_shows_even_on_a_clean_install(tmp_path):
+    tasks.use(tmp_path / "missing.db")
+
+    assert [row["kind"] for row in tasks.tasks(backup_why="бэкап выключен")] == ["backup"]
+
+    tasks.use(None)
