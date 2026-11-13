@@ -108,3 +108,63 @@ def test_a_followup_takes_the_next_research_signal_the_thread_has_not_used(db, d
     task = followup.task(db, thread_store.thread(db, "+77010000001"))
 
     assert "возьми угол site_no_pricing" in task
+
+
+def test_an_observation_is_fresh_up_to_max_age_days_and_not_a_day_more(db, drafting):
+    max_age = operations.CONFIG["signals"]["max_age_days"]
+    add_lead(db, "a", [("whatsapp", "+77010000001")],
+             hooks=[("Зацепка на границе", days_ago(max_age)),
+                    ("Зацепка на день старше", days_ago(max_age + 1))],
+             signals=[("reviews_missed_lead", days_ago(max_age), "Сигнал на границе"),
+                      ("site_hiring_sales", days_ago(max_age + 1), "Сигнал на день старше")])
+
+    operations.open_new_threads(Ctx())
+
+    [seed] = drafting
+    assert [h["quote"] for h in seed["dossier"]["hooks"]] == ["Зацепка на границе"]
+    assert [s["quote"] for s in seed["signals"]] == ["Сигнал на границе"]
+
+
+def test_a_lead_with_nothing_fresh_to_write_about_is_not_taken(db, drafting):
+    add_lead(db, "stale", [("whatsapp", "+77010000001")], hooks=[(HOOK, days_ago(400))],
+             signals=[("reviews_missed_lead", days_ago(400), HOOK)])
+
+    assert operations.open_new_threads(Ctx()) == {"drafted": 0}
+    assert drafting == [] and thread_store.inbox(db) == []
+
+
+def test_one_number_of_two_companies_gets_one_thread(db, drafting):
+    """Компании с общим контактом companies оставляет раздельными: второй
+    черновик лёг бы в тред первой компании с чужим досье."""
+    add_lead(db, "first", [("whatsapp", "+77010000001")],
+             signals=[("reviews_missed_lead", NOW, HOOK)])
+    add_lead(db, "second", [("whatsapp", "+77010000001")])
+
+    assert operations.open_new_threads(Ctx()) == {"drafted": 1}
+    assert [seed["name"] for seed in drafting] == ["Компания first"]
+    assert [row["company_id"] for row in thread_store.inbox(db)] == ["first"]
+
+
+def test_a_company_with_a_thread_on_another_number_is_not_written_again(db, drafting):
+    """Филиал из нового сегмента может дать компании другой канал: тред на
+    старом номере всё равно её."""
+    add_lead(db, "a", [("whatsapp", "+77010000001")])
+    thread_store.open_thread(db, "+77019999999", "a", {})
+
+    assert operations.open_new_threads(Ctx()) == {"drafted": 0}
+
+
+def test_candidates_stop_at_the_limit_after_skipping(db):
+    from writer.db import leads_source
+
+    for n, weight_signal in enumerate(("reviews_missed_lead", "site_hiring_sales",
+                                       "site_no_pricing"), 1):
+        add_lead(db, f"c{n}", [("whatsapp", f"+7701000000{n}")],
+                 signals=[(weight_signal, NOW, "цитата")])
+    rules = leads_source.pitch_rules(operations.CONFIG, NOW.date())
+
+    found = leads_source.candidates(db, rules, NOW, limit=2, skip=frozenset({"+77010000001"}))
+
+    assert [lead["company_id"] for lead in found] == ["c2", "c3"]
+    assert [lead["company_id"] for lead in leads_source.candidates(db, rules, NOW, limit=2)] == [
+        "c1", "c2"]

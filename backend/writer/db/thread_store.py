@@ -81,15 +81,14 @@ def now():
 def open_thread(db, thread_id, company_id, seed):
     """False, если тред уже есть: seed переписывать нельзя — он снимок момента,
     когда мы решили писать, и именно на него ссылается первое сообщение."""
-    if thread(db, thread_id):
-        return False
-    db.execute(
-        "INSERT INTO threads (thread_id, company_id, seed, created_at)"
+    # OR IGNORE, not a read first: two clicks at once would both read "no thread".
+    opened = db.execute(
+        "INSERT OR IGNORE INTO threads (thread_id, company_id, seed, created_at)"
         " VALUES (?, ?, ?, ?)",
         (thread_id, company_id, json.dumps(seed, ensure_ascii=False), now()),
-    )
+    ).rowcount == 1
     db.commit()
-    return True
+    return opened
 
 
 def thread(db, thread_id):
@@ -249,9 +248,14 @@ def open_thread_ids(db) -> frozenset[str]:
     return frozenset(row[0] for row in db.execute("SELECT thread_id FROM threads"))
 
 
+def threaded_company_ids(db) -> frozenset[str]:
+    """Companies that already have a thread, on whatever number."""
+    return frozenset(row[0] for row in db.execute("SELECT DISTINCT company_id FROM threads"))
+
+
 def cold_drafts(db):
     """Треды, где есть черновик и не отправлено ни одного сообщения, — то есть
-    ровно первое касание. Порядок задаёт вызывающий: скор живёт в базе лидов."""
+    ровно первое касание. Порядок задаёт вызывающий: оценку знает research."""
     rows = db.execute(
         "SELECT t.thread_id, t.company_id, m.message_id, m.draft_text, m.angle,"
         "       m.model, m.prompt IS NOT NULL"

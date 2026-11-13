@@ -68,20 +68,30 @@ def seed(lead: research.Lead | research.CompanyResearch, rules: PitchRules) -> d
 
 
 def candidates(db: sqlite3.Connection, rules: PitchRules, now: datetime,
-               limit: int | None = None, skip: frozenset[str] = frozenset()) -> list[dict]:
-    """Return the leads not in `skip`, the highest score first, each with its thread's seed.
+               limit: int | None = None, skip: frozenset[str] = frozenset(),
+               skip_companies: frozenset[str] = frozenset()) -> list[dict]:
+    """Return new leads with something fresh to write about, the highest score first.
 
-    skip holds thread ids that already exist; it is applied before limit, so
-    the top of the list being taken never hides a fresh lead further down.
+    skip holds thread ids, skip_companies the companies that already have a
+    thread: a company keeps its thread when a new branch gives it another
+    channel. Two companies may share a number; the first one takes it. All of it
+    is applied before limit, so a taken top never hides a fresh lead further down.
     """
     found = []
+    taken = set(skip)
     for lead in research.leads(db, now):
         if limit is not None and len(found) == limit:
             break
-        if lead.channel.handle in skip:
+        if lead.channel.handle in taken or lead.company_id in skip_companies:
             continue
+        lead_seed = seed(lead, rules)
+        # Nothing fresh to name: the model would say stop, and the thread it
+        # opened would keep the company out of every next run.
+        if not lead_seed["dossier"]["hooks"] and not lead_seed["signals"]:
+            continue
+        taken.add(lead.channel.handle)
         found.append({"company_id": lead.company_id, "thread_id": lead.channel.handle,
-                      "channel_kind": lead.channel.kind, "seed": seed(lead, rules)})
+                      "channel_kind": lead.channel.kind, "seed": lead_seed})
     return found
 
 
@@ -91,6 +101,8 @@ def cards(db: sqlite3.Connection, company_ids: list[str], now: datetime) -> dict
     A thread outlives the lead it was opened for (a refusal, a new dossier), so
     any company is read, not just a lead; an id research does not know is left out.
     """
+    # ponytail: one research.company per thread (a few queries each) — fine for
+    # hundreds of threads; a batch read in research.public when the inbox grows.
     found = {}
     for company_id in dict.fromkeys(company_ids):
         try:

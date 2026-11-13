@@ -24,8 +24,9 @@ def open_new_threads(ctx):
     threads = thread_store.connect(paths.state_db())
     try:
         rules = leads_source.pitch_rules(CONFIG, now.date())
-        fresh = leads_source.candidates(leads, rules, now, limit,
-                                        skip=thread_store.open_thread_ids(threads))
+        fresh = leads_source.candidates(
+            leads, rules, now, limit, skip=thread_store.open_thread_ids(threads),
+            skip_companies=thread_store.threaded_company_ids(threads))
         ctx.log(f"писем: {len(fresh)}, модель {CONFIG['llm']['model']}")
         llm = agent.model(CONFIG)
         for number, lead in enumerate(fresh, 1):

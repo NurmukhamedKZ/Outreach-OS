@@ -128,8 +128,12 @@ def make_draft(company_id: str, request: DraftRequest):
                     raise HTTPException(409, "компания не лид: нет досье с подтверждённой"
                                              " зацепкой — исследуйте её заново")
                 seed = leads_source.seed(card, leads_source.pitch_rules(CONFIG, now.date()))
-                thread_store.open_thread(threads, channel[1], company_id, seed)
+                if not thread_store.open_thread(threads, channel[1], company_id, seed):
+                    raise HTTPException(409, "тред уже открывается — повторите через минуту")
                 thread = thread_store.thread(threads, channel[1])
+            elif thread["company_id"] != company_id:
+                # Companies sharing a contact stay apart: this thread's seed is the other's.
+                raise HTTPException(409, "этот номер уже в переписке с другой компанией")
 
             history = thread_store.history(threads, channel[1])
             proposal = (_seller_move(threads, thread, history)
