@@ -24,11 +24,6 @@ def state(tmp_path):
     path = tmp_path / "state.db"
     core_db.migrate(path)
     db = core_db.connect(path)
-    db.executescript(
-        "CREATE TABLE IF NOT EXISTS outbox ("
-        "  id INTEGER PRIMARY KEY, message_id INTEGER, status TEXT NOT NULL,"
-        "  delivered_at TEXT);"
-    )
     yield db, path
     db.close()
     analytics.use(None)
@@ -47,9 +42,11 @@ def _thread(db, thread_id, *, stage="contact", outcome=None, sent=True, delivere
                                     offer_variant=variant)
         db.execute("UPDATE messages SET sent_text = 'текст', sent_at = ?"
                    " WHERE message_id = ?", (_now(), message_id))
-        db.execute("INSERT INTO outbox (message_id, status, delivered_at)"
-                   " VALUES (?, 'sent', ?)",
-                   (message_id, _now() if delivered else None))
+        db.execute("INSERT INTO outbox (message_id, thread_id, our_number, send_after, status,"
+                   " kind, author, delivered_at, created_at, updated_at)"
+                   " VALUES (?, ?, '+77000000001', ?, 'sent', 'cold', 'operator', ?, ?, ?)",
+                   (message_id, company_id, _now(), _now() if delivered else None,
+                    _now(), _now()))
     if replied:
         repo.add_incoming(company_id, "интересно", None, clock.now())
     db.commit()
@@ -132,7 +129,7 @@ def test_endpoint_answers_with_the_full_report(state):
 
 
 def test_report_survives_a_database_without_foreign_layers(tmp_path):
-    """state.db, где система 3 ещё не стартовала: outbox нет. Страница обязана
+    """state.db, где ещё ничего не отправлено: очередь пуста. Страница обязана
     показать нули — аналитика читает чужие слои и не создаёт ни одного."""
     path = tmp_path / "state.db"
     core_db.migrate(path)

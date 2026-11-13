@@ -98,3 +98,14 @@ def test_section_the_schema_rejects_as_a_whole_falls_back_to_defaults(conn):
         )
 
     assert operator_settings.load(conn, "window", Window) == Window()
+
+
+def test_saved_returns_the_section_as_stored_even_where_the_schema_refuses_it(conn):
+    """A module with a fail-closed rule (delivery's autopilot) reads the raw value itself."""
+    with conn:
+        conn.execute(
+            "INSERT INTO operator_settings (module, data) VALUES ('sending', '{\"batch_size\": 0}')"
+        )
+
+    assert operator_settings.saved_section(conn, "sending") == {"batch_size": 0}
+    assert operator_settings.saved_section(conn, "nothing") == {}

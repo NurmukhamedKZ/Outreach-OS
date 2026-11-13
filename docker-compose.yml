@@ -1,12 +1,12 @@
 # Три системы в одном контуре (см. CLAUDE.md): backend — FastAPI, все три
 # системы под одним main.py; frontend — продуктовый дашборд, браузеру нужен
 # только его порт; sender-node — сокеты WhatsApp (Baileys), отдельный процесс
-# по контракту системы 3, backend ходит в него по SENDER_NODE_URL.
+# по контракту доставки (core/whatsapp.py), backend ходит в него по SENDER_NODE_URL.
 #
 # config.py — единственная точка чтения секретов, общая для всех систем:
 # читает ровно backend/.env. Перед первым запуском: cp backend/.env.example
 # backend/.env и вписать ключи — без них поднимутся сбор сегментов и веб, но
-# не партия исследования и черновики writer'а.
+# не партия исследования и черновики переписки.
 #
 #   docker compose up --build
 
@@ -31,8 +31,6 @@ services:
       # Сырьё и базы — невосстановимые или производные слои (см. CLAUDE.md),
       # им место на хосте, а не в слоях образа.
       - ./backend/data:/app/data
-      - ./backend/writer/config.toml:/app/writer/config.toml
-      - ./backend/sender/config.toml:/app/sender/config.toml
     depends_on:
       - sender-node
 

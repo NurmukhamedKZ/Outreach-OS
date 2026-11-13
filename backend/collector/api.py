@@ -30,33 +30,17 @@ from core import db as core_db
 from core.errors import DomainError, domain_error_handler
 from collector.routes import (activity as activity_routes, analytics as analytics_routes, events, jobs,
                               pipeline, stats, tasks as tasks_routes)
-from collector.services import events as bus
 from collector.services import jobs as queue
 from companies import api as companies_api, public as companies
 from conversations import api as conversations_api, public as conversations
 from core.pages import ScraplingPages
-from refusals import api as refusals_api, public as refusals
+from core.whatsapp import NodeWhatsApp
+from delivery import api as delivery_api, public as delivery
+from refusals import api as refusals_api
 from research import api as research_api, public as research
-from sender.routes import sender, webhook as sender_webhook
-from sender.services import refusal as sender_refusal
 
-
-def _write_refusal(handle: str, reason: str) -> bool:
-    """Шов к юридическому контуру: отказ, найденный системой 3, пишет refusals.
-
-    Здесь же, а не импортом из sender'а: система 3 не знает других модулей
-    (тест графа импортов), а api.py — единственное место, где они видят друг
-    друга. True — отказ стоит, новый он или повтор.
-    """
-    with closing(core_db.connect(paths.state_db())) as db:
-        refusals.record(db, handle, reason, clock.now())
-    return True
-
-
-sender_refusal.use(_write_refusal)
-
-# Тот же шов, что подключает отказ: где лежит state.db, знает сборщик
-# приложения, а журнал — модуль верхнего уровня — не знает ни одной из систем.
+# Где лежит state.db, знает сборщик приложения, а журнал — модуль верхнего
+# уровня — не знает ни одной из систем.
 activity.use(paths.state_db())
 analytics.use(paths.state_db(), paths.PRODUCTION_STATE)
 tasks.use(paths.state_db(), paths.PRODUCTION_STATE)
@@ -86,23 +70,17 @@ async def lifespan(_app: FastAPI):
     prepare_database(paths.state_db())
     queue.fail_orphans()
     worker = asyncio.create_task(queue.worker_loop())
-    monitor = asyncio.create_task(sender.monitor_numbers())
-    warming = asyncio.create_task(sender.warm_numbers())
-    # Шина событий приезжает в sender параметром — тот же шов, что монтирует
-    # его роутеры.
-    sending = asyncio.create_task(sender.send_queue(bus.publish))
-    # A thread, not a task (ADR 0005): copying blocks for seconds. Daemon, so a
-    # copy in progress does not hold shutdown; its temp folder is cleaned next run.
-    stop_backup = threading.Event()
-    threading.Thread(target=backup.loop, args=(app.state.backup, stop_backup),
+    # Threads, not tasks (ADR 0005): a backup copies for seconds, a tick waits
+    # for Node and the model. Daemons, so work in progress does not hold
+    # shutdown; a send cut short is left in sending for the next monitor.
+    stop = threading.Event()
+    threading.Thread(target=backup.loop, args=(app.state.backup, stop),
                      name="backup", daemon=True).start()
+    delivery.start(stop, app.state.whatsapp, delivery.telegram, conversations.model)
     yield
     queue.cancel_current()  # без этого фоновый поток текущей джобы держит процесс живым
     worker.cancel()
-    monitor.cancel()
-    warming.cancel()
-    sending.cancel()
-    stop_backup.set()
+    stop.set()
 
 
 app = FastAPI(
@@ -116,6 +94,8 @@ app.state.pages = ScraplingPages(paths.PAGES, now=clock.now)
 # The production database, never a sandbox run's.
 app.state.backup = backup.BackupService(settings.backup_dir, paths.PRODUCTION_STATE,
                                         paths.PAGES, paths.SESSIONS)
+# One WhatsApp client per process: one pool of connections to Node.
+app.state.whatsapp = NodeWhatsApp(settings.sender_node_url)
 # New domain errors only: old routes keep their error format.
 app.add_exception_handler(DomainError, domain_error_handler)
 app.add_middleware(
@@ -137,8 +117,7 @@ app.include_router(companies_api.router)
 app.include_router(research_api.router)
 app.include_router(backup_api.router)
 app.include_router(conversations_api.router)
-app.include_router(sender.router)
-app.include_router(sender_webhook.router)
+app.include_router(delivery_api.router)
 
 # Песочница монтируется здесь по той же причине, по которой здесь живут
 # остальные швы: api.py — единственное место, где системы видят друг друга.

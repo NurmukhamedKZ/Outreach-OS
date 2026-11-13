@@ -13,7 +13,6 @@ import logging
 import sqlite3
 from contextlib import closing
 
-import activity
 import clock
 import paths
 import sqlite_tools
@@ -21,6 +20,7 @@ from collector.services import jobs
 from companies import public as companies
 from config import settings
 from conversations import public as conversations
+from delivery import public as delivery
 from refusals import public as refusals
 from research import public as research
 
@@ -81,39 +81,19 @@ def writer_stats():
 
 
 def sender_stats():
-    """Номера по статусам, очередь и пульс воркера.
+    """Номера по статусам, очередь, треды и пульс воркера — счётчики модуля delivery.
 
-    Счётчики очереди берутся у самой системы 3, а не своим SQL: дублировать её
-    определение «созревших, но не отправленных» здесь значило бы иметь две
-    версии главного симптома аварии.
+    Определение «созревших, но не отправленных» живёт у доставки: вторая версия
+    главного симптома аварии здесь разошлась бы с ним молча.
     """
-    from sender.db import outbox
     db_path = paths.state_db()
+    empty = {"status": "live", "numbers": {}, "queue": {},
+             "threads": {"waiting": 0, "escalated": 0}, "heartbeat": None}
     if not db_path.exists():
-        return {"status": "live", "numbers": {}, "queue": {},
-                "threads": {"waiting": 0, "escalated": 0}, "heartbeat": None}
-    with closing(sqlite3.connect(db_path)) as db:
-        db.row_factory = sqlite3.Row
-        try:
-            rows = db.execute(
-                "SELECT status, count(*) FROM numbers GROUP BY status").fetchall()
-            queue = outbox.counters(db, clock.now())
-            threads = conversations.counters(db)
-        except sqlite3.OperationalError:
-            return {"status": "live", "numbers": {}, "queue": {},
-                    "threads": {"waiting": 0, "escalated": 0}, "heartbeat": None}
-    return {"status": "live", "numbers": dict(rows), "queue": queue,
-            "threads": threads, "heartbeat": _worker_heartbeat()}
-
-
-def _worker_heartbeat() -> str | None:
-    """Пульс воркера — из журнала: он переживает перезапуск процесса, а
-    переменная в памяти после него врала «пульса не было». Журнал — модуль
-    верхнего уровня, и без шва use() он молча не отвечает: тестам это и нужно."""
+        return empty
     try:
-        for row in activity.workers():
-            if row["actor"] == "sender.tick":
-                return row["last_at"]
-    except activity.NotConfiguredError:
-        return None
-    return None
+        with closing(sqlite3.connect(db_path)) as db:
+            db.row_factory = sqlite3.Row
+            return delivery.stats(db, clock.now())
+    except sqlite3.OperationalError:
+        return empty

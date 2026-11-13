@@ -10,7 +10,6 @@ import pytest
 
 from sandbox import chat
 from core import db as core_db
-from sender.db import migrate
 
 THREAD = "c_romashka"
 
@@ -19,7 +18,7 @@ THREAD = "c_romashka"
 def db(tmp_path):
     path = tmp_path / "run.db"
     core_db.migrate(path)
-    connection = migrate.connect(path)
+    connection = core_db.connect(path)
     connection.execute(
         "INSERT INTO threads (company_id, channel, seed, created_at, stage,"
         " status, touch_no) VALUES (?, '+77010000001', '{}',"
@@ -74,9 +73,9 @@ def test_fate_comes_from_the_queue(db):
     message_id = _message(db, draft_text="черновик", queued_text="подтверждено")
     db.execute(
         "INSERT INTO outbox (message_id, thread_id, our_number, send_after,"
-        " status, attempts, error, created_at, updated_at)"
+        " status, kind, author, attempts, error, created_at, updated_at)"
         " VALUES (?, ?, '+77000000001', '2026-09-03T10:00:00+00:00',"
-        " 'failed', 3, 'sandbox: фрейм в сокет не ушёл',"
+        " 'failed', 'cold', 'operator', 3, 'sandbox: фрейм в сокет не ушёл',"
         " '2026-09-03T09:06:00+00:00', '2026-09-03T09:30:00+00:00')",
         (message_id, THREAD))
     db.commit()
@@ -90,8 +89,8 @@ def test_delivery_marks_reach_the_bubble(db):
     message_id = _message(db, draft_text="ч", queued_text="q", sent_text="ушло")
     db.execute(
         "INSERT INTO outbox (message_id, thread_id, our_number, send_after,"
-        " status, attempts, delivered_at, read_at, created_at, updated_at)"
-        " VALUES (?, ?, '+77000000001', '2026-09-03T10:00:00+00:00', 'sent', 1,"
+        " status, kind, author, attempts, delivered_at, read_at, created_at, updated_at)"
+        " VALUES (?, ?, '+77000000001', '2026-09-03T10:00:00+00:00', 'sent', 'cold', 'operator', 1,"
         " '2026-09-03T10:00:05+00:00', '2026-09-03T10:02:00+00:00',"
         " '2026-09-03T09:06:00+00:00', '2026-09-03T10:02:00+00:00')",
         (message_id, THREAD))
@@ -108,8 +107,8 @@ def test_the_last_live_row_wins_when_a_message_was_requeued(db):
                             ("pending", "2026-09-03T10:00:00+00:00")):
         db.execute(
             "INSERT INTO outbox (message_id, thread_id, our_number, send_after,"
-            " status, attempts, created_at, updated_at)"
-            " VALUES (?, ?, '+77000000001', '2026-09-03T10:00:00+00:00', ?, 1,"
+            " status, kind, author, attempts, created_at, updated_at)"
+            " VALUES (?, ?, '+77000000001', '2026-09-03T10:00:00+00:00', ?, 'cold', 'operator', 1,"
             " '2026-09-03T09:06:00+00:00', ?)",
             (message_id, THREAD, status, updated))
     db.commit()

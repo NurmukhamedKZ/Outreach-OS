@@ -25,7 +25,11 @@ CREATE TABLE messages (
   queued_text TEXT, handle_attempts INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE outbox (
   outbox_id INTEGER PRIMARY KEY, message_id INTEGER REFERENCES messages (message_id),
-  thread_id TEXT, our_number TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'sent', error TEXT);
+  thread_id TEXT, our_number TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'sent', error TEXT,
+  send_after TEXT NOT NULL DEFAULT '2026-11-13T10:00:00+00:00',
+  created_at TEXT NOT NULL DEFAULT '2026-11-13T10:00:00+00:00',
+  updated_at TEXT NOT NULL DEFAULT '2026-11-13T10:00:00+00:00',
+  attempts INTEGER NOT NULL DEFAULT 0, provider_id TEXT, delivered_at TEXT, read_at TEXT);
 """
 
 
@@ -51,7 +55,8 @@ def old(tmp_path):
     core_db.migrate(path)
     core_db.downgrade(path, "0004")
     with closing(sqlite3.connect(path)) as db:
-        for table in ("messages", "threads"):
+        # 0006 hands outbox back in sender's shape; the fixture lays its own.
+        for table in ("messages", "threads", "outbox"):
             db.execute(f"DROP TABLE IF EXISTS {table}")
         db.executescript(OLD_SCHEMA)
         db.commit()

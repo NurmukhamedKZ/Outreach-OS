@@ -1,7 +1,7 @@
 """The canonical phone form: the one copy for new code.
 
 The old copies (collector/services/resolve.py::e164, sender/db/numbers.py::normalize)
-stay until their systems are rewritten (#7, #13).
+are gone with their systems (#13, #37).
 """
 
 import re
@@ -23,8 +23,8 @@ def canonical(raw: str) -> str:
     """Return the phone as + and digits; Kazakhstan numbers as +7XXXXXXXXXX.
 
     Without a plus the number is read as Kazakh: ten digits get the 7, a leading
-    8 becomes 7. With a plus the digits are taken as dialled, as sender's
-    numbers.normalize does: WhatsApp delivers foreign leads too, and every
+    8 becomes 7. With a plus the digits are taken as dialled, as the old
+    numbers.normalize did: WhatsApp delivers foreign leads too, and every
     thread id it accepts must stay recordable.
 
     Raises:

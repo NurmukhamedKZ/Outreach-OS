@@ -14,6 +14,8 @@ DOMAIN = (
     "writer",
     "sender",
     "sandbox",
+    "conversations",
+    "delivery",
     "companies",
     "research",
     "refusals",

@@ -6,7 +6,7 @@
 воронка с инбоксом учились бы про тестовые треды забывать. Файл делает чистоту
 контекста физической: прошлого сценария нет, потому что его нет в базе.
 
-Схему наполняют её настоящие владельцы (Alembic, migrate, schema.sql), а
+Схему наполняют её настоящие владельцы (Alembic, schema.sql), а
 не копия DDL: база прогона обязана отличаться от боевой только содержимым.
 """
 
@@ -23,7 +23,7 @@ import paths
 import tasks
 from collector.services import jobs
 from core import db as core_db
-from sender.db import migrate, numbers
+from delivery import public as delivery
 
 RUNS_DIR = paths.SANDBOX_RUNS
 
@@ -84,9 +84,8 @@ def create(company_id: str, warmed: bool, moment: datetime) -> Run:
     _apply_schemas(run.path)
     _write_meta(run.path, {"company_id": company_id, "created_at": run.created_at,
                            "warmed": str(int(warmed)), "offset_seconds": "0"})
-    with closing(sqlite3.connect(run.path)) as db:
-        numbers.register(db, SANDBOX_NUMBER, session_dir="sandbox", now=moment,
-                         skip_warmup=warmed)
+    with closing(core_db.connect(run.path)) as db:
+        delivery.register_number(db, SANDBOX_NUMBER, moment, skip_warmup=warmed)
     return run
 
 
@@ -189,14 +188,13 @@ def shift(seconds: int) -> Run:
 
 
 def _apply_schemas(path: Path) -> None:
-    """Миграции Alembic (в том числе threads и messages) и два старых владельца:
+    """Миграции Alembic (переписка и доставка тоже) и старый владелец jobs:
     как и при боевом старте процесса."""
     core_db.migrate(path)
     with closing(sqlite3.connect(path)) as db:
         db.executescript(jobs.state_schema())
         db.execute(META)
         db.commit()
-    migrate.connect(path).close()
 
 
 def _write_meta(path: Path, values: dict[str, str]) -> None:

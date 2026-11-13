@@ -1,9 +1,9 @@
 /** Подписи и цвет на каждый исход. Единственное место, где статус превращается
  *  в слово и в тон.
  *
- *  Значения — словарь бэкенда (`conversation.STATUSES`, `worker.TICK_OUTCOMES`),
+ *  Значения — словарь бэкенда (`conversation.STATUSES`, `delivery.worker.OUTCOMES`),
  *  подписи и тон — чистая презентация, ровно как ACTOR_LABELS на «Процессах».
- *  Расхождение списков ловит бэкенд: sender/tests/test_worker.py.
+ *  Расхождение списков ловит бэкенд: delivery/tests/test_worker.py.
  *
  *  Тонов четыре, и это не палитра, а смысл: `stop` — нужен человек прямо сейчас,
  *  `attention` — само не разрешится, `ok` — идёт как задумано, `idle` — кончилось
@@ -27,7 +27,7 @@ const THREAD_STATUS: Record<string, Outcome> = {
   queued: { label: "ждёт отправки", tone: "ok" },
 };
 
-/** Исход тика воркера: `worker.TICK_OUTCOMES`, он же outcome в журнале. */
+/** Исход демонов и вебхука доставки: `delivery.worker.OUTCOMES`, он же outcome в журнале. */
 const TICK_OUTCOME: Record<string, Outcome> = {
   escalated: { label: "отдал человеку", tone: "stop" },
   failed: { label: "не отправилось", tone: "stop" },
@@ -49,6 +49,10 @@ const TICK_OUTCOME: Record<string, Outcome> = {
   refused: { label: "стоп-слово", tone: "idle" },
   healthy: { label: "номера в порядке", tone: "ok" },
   transport_down: { label: "транспорт не отвечает", tone: "stop" },
+  not_sent: { label: "не ушло", tone: "attention" },
+  warming: { label: "номер греется", tone: "ok" },
+  active: { label: "номер боевой", tone: "ok" },
+  quarantined: { label: "номер в карантине", tone: "stop" },
   started: { label: "запущено", tone: "ok" },
   finished: { label: "готово", tone: "ok" },
 };

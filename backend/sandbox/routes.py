@@ -2,11 +2,10 @@
 тумблеры и «ответить как лид».
 
 Черновик и постановку в очередь пульт не дублирует — их зовут существующие
-ручки conversations и sender'а. Вторая точка входа в постановку сообщения означала
+ручки conversations и delivery. Вторая точка входа в постановку сообщения означала
 бы вторые гейты, а проверять надо те же, что в бою.
 """
 
-import asyncio
 import logging
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -21,19 +20,22 @@ from pydantic import BaseModel
 import clock
 import paths
 import sqlite_tools
+from core import db as core_db
+from delivery import public as delivery
 from research import public as research
 from sandbox import chat, faults, node, runs
 
 router = APIRouter(prefix="/api/sandbox")
+ALMATY = ZoneInfo("Asia/Almaty")
 log = logging.getLogger(__name__)
 
-# Часовой пояс окна отправки живёт в sender/config.toml; здесь он нужен только
-# для пресета «к открытию окна», и берётся оттуда же — см. _to_window.
+# Окно отправки — настройка доставки («Отправка» на «Настройках»); здесь оно
+# нужно только для пресета «к открытию окна» — см. _to_window.
 PRESETS = {"jitter": 15 * 60, "hour": 3600, "day": 86400}
 
 # Сколько дней вперёд ищется открытие окна. Восемь, а не «пока не найдём»:
-# пустой или перевранный weekdays в конфиге иначе вешает не запрос, а весь
-# цикл событий — ручка асинхронная.
+# схема не пропускает пустой weekdays, но вечный цикл в ручке не стоит и одной
+# ошибки в ней.
 WINDOW_SEARCH_DAYS = 8
 
 PERSONAL_JID = "@s.whatsapp.net"
@@ -61,7 +63,7 @@ class NewIncoming(BaseModel):
 
 
 @router.get("/runs")
-async def list_runs() -> dict:
+def list_runs() -> dict:
     """Прогоны и время стенда.
 
     Часы отдаются здесь, а не хранятся во фронте: там они писались только
@@ -76,9 +78,9 @@ async def list_runs() -> dict:
 
 
 @router.get("/leads")
-async def list_leads() -> list[dict]:
+def list_leads() -> list[dict]:
     """Leads to make a run for: research of the production database, not the run's empty one."""
-    return await asyncio.to_thread(_leads)
+    return _leads()
 
 
 def _leads() -> list[dict]:
@@ -87,8 +89,8 @@ def _leads() -> list[dict]:
 
 
 @router.post("/runs", status_code=201)
-async def create_run(body: NewRun) -> dict:
-    await asyncio.to_thread(_require_lead, body.company_id)
+def create_run(body: NewRun) -> dict:
+    _require_lead(body.company_id)
     # Системное время, а не clock.now(): id прогона и дата регистрации номера
     # не должны наследовать сдвиг прошлого прогона — иначе новый прогон
     # рождается в будущем и его календарь прогрева врёт с первого дня.
@@ -103,7 +105,7 @@ async def create_run(body: NewRun) -> dict:
 
 
 @router.post("/runs/{run_id}/activate")
-async def activate_run(run_id: str) -> dict:
+def activate_run(run_id: str) -> dict:
     try:
         run = runs.activate(run_id)
     except runs.UnknownRunError:
@@ -113,7 +115,7 @@ async def activate_run(run_id: str) -> dict:
 
 
 @router.post("/clock")
-async def move_clock(body: ClockMove) -> dict:
+def move_clock(body: ClockMove) -> dict:
     # Прогон проверяется до разбора пресета: без него «непонятный сдвиг» —
     # не та причина отказа, которую надо показать оператору.
     _require_scenario()
@@ -123,12 +125,12 @@ async def move_clock(body: ClockMove) -> dict:
 
 
 @router.get("/faults")
-async def get_faults() -> dict:
+def get_faults() -> dict:
     return faults.current().__dict__
 
 
 @router.post("/faults")
-async def set_faults(body: NewFaults) -> dict:
+def set_faults(body: NewFaults) -> dict:
     try:
         return faults.update(**body.model_dump()).__dict__
     except ValueError as error:
@@ -136,7 +138,7 @@ async def set_faults(body: NewFaults) -> dict:
 
 
 @router.get("/chat")
-async def read_chat() -> dict:
+def read_chat() -> dict:
     company_id, _channel = thread_of_active_run()
     with closing(sqlite3.connect(paths.state_db())) as db:
         try:
@@ -150,7 +152,7 @@ async def read_chat() -> dict:
 
 
 @router.post("/incoming")
-async def incoming(body: NewIncoming) -> dict:
+def incoming(body: NewIncoming) -> dict:
     """Ответ лида уезжает в ту же ручку, что дёргает настоящий Node на
     messages.upsert: стоп-слова, дедуп и гашение расписания — боевые."""
     _company_id, channel = thread_of_active_run()
@@ -159,7 +161,7 @@ async def incoming(body: NewIncoming) -> dict:
                "provider_id": f"SBXIN{uuid4().hex[:10].upper()}",
                "text": body.text}
     try:
-        return {"handled": await node.deliver(payload)}
+        return {"handled": node.deliver(payload)}
     except httpx.HTTPError as error:
         # Песочница стучится сама в себя, и промах по адресу — единственная
         # причина этой ошибки. Трассировка назвала бы httpx, а не SANDBOX_SELF_URL,
@@ -241,16 +243,14 @@ def _to_window() -> int:
     окно считается, только если до закрытия остаётся больше самого длинного
     джиттера.
     """
-    from sender.services import config as sender_config
-
-    settings = sender_config.load()
-    window = settings["window"]
-    weekdays = window["weekdays"]
-    opens, closes = window["hours"]
-    # Джиттер живёт в [pace], а не в [window]: он защищает номер, а не покой
+    with closing(core_db.connect(paths.state_db())) as db:
+        window = delivery.settings(db).window
+    weekdays = window.weekdays
+    opens, closes = window.hours
+    # Джиттер — константа доставки, а не окно: он защищает номер, а не покой
     # лида, — но именно он решает, успеет ли отправка до закрытия.
-    longest_jitter = timedelta(minutes=max(settings["pace"]["jitter_minutes"]))
-    local = clock.now().astimezone(ZoneInfo(window["timezone"]))
+    longest_jitter = timedelta(minutes=delivery.LONGEST_JITTER_MINUTES)
+    local = clock.now().astimezone(ALMATY)
     closing_at = local.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=closes)
     if (local.isoweekday() in weekdays and opens <= local.hour < closes
             and closing_at - local > longest_jitter):
@@ -262,7 +262,7 @@ def _to_window() -> int:
         target = (target + timedelta(days=1)).replace(
             hour=opens, minute=30, second=0, microsecond=0)
     raise HTTPException(500, "за неделю вперёд окно ни разу не открывается:"
-                             " проверьте [window] в sender/config.toml")
+                             " проверьте окно отправки в «Настройках»")
 
 
 def _card(run: runs.Run, active: runs.Run | None) -> dict:

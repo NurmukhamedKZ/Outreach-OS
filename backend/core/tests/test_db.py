@@ -73,9 +73,10 @@ def test_downgrade_to_base_and_upgrade_again_restores_the_schema(tmp_path):
     upgraded = schema_of(path)
 
     db.downgrade(path, "base")
-    # 0005 hands the conversation back to its old owners in their shape, data
-    # and all: a rollback must not lose the irreplaceable layer.
-    old_owners = ("alembic_version", "threads", "messages")
+    # 0005 and 0006 hand the conversation and the send queue back to their old
+    # owners in their shape, data and all: a rollback must not lose the
+    # irreplaceable layer.
+    old_owners = ("alembic_version", "threads", "messages", "outbox", "numbers")
     assert [row for row in schema_of(path) if not any(o in row[1] for o in old_owners)] == []
 
     db.migrate(path)
@@ -128,18 +129,18 @@ def test_failed_revision_rolls_back_whole_and_keeps_the_previous_head(tmp_path, 
 
 
 def test_migrate_leaves_tables_of_other_owners_alone(tmp_path):
-    """sender and collector tables stay outside Alembic until #7."""
+    """collector's jobs stay outside Alembic until #38."""
     path = tmp_path / "state.db"
     with closing(sqlite3.connect(path)) as conn:
-        conn.execute("CREATE TABLE outbox (outbox_id INTEGER PRIMARY KEY)")
-        conn.execute("INSERT INTO outbox VALUES (1)")
+        conn.execute("CREATE TABLE jobs (id INTEGER PRIMARY KEY)")
+        conn.execute("INSERT INTO jobs VALUES (1)")
         conn.commit()
 
     db.migrate(path)
     db.migrate(path)
 
     with closing(sqlite3.connect(path)) as conn:
-        assert conn.execute("SELECT outbox_id FROM outbox").fetchall() == [(1,)]
+        assert conn.execute("SELECT id FROM jobs").fetchall() == [(1,)]
 
 
 def test_request_dependency_serves_a_sync_route_and_closes_after(tmp_path, monkeypatch):

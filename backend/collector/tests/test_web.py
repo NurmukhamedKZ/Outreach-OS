@@ -5,15 +5,6 @@ import pytest
 import activity
 
 
-def test_the_refusal_seam_is_registered_on_import():
-    """Единственное место, где система 3 узнаёт о системе 1. Незарегистрированный
-    шов — это потерянный отказ, а отказ юридический контур (F21)."""
-    import collector.api  # noqa: F401 — импорт и есть регистрация
-    from sender.services import refusal
-
-    assert refusal._hook is not None
-
-
 @pytest.fixture
 def startup(tmp_path, monkeypatch):
     """Lifespan with the daemons replaced: they talk to Node and the job queue."""
@@ -28,8 +19,8 @@ def startup(tmp_path, monkeypatch):
     monkeypatch.setattr(api.queue, "worker_loop", idle)
     monkeypatch.setattr(api.queue, "fail_orphans", lambda: None)
     monkeypatch.setattr(api.queue, "cancel_current", lambda: None)
-    for daemon in ("monitor_numbers", "warm_numbers", "send_queue"):
-        monkeypatch.setattr(api.sender, daemon, idle)
+    started = []
+    monkeypatch.setattr(api.delivery, "start", lambda *args: started.append(args) or [])
     monkeypatch.setattr(paths, "PRODUCTION_STATE", tmp_path / "data" / "state.db")
     return api
 
