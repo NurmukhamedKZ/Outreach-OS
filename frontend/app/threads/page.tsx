@@ -208,7 +208,7 @@ function ThreadsPage() {
                   </span>
                   {conversation.status_reason
                     ? <span className="inbox-sub">{conversation.status_reason}</span>
-                    : <span className="inbox-sub">
+                    : conversation.status !== "queued" && <span className="inbox-sub">
                         причина не сохранилась — статус поставлен до того, как её начали писать
                       </span>}
                 </p>
