@@ -77,10 +77,10 @@ export default function Cold() {
               <span className="row-text">
                 <span className="row-name">{entry.company_name}</span>
                 <span className="row-sub mono">
-                  {entry.city} · {entry.thread_id}
+                  {[entry.city, entry.thread_id].filter(Boolean).join(" · ")}
                 </span>
               </span>
-              <span className="intent mono">{entry.intent_score.toFixed(1)}</span>
+              <span className="intent mono">{entry.score.toFixed(1)}</span>
             </button>
           ))}
           {drafts !== null && drafts.length === 0 && (

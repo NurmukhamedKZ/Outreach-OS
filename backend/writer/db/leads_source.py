@@ -1,249 +1,113 @@
-"""Кандидаты из базы collector'а. Только чтение — писать туда нельзя ничем.
+"""Leads for writer: research decides who is a lead, writer decides what to write about.
 
-Отбор повторён запросом, а не импортом report.py: система 2 живёт в своём
-окружении и не должна падать оттого, что у collector'а поехали зависимости.
-Цена решения — вторая копия правил F19/F21, и держит её честной раздел leads в
-scripts/check.py: он гоняет отбор на синтетической базе формы collector'а.
-
-Канал только один из двух: writer пишет в WhatsApp, а туда годится и номер,
-собранный как phone. Почта из приоритета исключена намеренно — 2GIS её почти не
-отдаёт, и система 3 для неё ещё не построена.
+Who is a lead (a verified hook, a WhatsApp channel, no refusal) lives in
+research alone and is read through research.public. What stays here is the
+choice of reasons to write: a signal of a pitchable type and an observation
+fresh enough to name in a message.
 """
 
-import json
-import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 import paths
-from refusals import public as refusals
-
-CHANNEL_PRIORITY = ("whatsapp", "phone")
-
-# Короче этого 2GIS отдаёт не телефон компании, а сервисный короткий номер
-# (1400, 5151): написать в WhatsApp по нему нельзя.
-MIN_PHONE_DIGITS = 10
-
-CANDIDATES = (
-    "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm), c.city,"
-    "       d.summary, d.decision_maker, d.hooks, d.pains, d.approach, d.sources"
-    " FROM companies c JOIN scores s USING (company_id)"
-    " LEFT JOIN company_links l ON l.company_id = c.company_id AND l.rule = 'self'"
-    " LEFT JOIN orgs o ON o.branch_id = l.branch_id"
-    " LEFT JOIN dossiers d USING (company_id)"
-)
-WITH_INTENT = " WHERE s.intent_score > 0 ORDER BY s.intent_score DESC, s.fit_score DESC, c.company_id"
-ONE_COMPANY = " WHERE c.company_id = ?"
+import sqlite_tools
+from research import public as research
 
 
-def connect(path):
-    """Только чтение: derived.db + ATTACH невосстановимого слоя для фильтра
-    отказов. Какой это файл, решает paths: в песочнице suppression пустой, и
-    выдумывать его имя рядом с derived.db нельзя — базы лежат врозь."""
-    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    db.execute(f"ATTACH DATABASE 'file:{paths.state_db()}?mode=ro' AS state", ())
-    return db
+def connect() -> sqlite3.Connection:
+    """Open the production database read-only, the sandbox's too.
+
+    A sandbox run is a database of its own with no research in it: its lead is
+    a real company, read from the production database, and nothing is written.
+    """
+    return sqlite_tools.connect_readonly(paths.PRODUCTION_STATE, None)
 
 
 @dataclass(frozen=True)
 class PitchRules:
-    """Чем разрешено цеплять. Три параметра одного решения — «годится ли этот
-    сигнал как повод», поэтому едут вместе, а не тремя аргументами."""
+    """What a message may hook on: three parts of one decision, so they travel together."""
+
     pitchable: frozenset[str]
     max_age_days: int
     today: date
 
 
-def pitch_rules(config: dict, today: date | None = None) -> PitchRules:
-    return PitchRules(
-        pitchable=frozenset(config["signals"]["pitchable"]),
-        max_age_days=config["signals"]["max_age_days"],
-        today=today or date.today(),
-    )
+def pitch_rules(config: dict, today: date) -> PitchRules:
+    return PitchRules(pitchable=frozenset(config["signals"]["pitchable"]),
+                      max_age_days=config["signals"]["max_age_days"], today=today)
 
 
-def _fresh(observed_at: str | None, rules: PitchRules) -> bool:
-    """Нечитаемая дата считается свежей: сигнал теряется молча только когда мы
-    точно знаем, что он стар."""
-    if not observed_at:
-        return True
-    try:
-        observed = date.fromisoformat(observed_at[:10])
-    except ValueError:
-        return True
-    return (rules.today - observed).days <= rules.max_age_days
+def _fresh(observed_at: datetime, rules: PitchRules) -> bool:
+    return (rules.today - observed_at.date()).days <= rules.max_age_days
 
 
-def candidates(db, rules: PitchRules, limit: int | None = None,
-               skip: frozenset[str] = frozenset()) -> list[dict]:
-    """Лиды по убыванию intent, у которых есть номер и нет отказа.
+def seed(lead: research.Lead | research.CompanyResearch, rules: PitchRules) -> dict:
+    """Return the thread's seed: the dossier, its fresh hooks and fresh pitchable signals.
 
-    limit=None — без потолка: вызывающая сторона сама фильтрует список (например,
-    по «уже есть тред») и не может заранее знать, сколько строк из начала
-    ранжированного списка отсеется её фильтром.
-
-    skip — её же фильтр, применённый здесь, а не после. Сигналы читаются
-    отдельным запросом на компанию, и без него отбор десяти свежих лидов
-    означал бы такой запрос на каждую из тысячи уже отработанных.
+    The seed freezes in threads.seed and feeds every later move of the thread,
+    so an observation too old to name never gets into it.
     """
-    suppressed = suppression_handles(db)
-    channels = channels_by_company(db)
+    dossier = lead.dossier
+    return {
+        "name": lead.name,
+        "city": lead.city,
+        "dossier": {
+            "summary": dossier.summary,
+            "decision_maker": dossier.decision_maker_hint,
+            "hooks": [hook.model_dump(mode="json") for hook in dossier.hooks
+                      if _fresh(hook.observed_at, rules)],
+            "pains": [pain.model_dump(mode="json") for pain in dossier.pains],
+            "approach": dossier.approach,
+        },
+        "signals": [{"type": part.signal.value, "quote": part.quote, "url": part.url,
+                     "observed_at": part.observed_at.isoformat()}
+                    for part in lead.breakdown
+                    if part.signal in rules.pitchable and _fresh(part.observed_at, rules)],
+    }
+
+
+def candidates(db: sqlite3.Connection, rules: PitchRules, now: datetime,
+               limit: int | None = None, skip: frozenset[str] = frozenset(),
+               skip_companies: frozenset[str] = frozenset()) -> list[dict]:
+    """Return new leads with something fresh to write about, the highest score first.
+
+    skip holds thread ids, skip_companies the companies that already have a
+    thread: a company keeps its thread when a new branch gives it another
+    channel. Two companies may share a number; the first one takes it. All of it
+    is applied before limit, so a taken top never hides a fresh lead further down.
+    """
     found = []
-    for (company_id, name, city, summary, decision_maker, hooks, pains, approach,
-         sources) in db.execute(CANDIDATES + WITH_INTENT):
+    taken = set(skip)
+    for lead in research.leads(db, now):
         if limit is not None and len(found) == limit:
             break
-        channel = best_channel(channels.get(company_id, []), suppressed)
-        if not channel or channel[1] in skip:
+        if lead.channel.handle in taken or lead.company_id in skip_companies:
             continue
-        found.append({
-            "company_id": company_id,
-            "thread_id": channel[1],
-            "channel_kind": channel[0],
-            "seed": {
-                "name": name,
-                "city": city,
-                "dossier": {
-                    "summary": summary,
-                    "decision_maker": decision_maker,
-                    "hooks": json.loads(hooks or "[]"),
-                    "pains": json.loads(pains or "[]"),
-                    "approach": approach,
-                    "sources": json.loads(sources or "[]"),
-                },
-                "signals": signals_of(db, company_id, rules),
-            },
-        })
+        lead_seed = seed(lead, rules)
+        # Nothing fresh to name: the model would say stop, and the thread it
+        # opened would keep the company out of every next run.
+        if not lead_seed["dossier"]["hooks"] and not lead_seed["signals"]:
+            continue
+        taken.add(lead.channel.handle)
+        found.append({"company_id": lead.company_id, "thread_id": lead.channel.handle,
+                      "channel_kind": lead.channel.kind, "seed": lead_seed})
     return found
 
 
-def thread_id_of(db, company_id):
-    """Канал одной компании — карточке в вебе остальные восемьсот не нужны."""
-    suppressed = suppression_handles(db)
-    channels = channels_by_company(db, company_id)
-    return best_channel(channels.get(company_id, []), suppressed)
+def cards(db: sqlite3.Connection, company_ids: list[str], now: datetime) -> dict[str, dict]:
+    """Return the name, city and score of each company research knows, by its id.
 
-
-def company_names(db):
-    """Имена компаний для инбокса: тред знает company_id, человек — нет."""
-    rows = db.execute(
-        "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm)"
-        " FROM companies c LEFT JOIN company_links l ON l.company_id = c.company_id"
-        " AND l.rule = 'self' LEFT JOIN orgs o ON o.branch_id = l.branch_id"
-    )
-    return dict(rows)
-
-
-def cards_of(db, company_ids):
-    """Имя, город и скор компаний пачкой — одним запросом с IN. Список холодных
-    черновиков сортируется по скору, и спрашивать базу на каждый черновик
-    отдельно значило бы двадцать запросов вместо одного."""
-    if not company_ids:
-        return {}
-    marks = ",".join("?" * len(company_ids))
-    rows = db.execute(
-        "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm), c.city,"
-        "       s.intent_score"
-        " FROM companies c"
-        " LEFT JOIN company_links l ON l.company_id = c.company_id AND l.rule = 'self'"
-        " LEFT JOIN orgs o ON o.branch_id = l.branch_id"
-        " LEFT JOIN scores s USING (company_id)"
-        f" WHERE c.company_id IN ({marks})",
-        tuple(company_ids),
-    )
-    return {
-        company_id: {"company_name": name, "city": city, "intent_score": intent_score}
-        for company_id, name, city, intent_score in rows
-    }
-
-
-def seed_of(db, company_id, rules: PitchRules):
-    """Контекст лида для затравки треда. None, если компания исчезла из базы.
-
-    rules обязателен и дефолта не имеет намеренно. Со значением по умолчанию
-    забытый аргумент означал бы «отдать все сигналы» — то есть тихо вернуть
-    поведение до фильтра, причём навсегда: seed замерзает в threads.seed, и
-    каждый следующий ход треда кормил бы модель непригодными поводами.
+    A thread outlives the lead it was opened for (a refusal, a new dossier), so
+    any company is read, not just a lead; an id research does not know is left out.
     """
-    row = db.execute(CANDIDATES + ONE_COMPANY, (company_id,)).fetchone()
-    if not row:
-        return None
-    _, name, city, summary, decision_maker, hooks, pains, approach, sources = row
-    signals = signals_of(db, company_id, rules)
-    return {
-        "name": name, "city": city,
-        "dossier": {
-            "summary": summary,
-            "decision_maker": decision_maker,
-            "hooks": json.loads(hooks or "[]"),
-            "pains": json.loads(pains or "[]"),
-            "approach": approach,
-            "sources": json.loads(sources or "[]"),
-        },
-        "signals": signals,
-    }
-
-
-def signals_of(db, company_id: str, rules: PitchRules | None = None) -> list[dict]:
-    """Поводы для письма: только pitchable-типы, только с цитатой, только свежие.
-
-    Сигнал без цитаты — не наблюдение, а догадка: процитировать его в письме
-    нечем, а письмо без цитаты и есть тот шаблон, ради отсутствия которого
-    написана система 2.
-    """
-    rows = db.execute(
-        "SELECT type, quote, url, observed_at FROM signals WHERE company_id = ?"
-        " ORDER BY weight DESC, observed_at DESC, type",
-        (company_id,),
-    )
-    if rules is None:
-        return [
-            {"type": kind, "quote": quote, "url": url, "observed_at": observed_at}
-            for kind, quote, url, observed_at in rows
-        ]
-    return [
-        {"type": kind, "quote": quote, "url": url, "observed_at": observed_at}
-        for kind, quote, url, observed_at in rows
-        if kind in rules.pitchable and quote and _fresh(observed_at, rules)
-    ]
-
-
-def channels_by_company(db, company_id=None):
-    narrowing = " WHERE l.company_id = ?" if company_id else ""
-    arguments = (company_id,) if company_id else ()
-    rows = db.execute(
-        "SELECT DISTINCT l.company_id, k.kind, k.handle FROM contacts k"
-        " JOIN company_links l USING (branch_id)" + narrowing +
-        " ORDER BY l.company_id, k.kind, k.handle",
-        arguments,
-    )
-    grouped = {}
-    for company, kind, handle in rows:
-        grouped.setdefault(company, []).append((kind, dialable(handle)))
-    return grouped
-
-
-def dialable(handle):
-    """+7XXXXXXXXXX из чего угодно: 2GIS отдаёт WhatsApp ссылкой wa.me с зашитым
-    чужим приветствием, а thread_id обязан быть одинаков для ссылки и для номера
-    — иначе один и тот же человек получит два независимых треда."""
-    digits = re.sub(r"\D", "", (handle or "").split("?")[0])
-    return f"+{digits}" if len(digits) == 11 else handle
-
-
-def best_channel(channels, suppressed):
-    for kind in CHANNEL_PRIORITY:
-        for channel_kind, handle in channels:
-            # Refusals are kept in canonical form, contacts in the 2GIS spelling.
-            if channel_kind != kind or refusals.canonical(handle) in suppressed:
-                continue
-            if len(re.sub(r"\D", "", handle)) < MIN_PHONE_DIGITS:
-                continue
-            return kind, handle
-    return None
-
-
-
-def suppression_handles(db):
-    return {row[0] for row in db.execute("SELECT handle FROM state.suppression")}
+    # ponytail: one research.company per thread (a few queries each) — fine for
+    # hundreds of threads; a batch read in research.public when the inbox grows.
+    found = {}
+    for company_id in dict.fromkeys(company_ids):
+        try:
+            card = research.company(db, company_id, now)
+        except research.CompanyNotFoundError:
+            continue
+        found[company_id] = {"company_name": card.name, "city": card.city, "score": card.score}
+    return found

@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 import clock
 import config
 from collector.api import app
+from backup import public as backup
 from research import dependencies
 from research.service import ResearchService
 
@@ -31,8 +32,29 @@ def model(world):
     app.dependency_overrides.pop(dependencies.get_model)
 
 
+class FakeBackup:
+    """The process's backup service as the batch sees it: counts runs, may fail."""
+
+    def __init__(self):
+        self.runs = []
+        self.error = None
+
+    def run(self, now):
+        self.runs.append(now)
+        if self.error:
+            raise self.error
+
+
 @pytest.fixture
-def client(state, db, network, model, monkeypatch):
+def backups():
+    fake = FakeBackup()
+    app.dependency_overrides[backup.get_backup] = lambda: fake
+    yield fake
+    app.dependency_overrides.pop(backup.get_backup)
+
+
+@pytest.fixture
+def client(state, db, network, model, backups, monkeypatch):
     monkeypatch.setattr(clock, "now", lambda: NOW)
     return TestClient(app)
 
@@ -124,7 +146,8 @@ def test_settings_out_of_bounds_are_422(client, body):
     assert client.put("/api/research/settings", json=body).status_code == 422
 
 
-def test_without_a_model_key_a_batch_does_not_start(state, db, network, monkeypatch, company_a):
+def test_without_a_model_key_a_batch_does_not_start(state, db, network, backups, monkeypatch,
+                                                   company_a):
     monkeypatch.setattr(config.settings, "openrouter_api_key", None)
     client = TestClient(app)
 
@@ -143,3 +166,46 @@ def test_research_again_of_a_refused_company_is_409(client, company_a, db):
 
     assert response.status_code == 409
     assert response.json()["code"] == "errors.companyRefused"
+
+
+def test_after_a_batch_and_a_batch_of_one_the_backup_runs_once(client, company_a, backups):
+    client.post("/api/research/batches")
+    assert len(backups.runs) == 1
+
+    client.post("/api/research/companies/a")
+
+    assert len(backups.runs) == 2
+
+
+def test_a_failing_backup_leaves_the_batch_as_it_ended(client, company_a, backups):
+    from backup.exceptions import BackupFailedError
+    backups.error = BackupFailedError("бэкап не записан")
+
+    assert client.post("/api/research/batches").status_code == 202
+
+    assert client.get("/api/research/batches/current").json()["status"] == "done"
+    assert len(client.get("/api/research/leads").json()) == 1
+
+
+def test_a_stopped_batch_is_backed_up(state, db, network, model, company_a):
+    service = ResearchService(db)
+    batch_id = service.start(NOW)
+    service.stop()
+    fake = FakeBackup()
+
+    dependencies.run_in_background(state, network, model, batch_id, lambda: NOW, fake)
+
+    assert service.batch(batch_id).status == "stopped"
+    assert len(fake.runs) == 1
+
+
+def test_a_broken_batch_is_backed_up_and_still_raises(state, db, network, model, monkeypatch):
+    def broken(*args):
+        raise RuntimeError("batch broke")
+    monkeypatch.setattr(ResearchService, "run", broken)
+    fake = FakeBackup()
+
+    with pytest.raises(RuntimeError):
+        dependencies.run_in_background(state, network, model, 1, lambda: NOW, fake)
+
+    assert len(fake.runs) == 1

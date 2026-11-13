@@ -5,6 +5,7 @@
 существовании collector'а.
 """
 
+import clock
 import paths
 from config import settings
 from writer.services import agent, config, offers, stages
@@ -18,12 +19,14 @@ CONFIG = config.load()
 def open_new_threads(ctx):
     require_api_key()
     limit = CONFIG["llm"]["top_n"]
-    leads = leads_source.connect(CONFIG["leads_db"])
+    now = clock.now()
+    leads = leads_source.connect()
     threads = thread_store.connect(paths.state_db())
     try:
-        rules = leads_source.pitch_rules(CONFIG)
-        fresh = leads_source.candidates(leads, rules, limit,
-                                        skip=thread_store.open_thread_ids(threads))
+        rules = leads_source.pitch_rules(CONFIG, now.date())
+        fresh = leads_source.candidates(
+            leads, rules, now, limit, skip=thread_store.open_thread_ids(threads),
+            skip_companies=thread_store.threaded_company_ids(threads))
         ctx.log(f"писем: {len(fresh)}, модель {CONFIG['llm']['model']}")
         llm = agent.model(CONFIG)
         for number, lead in enumerate(fresh, 1):

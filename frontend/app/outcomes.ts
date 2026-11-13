@@ -67,3 +67,44 @@ export function threadStatus(status: string | null | undefined): Outcome {
 export function tickOutcome(outcome: string): Outcome {
   return TICK_OUTCOME[outcome] ?? unknown(outcome);
 }
+
+/** Статус партии исследования: `research.schemas.BatchStatus`. Проверки
+ *  расхождения с бэкендом у словарей research нет — новый статус покажется
+ *  сырым словом (`unknown`). */
+const BATCH_STATUS: Record<string, Outcome> = {
+  collecting: { label: "собирает сегменты", tone: "ok" },
+  researching: { label: "исследует компании", tone: "ok" },
+  done: { label: "готова", tone: "idle" },
+  stopped: { label: "остановлена", tone: "attention" },
+  interrupted: { label: "прервана перезапуском", tone: "attention" },
+};
+
+/** Статус компании в партии: `research.schemas.ResearchStatus`. */
+const RESEARCH_STATUS: Record<string, Outcome> = {
+  pending: { label: "ждёт", tone: "idle" },
+  researching: { label: "исследуется", tone: "ok" },
+  done: { label: "готово", tone: "ok" },
+  failed: { label: "неудача", tone: "stop" },
+};
+
+export function batchStatus(status: string): Outcome {
+  return BATCH_STATUS[status] ?? unknown(status);
+}
+
+export function researchStatus(status: string): Outcome {
+  return RESEARCH_STATUS[status] ?? unknown(status);
+}
+
+/** Дата наблюдения или попытки — в часовом поясе оператора (Asia/Almaty). */
+const DAY = new Intl.DateTimeFormat("ru", { day: "numeric", month: "short", year: "numeric",
+  timeZone: "Asia/Almaty" });
+const MOMENT = new Intl.DateTimeFormat("ru", { day: "numeric", month: "short", hour: "2-digit",
+  minute: "2-digit", timeZone: "Asia/Almaty" });
+
+export function day(iso: string): string {
+  return DAY.format(new Date(iso));
+}
+
+export function moment(iso: string | null): string {
+  return iso ? MOMENT.format(new Date(iso)) : "—";
+}

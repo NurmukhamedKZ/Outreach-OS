@@ -5,32 +5,21 @@ from types import SimpleNamespace
 
 import logctx
 from writer.routes import threads as routes
+from writer.tests.research_leads import add_lead
 
 
-def test_make_draft_tags_logs_with_company_id(monkeypatch):
+def test_make_draft_tags_logs_with_company_id(db, monkeypatch):
+    add_lead(db, "c7", [("whatsapp", "+77010000007")])
     monkeypatch.setattr(routes, "require_api_key", lambda: None)
-    monkeypatch.setattr(
-        routes, "open_stores",
-        lambda: (SimpleNamespace(close=lambda: None), SimpleNamespace(close=lambda: None)),
-    )
-    monkeypatch.setattr(routes, "channel_of", lambda leads, company_id: ("whatsapp", "t7"))
-    monkeypatch.setattr(routes.thread_store, "thread", lambda db, thread_id: {"seed": {}})
-    monkeypatch.setattr(routes.thread_store, "history", lambda db, thread_id: [])
-    monkeypatch.setattr(routes.thread_store, "add_draft", lambda *a, **kw: None)
-    monkeypatch.setattr(routes, "_writer_move", lambda kind, threads, thread, history: None)
-    monkeypatch.setattr(routes.agent, "model", lambda config: "llm-stub")
-    monkeypatch.setattr(routes, "state", lambda leads, threads, company_id: {"thread_id": "t7"})
-
     seen_entity = []
 
-    def fake_draft(*a, **kw):
+    def fake_move(*a, **kw):
         seen_entity.append(logctx.current_entity())
         return SimpleNamespace(
             draft=SimpleNamespace(stop=False, text="hi", angle="pain"),
             prompt=[], model="")
 
-    monkeypatch.setattr(routes.agent, "draft", fake_draft)
-    monkeypatch.setattr(routes, "_writer_move", fake_draft)
+    monkeypatch.setattr(routes, "_writer_move", fake_move)
 
     routes.make_draft("c7", routes.DraftRequest(kind="first"))
 

@@ -18,9 +18,11 @@ from functools import lru_cache
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+import clock
 import logctx
 import paths
 from config import settings
+from research import public as research
 from writer.services import agent, config, followup, offers, seller, stages
 from writer.db import leads_source, thread_store
 
@@ -49,13 +51,15 @@ class TextRequest(BaseModel):
 
 @router.get("")
 def inbox():
-    """Инбокс системы 2: треды с именами компаний из базы collector'а."""
+    """Инбокс системы 2: треды с именами компаний из research."""
     leads, threads = open_stores()
     try:
-        names = leads_source.company_names(leads)
+        rows = thread_store.inbox(threads)
+        cards = leads_source.cards(leads, [row["company_id"] for row in rows], clock.now())
         return {"threads": [
-            {**row, "company_name": names.get(row["company_id"], row["company_id"])}
-            for row in thread_store.inbox(threads)
+            {**row, "company_name": cards.get(row["company_id"], {}).get(
+                "company_name", row["company_id"])}
+            for row in rows
         ]}
     finally:
         leads.close()
@@ -65,13 +69,15 @@ def inbox():
 @router.get("/drafts")
 def cold_drafts():
     """Очередь проверки первых писем. Сортировка по скору: проверять выгоднее
-    с самых сильных лидов, а скор знает база системы 1."""
+    с самых сильных лидов, а оценку знает research. Компания, которой research
+    не знает, идёт с нулевой оценкой и своим id вместо имени."""
     leads, threads = open_stores()
     try:
         drafts = thread_store.cold_drafts(threads)
-        cards = leads_source.cards_of(leads, [row["company_id"] for row in drafts])
-        merged = [{**row, **cards.get(row["company_id"], {})} for row in drafts]
-        merged.sort(key=lambda row: row.get("intent_score") or 0, reverse=True)
+        cards = leads_source.cards(leads, [row["company_id"] for row in drafts], clock.now())
+        merged = [{**row, "company_name": row["company_id"], "city": None, "score": 0.0,
+                   **cards.get(row["company_id"], {})} for row in drafts]
+        merged.sort(key=lambda row: row["score"], reverse=True)
         return {"drafts": merged}
     finally:
         leads.close()
@@ -113,15 +119,21 @@ def make_draft(company_id: str, request: DraftRequest):
     with logctx.entity(company_id):
         leads, threads = open_stores()
         try:
-            channel = channel_of(leads, company_id)
+            now = clock.now()
+            card = research.company(leads, company_id, now)
+            channel = writable(card)
             thread = thread_store.thread(threads, channel[1])
             if not thread:
-                seed = leads_source.seed_of(leads, company_id,
-                                            leads_source.pitch_rules(CONFIG))
-                if not seed:
-                    raise HTTPException(404, f"компании {company_id} нет в базе лидов")
-                thread_store.open_thread(threads, channel[1], company_id, seed)
+                if not card.lead:
+                    raise HTTPException(409, "компания не лид: нет досье с подтверждённой"
+                                             " зацепкой — исследуйте её заново")
+                seed = leads_source.seed(card, leads_source.pitch_rules(CONFIG, now.date()))
+                if not thread_store.open_thread(threads, channel[1], company_id, seed):
+                    raise HTTPException(409, "тред уже открывается — повторите через минуту")
                 thread = thread_store.thread(threads, channel[1])
+            elif thread["company_id"] != company_id:
+                # Companies sharing a contact stay apart: this thread's seed is the other's.
+                raise HTTPException(409, "этот номер уже в переписке с другой компанией")
 
             history = thread_store.history(threads, channel[1])
             proposal = (_seller_move(threads, thread, history)
@@ -188,17 +200,20 @@ def require_api_key():
 
 
 def open_stores():
-    return (leads_source.connect(CONFIG["leads_db"]),
-            thread_store.connect(paths.state_db()))
+    return leads_source.connect(), thread_store.connect(paths.state_db())
 
 
 def channel_of(leads, company_id):
     """Канал компании, он же thread_id. Отказ проверяется здесь — то есть перед
-    каждым ходом, а не только при отборе (F21)."""
-    channel = leads_source.thread_id_of(leads, company_id)
-    if not channel:
+    каждым ходом, а не только при отборе (F21). Компании нет — 404 от research."""
+    return writable(research.company(leads, company_id, clock.now()))
+
+
+def writable(card: research.CompanyResearch) -> tuple[str, str]:
+    """(kind, handle) of the company's channel; 409 when there is none or it is refused."""
+    if card.channel is None or card.refused:
         raise HTTPException(409, "писать некуда: нет рабочего номера или стоит отказ")
-    return channel
+    return card.channel.kind, card.channel.handle
 
 
 @lru_cache
@@ -216,7 +231,7 @@ def _writer_move(kind, threads, thread, history):
     """
     task = agent.FIRST if kind == "first" else followup.task(threads, thread)
     variant = offers.variant_of(thread["thread_id"], CONFIG)
-    rules = leads_source.pitch_rules(CONFIG)
+    rules = leads_source.pitch_rules(CONFIG, clock.now().date())
     return agent.draft(agent.model(CONFIG), thread["seed"], history, task,
                        session_id=thread["thread_id"], name=f"writer.{kind}",
                        offer=variant["text"],
@@ -253,7 +268,9 @@ def state(leads, threads, company_id):
 def demo():
     """Роутер собирается, конфиг читается, базы открываются — без сети и модели."""
     leads, threads = open_stores()
-    assert leads_source.candidates(leads, leads_source.pitch_rules(CONFIG), 1) is not None
+    now = clock.now()
+    assert leads_source.candidates(leads, leads_source.pitch_rules(CONFIG, now.date()), now,
+                                   1) is not None
     assert thread_store.thread(threads, "нет такого треда") is None
     assert {route.path for route in router.routes} == {
         "/api/threads",
