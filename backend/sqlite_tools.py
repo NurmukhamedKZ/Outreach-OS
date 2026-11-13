@@ -19,7 +19,12 @@ def has_column(db: sqlite3.Connection, table: str, column: str) -> bool:
 
 
 def connect_readonly(path: Path) -> sqlite3.Connection:
-    """База на чтение: модуль, который только показывает, писать в неё не может."""
-    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    """База на чтение: модуль, который только показывает, писать в неё не может.
+
+    check_same_thread выключен по той же причине, что в core.db.connect: FastAPI
+    закрывает синхронную зависимость в другом потоке пула, а соединение всё
+    равно служит одному запросу за раз.
+    """
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
     db.row_factory = sqlite3.Row
     return db

@@ -735,3 +735,25 @@ def test_an_observation_is_fresh_up_to_max_age_days_and_not_a_day_more(db, clien
     client.post("/api/threads/outreach")
 
     assert threads(db) == [("edge", "+77010000001")]
+
+
+def test_the_read_only_research_connection_closes_in_another_thread(state):
+    """FastAPI closes a sync dependency in a threadpool thread of its choice:
+    a connection bound to its thread made the request a 500 on cleanup."""
+    import threading
+
+    leads = dependencies.get_leads()
+    next(leads)
+    failures = []
+
+    def close():
+        try:
+            next(leads, None)
+        except sqlite3.ProgrammingError as error:
+            failures.append(error)
+
+    thread = threading.Thread(target=close)
+    thread.start()
+    thread.join()
+
+    assert failures == []
