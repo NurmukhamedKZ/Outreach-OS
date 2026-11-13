@@ -57,7 +57,6 @@ def configure():
                                               backupCount=3, encoding="utf-8")
         network_handler.setFormatter(fmt)
         scrapling_logger.addHandler(network_handler)
-        logging.getLogger("collector.fetch").addHandler(network_handler)
 
     # Scrapling пишет INFO на каждый запрос, включая штатные 404 (у листовой
     # рубрики нет страницы подрубрик) — WARNING отсекает это, оставляя только
@@ -65,6 +64,3 @@ def configure():
     # без этого он утёк бы в root через обычное наследование логгеров.
     scrapling_logger.setLevel(logging.WARNING)
     scrapling_logger.propagate = False
-    fetch_logger = logging.getLogger("collector.fetch")
-    fetch_logger.setLevel(logging.INFO)
-    fetch_logger.propagate = False

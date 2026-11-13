@@ -1,15 +1,11 @@
-"""HTTP над derived.db для веб-интерфейса. Читает то же, что выгружает export.
+"""Сборщик приложения: модули, швы между системами и демоны.
 
-Здесь только сборка приложения. Эндпоинты — в routes/, отбор лидов и отказы —
-в services/, запросы к базе — в db/lead.py рядом со схемой.
-
-В derived.db пишет только rebuild (прогонами), в state.db — джобы, отказы и
-переписка. Единственное, что возвращается в систему от человека, — отказ, и он
-уходит в модуль refusals (невосстановимый слой), так что пересборка его не
-затрагивает.
+Здесь только сборка. Эндпоинты модулей — в их api.py, старые ручки дашборда —
+в routes/ (активность, аналитика, задачи, счётчики, джобы, SSE) до #7.
 
 Живость экрана — тоже часть API: при старте поднимается воркер джобов
-(services/jobs.py), а /api/events раздаёт прогресс и счётчики по SSE.
+(services/jobs.py, одна операция — «Черновики топ-N»), а /api/events раздаёт
+прогресс и счётчики по SSE.
 
 Запуск: uv run uvicorn api:app --port 8787 --reload
 """
@@ -32,11 +28,10 @@ from backup import api as backup_api, public as backup
 from config import settings
 from core import db as core_db
 from core.errors import DomainError, domain_error_handler
-from collector.routes import (activity as activity_routes, analytics as analytics_routes, events, jobs, leads,
-                              operations, pipeline, runs, stats, tasks as tasks_routes)
+from collector.routes import (activity as activity_routes, analytics as analytics_routes, events, jobs,
+                              pipeline, stats, tasks as tasks_routes)
 from collector.services import events as bus
 from collector.services import jobs as queue
-from collector.services import store
 from collector.services.pipeline import OPERATIONS, PIPELINES
 from companies import api as companies_api, public as companies
 from core.pages import ScraplingPages
@@ -71,31 +66,14 @@ sender_refusal.use(_write_refusal)
 # Тот же шов, что подключает отказ: где лежит state.db, знает сборщик
 # приложения, а журнал — модуль верхнего уровня — не знает ни одной из систем.
 activity.use(paths.state_db())
-analytics.use(paths.state_db(), store.DERIVED)
-tasks.use(paths.state_db(), store.DERIVED)
+analytics.use(paths.state_db(), paths.PRODUCTION_STATE)
+tasks.use(paths.state_db(), paths.PRODUCTION_STATE)
 
 # next dev занимает следующий свободный порт, если 3000 занят чем-то другим
 # (в докере, например) — фиксированный список origins тогда молча ломает SSE
 # CORS-отказом без единого сообщения в интерфейсе. Регэксп покрывает любой порт.
 WEB_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
 WEB_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1):\d+$"
-
-
-class LegacyDatabaseError(RuntimeError):
-    """The pre-#9 database is still in collector/data/."""
-
-
-def refuse_legacy_database() -> None:
-    """Refuse to start while the pre-#9 database is in place.
-
-    It holds the refusals (F21): starting on a fresh database would let refused
-    companies back into the leads and the send queue without a single error.
-    """
-    if paths.LEGACY_STATE.exists():
-        raise LegacyDatabaseError(
-            f"{paths.LEGACY_STATE} is the database from before #9. Stop the app and move"
-            f" it: rm -f {paths.PRODUCTION_STATE}*; mv {paths.LEGACY_STATE}*"
-            f" {paths.DATA}/")
 
 
 def prepare_database(path: Path) -> None:
@@ -114,7 +92,6 @@ def prepare_database(path: Path) -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    refuse_legacy_database()
     prepare_database(paths.state_db())
     queue.fail_orphans()
     worker = asyncio.create_task(queue.worker_loop())
@@ -157,13 +134,10 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT"],
     allow_headers=["*"],
 )
-app.include_router(leads.router)
 app.include_router(activity_routes.router)
 app.include_router(analytics_routes.router)
 app.include_router(tasks_routes.router)
 app.include_router(pipeline.router)
-app.include_router(operations.router)
-app.include_router(runs.router)
 app.include_router(jobs.router)
 app.include_router(events.router)
 app.include_router(stats.router)

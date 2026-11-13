@@ -2,14 +2,14 @@
 
 Верхний уровень backend/, рядом с activity.py и config.py, по той же причине:
 данные лежат в трёх системах (threads/messages — система 2, outbox — система 3,
-рубрика и город — derived системы 1), и ни одна из них не имеет права знать
-две другие.
+рубрика и город — модуль companies), и ни одна из них не имеет права знать
+две другие. Сегмент компании спрашиваем у её фасада, а не своим SQL.
 
 Единица счёта — тред, а не сообщение: «412 отправленных сообщений» и «7
 согласившихся тредов» в одной воронке дали бы проценты, которые ничего не
 значат.
 
-Только чтение: обе базы открываются в режиме ro.
+Только чтение: базы открываются в режиме ro.
 """
 
 import sqlite3
@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import sqlite_tools
+from companies import public as companies
 
 STEPS = ("sent", "delivered", "replied", "dialog", "meeting_agreed", "meeting_held")
 
@@ -28,14 +29,15 @@ MIN_REPLIES_FOR_DIAGNOSIS = 10
 LOW_REPLY_RATE = 0.02
 
 _state: Path | None = None
-_leads: Path | None = None
+_companies: Path | None = None
 
 
-def use(state_db: Path | None, leads_db: Path | None = None) -> None:
+def use(state_db: Path | None, companies_db: Path | None = None) -> None:
     """Шов из collector/api.py, как activity.use(): модуль верхнего уровня не
-    ищет базы сам."""
-    global _state, _leads
-    _state, _leads = state_db, leads_db
+    ищет базы сам. companies_db — боевая база с компаниями (в песочнице треды
+    в базе прогона, а компании — в боевой); None — разреза по сегменту нет."""
+    global _state, _companies
+    _state, _companies = state_db, companies_db
 
 
 def report(days: int = 30) -> dict:
@@ -48,7 +50,7 @@ def report(days: int = 30) -> dict:
         # запись и создаёт её сам, а аналитика писать не имеет права.
         return _empty(days)
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
-    with closing(sqlite_tools.connect_readonly(_state, _leads)) as db:
+    with closing(sqlite_tools.connect_readonly(_state)) as db:
         if not sqlite_tools.has_table(db, "threads"):
             return _empty(days)
         rows = _funnel(db, since)
@@ -177,26 +179,31 @@ def _breakdown(db: sqlite3.Connection, since: str, column: str | None) -> list[d
 
 
 def _segments(db: sqlite3.Connection, since: str) -> list[dict]:
-    """Рубрика и город лида. Подпись рубрики остаётся идентификатором 2GIS:
-    таблицы имён рубрик в derived нет, а придумывать её ради заголовка колонки
-    дороже, чем прочитать id.
+    """Рубрика и город лида по именам, тредом по сегменту компании.
 
-    Пустой список, когда derived не приаттачен: аналитика системы 2 не обязана
-    падать оттого, что база системы 1 ещё не собрана.
+    Компания из нескольких сегментов считается в первом (решает companies),
+    так что сумма разреза не превышает sent. Пустой список без базы компаний:
+    аналитика переписки не обязана падать оттого, что компаний ещё нет.
     """
-    if _leads is None or not Path(_leads).exists():
+    if _companies is None or not Path(_companies).exists():
         return []
-    rows = db.execute(
-        "SELECT c.rubric_id || ' · ' || c.city AS key,"
-        "       count(DISTINCT t.thread_id) AS sent,"
-        f"      count(DISTINCT CASE WHEN {REPLIED} THEN t.thread_id END) AS replied,"
-        f"      count(DISTINCT CASE WHEN {_held(db)} THEN t.thread_id END) AS meetings"
-        + SENT_THREADS +
-        " JOIN leads.companies c ON c.company_id = t.company_id"
-        " GROUP BY key ORDER BY sent DESC",
-        (since,),
-    )
-    return [dict(row) for row in rows]
+    threads = db.execute(
+        "SELECT DISTINCT t.thread_id, t.company_id,"
+        f"      {REPLIED} AS replied, {_held(db)} AS held"
+        + SENT_THREADS, (since,)).fetchall()
+    with closing(sqlite_tools.connect_readonly(_companies)) as source:
+        labels = companies.segment_labels(source, {row["company_id"] for row in threads})
+    rows: dict[str, dict] = {}
+    for thread in threads:
+        if thread["company_id"] not in labels:
+            continue
+        row = rows.setdefault(labels[thread["company_id"]],
+                              {"key": labels[thread["company_id"]],
+                               "sent": 0, "replied": 0, "meetings": 0})
+        row["sent"] += 1
+        row["replied"] += bool(thread["replied"])
+        row["meetings"] += bool(thread["held"])
+    return sorted(rows.values(), key=lambda row: -row["sent"])
 
 
 def _edited_share(db: sqlite3.Connection, since: str) -> float:

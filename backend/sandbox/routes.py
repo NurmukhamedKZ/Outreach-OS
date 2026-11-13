@@ -82,7 +82,7 @@ async def list_leads() -> list[dict]:
 
 
 def _leads() -> list[dict]:
-    with closing(sqlite_tools.connect_readonly(paths.PRODUCTION_STATE, None)) as db:
+    with closing(sqlite_tools.connect_readonly(paths.PRODUCTION_STATE)) as db:
         return [lead.model_dump(mode="json") for lead in research.leads(db, clock.now())]
 
 
@@ -176,7 +176,7 @@ def _require_lead(company_id: str) -> None:
 
     The run writes to that company, and its id names the run's file.
     """
-    with closing(sqlite_tools.connect_readonly(paths.PRODUCTION_STATE, None)) as db:
+    with closing(sqlite_tools.connect_readonly(paths.PRODUCTION_STATE)) as db:
         try:
             card = research.company(db, company_id, clock.now())
         except research.CompanyNotFoundError:

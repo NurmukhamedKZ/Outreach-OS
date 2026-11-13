@@ -7,9 +7,7 @@
 перезагрузку страницы и перезапуск бэкенда, а идущая операция видна всем
 операторам сразу — по SSE и по GET /api/jobs.
 
-Один воркер — не недоделка, а ограничение системы 1: rebuild пересобирает
-derived прогоном, и параллельный сбор писал бы в ту же базу. Очередь при
-этом честная: поставить можно несколько, исполняются они по одной.
+Один воркер: операции исполняются по одной, поставить можно несколько.
 
 Джоба ≠ команда: у джобы есть шаги с именами операций, и фронт показывает
 «шаг 2 из 3: пересборка базы», а не хвост консоли. Сами операции —
@@ -26,11 +24,14 @@ import logging
 import time
 from contextlib import closing
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import activity
 import logctx
-from collector.services import events, store as engine
+import paths
+from collector.services import events
+from core import db as core_db
 from collector.services.pipeline import OPERATIONS, PIPELINES
 
 logger = logging.getLogger(__name__)
@@ -48,9 +49,20 @@ class _Cancelled(Exception):
     pass
 
 
+SCHEMA = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
+
+
+def state_schema():
+    """Старые таблицы state.db вне Alembic (jobs, threads, messages) — для того,
+    кто создаёт свою базу (песочница). Уходит в #7 вместе с очередью."""
+    return SCHEMA.read_text(encoding="utf-8")
+
+
 def connect():
-    """Соединение для джоб: state.jobs живёт в state.db, attached к derived."""
-    return engine.connect()
+    """Соединение для джоб: state.jobs живёт в state.db (боевой или прогона)."""
+    db = core_db.connect(paths.state_db())
+    db.executescript(state_schema())
+    return db
 
 
 def now():
@@ -105,7 +117,7 @@ def enqueue_steps(kind, title, names):
     одиночные операции сходятся здесь — логика постановки одна."""
     with closing(connect()) as db:
         cursor = db.execute(
-            "INSERT INTO state.jobs (kind, title, steps, status, created_at)"
+            "INSERT INTO jobs (kind, title, steps, status, created_at)"
             " VALUES (?, ?, ?, 'queued', ?)",
             (kind, title, json.dumps(plan_steps(names), ensure_ascii=False), now()),
         )
@@ -118,7 +130,7 @@ def enqueue_steps(kind, title, names):
 def job(job_id):
     with closing(connect()) as db:
         row = db.execute(
-            "SELECT * FROM state.jobs WHERE id = ?", (job_id,)
+            "SELECT * FROM jobs WHERE id = ?", (job_id,)
         ).fetchone()
     return as_job(row) if row else None
 
@@ -126,7 +138,7 @@ def job(job_id):
 def recent(limit=20):
     with closing(connect()) as db:
         rows = db.execute(
-            "SELECT * FROM state.jobs ORDER BY id DESC LIMIT ?", (limit,)
+            "SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
     return [as_job(row) for row in rows]
 
@@ -147,7 +159,7 @@ def tail(job_id, offset=0):
 def log_of(job_id):
     with closing(connect()) as db:
         return db.execute(
-            "SELECT log FROM state.jobs WHERE id = ?", (job_id,)
+            "SELECT log FROM jobs WHERE id = ?", (job_id,)
         ).fetchone()[0]
 
 
@@ -197,7 +209,7 @@ def _set_step(job_id, index, **fields):
     values = [json.dumps(value, ensure_ascii=False) for value in fields.values()]
     with closing(connect()) as db:
         db.execute(
-            f"UPDATE state.jobs SET steps = json_set(steps, {assignments}) WHERE id = ?",
+            f"UPDATE jobs SET steps = json_set(steps, {assignments}) WHERE id = ?",
             (*values, job_id),
         )
         db.commit()
@@ -229,12 +241,12 @@ async def run_pending():
 def _claim():
     with closing(connect()) as db:
         row = db.execute(
-            "SELECT id FROM state.jobs WHERE status = 'queued' ORDER BY id LIMIT 1"
+            "SELECT id FROM jobs WHERE status = 'queued' ORDER BY id LIMIT 1"
         ).fetchone()
         if not row:
             return None
         db.execute(
-            "UPDATE state.jobs SET status = 'running', started_at = ? WHERE id = ?",
+            "UPDATE jobs SET status = 'running', started_at = ? WHERE id = ?",
             (now(), row[0]),
         )
         db.commit()
@@ -245,7 +257,7 @@ def _raw_steps(job_id):
     """Сырая json-строка steps из state.jobs (не через as_job, который её разбирает)."""
     with closing(connect()) as db:
         return db.execute(
-            "SELECT steps FROM state.jobs WHERE id = ?", (job_id,)
+            "SELECT steps FROM jobs WHERE id = ?", (job_id,)
         ).fetchone()[0]
 
 
@@ -393,13 +405,13 @@ def _append_log(job_id, lines):
     chunk = "\n".join(lines)
     with closing(connect()) as db:
         written = db.execute(
-            "UPDATE state.jobs SET log = CASE WHEN log = '' THEN ? ELSE log || ? END"
+            "UPDATE jobs SET log = CASE WHEN log = '' THEN ? ELSE log || ? END"
             " WHERE id = ? AND length(log) < ?",
             (chunk, "\n" + chunk, job_id, LOG_LIMIT_CHARS),
         ).rowcount
         if not written:
             db.execute(
-                "UPDATE state.jobs SET log = log || ? WHERE id = ?"
+                "UPDATE jobs SET log = log || ? WHERE id = ?"
                 " AND length(log) >= ? AND log NOT LIKE ?",
                 (OVERFLOW_NOTE, job_id, LOG_LIMIT_CHARS, f"%{OVERFLOW_NOTE}"),
             )
@@ -412,7 +424,7 @@ def _update(job_id, **fields):
     assignments = ", ".join(f"{name} = ?" for name in fields)
     with closing(connect()) as db:
         db.execute(
-            f"UPDATE state.jobs SET {assignments} WHERE id = ?",
+            f"UPDATE jobs SET {assignments} WHERE id = ?",
             (*fields.values(), job_id),
         )
         db.commit()
@@ -471,7 +483,7 @@ def fail_orphans():
     ложь оператору. «queued» не трогаем: воркер продолжит их при старте."""
     with closing(connect()) as db:
         db.execute(
-            "UPDATE state.jobs SET status = 'failed', error = 'прерван перезапуском бэкенда',"
+            "UPDATE jobs SET status = 'failed', error = 'прерван перезапуском бэкенда',"
             " finished_at = ? WHERE status = 'running'",
             (now(),),
         )

@@ -1,54 +1,9 @@
-"""Веб отдаёт тот же отбор, что CSV, и отказ из state.refusals не течёт.
-
-У веба своя копия правил (services/leads.py) — проверка того, что она не
-разъехалась с правилами выдачи. F19/F21 не про формат, а про закон.
-"""
+"""Сборщик приложения: швы, старт и общие ручки дашборда."""
 
 import pytest
 
 import activity
-import collector.services.store as engine
 
-
-def _published_run(db):
-    db.execute("INSERT INTO runs (run_id, started_at) VALUES (1, '2026-08-01T00:00:00Z')")
-    db.execute("INSERT INTO companies_all (run_id, company_id, name_norm, city, domain)"
-               " VALUES (1, 'c1', 'Ромашка', 'almaty', 'romashka.kz')")
-    db.execute("INSERT INTO company_links_all (run_id, company_id, branch_id, rule, confidence)"
-               " VALUES (1, 'c1', 'b1', 'self', 1.0)")
-    db.execute("INSERT INTO orgs_all (run_id, branch_id, name, city, rubric_id)"
-               " VALUES (1, 'b1', 'Ромашка', 'almaty', '653')")
-    db.execute("INSERT INTO contacts_all (run_id, branch_id, kind, handle)"
-               " VALUES (1, 'b1', 'whatsapp', '+77010000001')")
-    db.execute("INSERT INTO scores_all (run_id, company_id, fit_score, intent_score, breakdown)"
-               " VALUES (1, 'c1', 5.0, 6.0, '[]')")
-    engine.activate_run(db, 1)
-
-
-def test_web_leads_share_rules_with_csv(stores):
-    """Веб-отбор и report/export живут по одним правилам: что в CSV, то в вебе.
-
-    Вместо сравнения с файлом (которого в тесте нет) проверяется сама пара
-    правил — канал обязателен и отказ режет лида.
-    """
-    from collector.routes import leads as web_leads
-    db = stores
-    _published_run(db)
-    web = web_leads.leads(limit=10)["leads"]
-    assert [lead["name"] for lead in web] == ["Ромашка"], web
-    assert web[0]["why_now"] or web[0]["intent_score"] > 0, "у лида нет обоснования"
-
-
-def test_refusal_does_not_leak_to_web(stores):
-    """F21: отказ из state.refusals не доходит до веб-выдачи."""
-    from collector.routes import leads as web_leads
-    db = stores
-    _published_run(db)
-    db.execute("INSERT INTO state.refusals (handle, reason, refused_at)"
-               " VALUES ('+77010000001', 'просил', '2026-08-10T00:00:00+00:00')")
-    db.commit()
-    web = web_leads.leads(limit=10)["leads"]
-    assert web == [], f"{len(web)} лидов из suppression в веб-выдаче (F21)"
 
 def test_the_refusal_seam_is_registered_on_import():
     """Единственное место, где система 3 узнаёт о системе 1. Незарегистрированный
@@ -76,7 +31,6 @@ def startup(tmp_path, monkeypatch):
     for daemon in ("monitor_numbers", "warm_numbers", "send_queue"):
         monkeypatch.setattr(api.sender, daemon, idle)
     monkeypatch.setattr(paths, "PRODUCTION_STATE", tmp_path / "data" / "state.db")
-    monkeypatch.setattr(paths, "LEGACY_STATE", tmp_path / "collector" / "state.db")
     return api
 
 
@@ -93,19 +47,6 @@ async def test_startup_prepares_the_database_before_the_first_request(startup, t
     with sqlite3.connect(path) as db:
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master")}
     assert {"operator_settings", "alembic_version", "threads", "messages"} <= tables
-
-
-async def test_startup_refuses_while_the_old_database_is_in_place(startup, tmp_path):
-    """Refusals (F21) live in the old file: starting on a fresh one would hide them."""
-    legacy = tmp_path / "collector" / "state.db"
-    legacy.parent.mkdir()
-    legacy.write_bytes(b"")
-
-    with pytest.raises(startup.LegacyDatabaseError) as error:
-        async with startup.lifespan(startup.app):
-            pass
-    assert "mv" in str(error.value)
-    assert not (tmp_path / "data" / "state.db").exists()
 
 
 def test_domain_errors_reach_the_client_as_code_and_detail():

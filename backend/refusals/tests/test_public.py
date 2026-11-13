@@ -129,3 +129,12 @@ def test_a_repeat_logs_nothing(db, caplog):
         refusals.record(db, "+77010000001", "ещё раз", NOW)
 
     assert not any("refusal" in record.getMessage() for record in caplog.records)
+
+
+def test_the_count_is_the_number_of_refused_handles(db):
+    assert refusals.count(db) == 0
+    refusals.record(db, "+77010000001", "просил не писать", NOW)
+    refusals.record(db, "8 701 000 00 01", "повтор", NOW)
+    refusals.record(db, "info@kofe.kz", "по почте", NOW)
+
+    assert refusals.count(db) == 2

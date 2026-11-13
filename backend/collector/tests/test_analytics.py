@@ -132,7 +132,7 @@ def test_report_survives_a_database_without_foreign_layers(tmp_path):
     db = sqlite3.connect(path)
     schema = (pathlib.Path(__file__).resolve().parent.parent / "db" / "schema.sql"
               ).read_text(encoding="utf-8")
-    db.executescript(schema[schema.index("-- STATE --"):schema.index("-- DERIVED --")])
+    db.executescript(schema)
     db.execute("INSERT INTO threads (thread_id, company_id, seed, created_at)"
                " VALUES ('+77010000001', 'c_ok', '{}', '2026-01-01')")
     db.commit()
@@ -165,3 +165,26 @@ def test_a_thread_lands_in_one_row_per_breakdown(state):
     assert sum(row["sent"] for row in report["by_angle"]) == sent
     assert [row["key"] for row in report["by_angle"]] == ["site_no_pricing"], \
         "разрез считает не первое письмо треда"
+
+
+def test_the_segment_breakdown_names_the_rubric_and_city_of_the_company(tmp_path):
+    """#17: threads point at companies (2gis:…), and the segment comes from them."""
+    from contextlib import closing
+
+    from core import db as core_db
+    from writer.tests.research_leads import add_lead, migrate
+
+    path = tmp_path / "state.db"
+    migrate(path)
+    with closing(core_db.connect(path)) as db:
+        add_lead(db, "2gis:1", [("whatsapp", "+77010000001")])
+        thread_store.open_thread(db, "+77010000001", "2gis:1", {"name": "Компания"})
+        message_id = thread_store.add_draft(db, "+77010000001", "текст", "reviews_missed_lead")
+        db.execute("UPDATE messages SET sent_text = 'текст', sent_at = ? WHERE message_id = ?",
+                   (thread_store.now(), message_id))
+        thread_store.add_incoming(db, "+77010000001", "интересно")
+        db.commit()
+    analytics.use(path, path)
+
+    assert analytics.report()["by_segment"] == [
+        {"key": "Бухгалтерские услуги · Алматы", "sent": 1, "replied": 1, "meetings": 0}]

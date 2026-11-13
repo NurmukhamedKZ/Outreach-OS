@@ -1,10 +1,7 @@
-"""sender and the old collector keep their old paths until #7 and #13; writer reads research."""
+"""sender keeps its old path (the suppression view) until #7; writer reads research."""
 
-import sqlite3
-from contextlib import closing
 from datetime import UTC, datetime
 
-from collector.db import lead
 from refusals import public as refusals
 from sender.services import worker
 
@@ -16,14 +13,6 @@ def test_sender_sees_a_refusal_written_through_the_facade(db):
 
     assert worker._suppressed(db, "+77010000001") is True
     assert worker._suppressed(db, "+77019999999") is False
-
-
-def test_the_old_collector_sees_it_through_the_attached_database(db, state):
-    refusals.record(db, "info@kofe.kz", "просил по почте", NOW)
-
-    with closing(sqlite3.connect(":memory:")) as derived:
-        derived.execute("ATTACH DATABASE ? AS state", (str(state),))
-        assert lead.suppression_handles(derived) == {"info@kofe.kz"}
 
 
 def test_the_sender_seam_writes_through_the_facade(db, monkeypatch):

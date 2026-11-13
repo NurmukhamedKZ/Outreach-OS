@@ -117,3 +117,23 @@ def test_the_site_is_the_company_domain_not_a_social_network(db):
 
     assert public.site_domain(found["a"]) == "a.kz"
     assert public.site_domain(found["social"]) is None
+
+
+def test_counts_are_every_company_and_those_with_a_channel(db):
+    company(db, "wa", [("whatsapp", "+77010000001")])
+    company(db, "mobile", [("phone", "+77010000002")])
+    company(db, "city", [("phone", "+77272960782")], segment=Segment("astana", "339"))
+
+    assert public.counts(db).model_dump() == {"companies": 3, "reachable": 2}
+
+
+def test_a_company_is_labelled_by_the_names_of_its_first_segment(db):
+    company(db, "a", [("whatsapp", "+77010000001")], segment=Segment("almaty", "653"))
+    company(db, "b", [("whatsapp", "+77010000002")], segment=Segment("astana", "339"))
+    CompanyRepository(db).link_segment("a-0", Segment("astana", "339"))
+    db.commit()
+
+    labels = public.segment_labels(db, ["a", "b", "nobody"])
+
+    assert labels == {"a": "Бухгалтерские услуги · Алматы",
+                      "b": "Аудиторские услуги · Астана"}

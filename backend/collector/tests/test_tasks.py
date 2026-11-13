@@ -21,7 +21,7 @@ def db(tmp_path):
     owner = thread_store.connect(path)   # threads и messages
     owner.close()
     connection = migrate.connect(path)   # numbers, outbox, колонки status/status_reason
-    tasks.use(path)                      # без derived.db: имя компании = company_id
+    tasks.use(path)                      # без базы компаний: имя компании = company_id
     yield connection
     connection.close()
     tasks.use(None)
@@ -148,4 +148,28 @@ def test_an_overdue_backup_shows_even_on_a_clean_install(tmp_path):
 
     assert [row["kind"] for row in tasks.tasks(backup_why="бэкап выключен")] == ["backup"]
 
+    tasks.use(None)
+
+
+def test_a_task_names_the_company_the_thread_was_opened_for(tmp_path):
+    """#17: the thread points at a company of companies, and its name comes from there."""
+    from contextlib import closing
+
+    from core import db as core_db
+    from writer.tests.research_leads import add_lead, migrate
+
+    path = tmp_path / "state.db"
+    migrate(path)
+    with closing(core_db.connect(path)) as db:
+        add_lead(db, "2gis:1", [("whatsapp", "+77010000001")])
+        thread_store.open_thread(db, "+77010000001", "2gis:1", {"name": "Компания"})
+        thread_store.open_thread(db, "+77010000002", "2gis:gone", {"name": "Пропала"})
+        for thread_id in ("+77010000001", "+77010000002"):
+            conversation.set_status(db, thread_id, "escalated", "назвал бюджет")
+        db.commit()
+    tasks.use(path, path)
+
+    names = {row["company_id"]: row["company_name"] for row in tasks.tasks()}
+
+    assert names == {"2gis:1": "Компания 2gis:1", "2gis:gone": "2gis:gone"}
     tasks.use(None)

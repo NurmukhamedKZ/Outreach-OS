@@ -2,13 +2,13 @@
 
 Верхний уровень backend/, рядом с analytics.py и activity.py, по той же причине:
 задача собирается из трёх систем (тред и черновик — система 2, очередь — система
-3, имя компании — derived системы 1), и ни одна из них не имеет права знать две
-другие.
+3, имя компании — модуль companies), и ни одна из них не имеет права знать две
+другие. Компанию спрашиваем у её фасада, а не своим SQL.
 
 Счётчик отвечает на «сколько», задача — на «кто и почему». `escalated: 3` не
 говорит, кто эти трое, и оператор идёт искать их руками.
 
-Только чтение: обе базы открываются в режиме ro.
+Только чтение: базы открываются в режиме ro.
 """
 
 import sqlite3
@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import sqlite_tools
+from companies import public as companies
 
 KINDS = ("escalated", "draft", "stuck", "backup")
 
@@ -26,14 +27,15 @@ STUCK_WHY = "не знаем, ушло ли — проверь в телефон
 DRAFT_WHY = "черновик первого письма ждёт проверки"
 
 _state: Path | None = None
-_leads: Path | None = None
+_companies: Path | None = None
 
 
-def use(state_db: Path | None, leads_db: Path | None = None) -> None:
+def use(state_db: Path | None, companies_db: Path | None = None) -> None:
     """Шов из collector/api.py, как analytics.use(): модуль верхнего уровня не
-    ищет базы сам."""
-    global _state, _leads
-    _state, _leads = state_db, leads_db
+    ищет базы сам. companies_db — боевая база с компаниями (в песочнице треды
+    в базе прогона, а компании — в боевой, как у writer'а); None — имя = id."""
+    global _state, _companies
+    _state, _companies = state_db, companies_db
 
 
 @dataclass(frozen=True)
@@ -118,7 +120,7 @@ def _thread_tasks() -> tuple[list[Task], list[Task], Callable[[str], str]]:
         # режиме ro на отсутствующем файле бросает — страница отвечала бы 500
         # вместо «задач нет».
         return [], [], str
-    with closing(sqlite_tools.connect_readonly(_state, _leads)) as db:
+    with closing(sqlite_tools.connect_readonly(_state)) as db:
         if not sqlite_tools.has_table(db, "threads"):
             return [], [], str
         urgent = [Task("escalated", r["company_id"], "", r["thread_id"], r["our_number"],
@@ -131,22 +133,14 @@ def _thread_tasks() -> tuple[list[Task], list[Task], Callable[[str], str]]:
         drafts = [Task("draft", r["company_id"], "", r["thread_id"], None,
                        DRAFT_WHY, r["at"])
                   for r in db.execute(DRAFT_SQL)]
-        found = _names(db, {row.company_id for row in urgent + drafts})
+    found = _names({row.company_id for row in urgent + drafts})
     return urgent, drafts, lambda company_id: found.get(company_id, company_id)
 
 
-def _names(db: sqlite3.Connection, company_ids: set[str]) -> dict[str, str]:
-    """Имена компаний одним запросом на весь список — как analytics.py::_segments,
-    а не запросом на строку."""
-    if not company_ids or _leads is None or not Path(_leads).exists():
+def _names(company_ids: set[str]) -> dict[str, str]:
+    """Имена компаний одним вызовом фасада на весь список, а не запросом на строку."""
+    if not company_ids or _companies is None or not Path(_companies).exists():
         return {}
-    marks = ",".join("?" * len(company_ids))
-    rows = db.execute(
-        "SELECT c.company_id, coalesce(o.org_name, o.name, c.name_norm)"
-        " FROM leads.companies c LEFT JOIN leads.company_links l"
-        "   ON l.company_id = c.company_id AND l.rule = 'self'"
-        " LEFT JOIN leads.orgs o ON o.branch_id = l.branch_id"
-        f" WHERE c.company_id IN ({marks})",
-        tuple(company_ids),
-    )
-    return dict(rows)
+    with closing(sqlite_tools.connect_readonly(_companies)) as db:
+        return {company_id: company.name
+                for company_id, company in companies.by_id(db, company_ids).items()}

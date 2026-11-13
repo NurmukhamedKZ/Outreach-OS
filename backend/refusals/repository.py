@@ -29,6 +29,9 @@ class RefusalRepository:
             f"SELECT {COLUMNS} FROM refusals ORDER BY refused_at DESC, handle").fetchall()
         return [Refusal.model_validate(dict(row)) for row in rows]
 
+    def count(self) -> int:
+        return self._db.execute("SELECT count(*) FROM refusals").fetchone()[0]
+
     def any_of(self, handles: list[str]) -> bool:
         if not handles:
             return False

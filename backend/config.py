@@ -11,7 +11,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=Path(__file__).parent / ".env", extra="ignore")
 
-    serper_api_key: str | None = None
     openrouter_api_key: str | None = None
     langfuse_public_key: str | None = None
     langfuse_secret_key: str | None = None

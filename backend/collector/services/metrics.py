@@ -15,22 +15,19 @@ from contextlib import closing
 import activity
 import clock
 import paths
-from collector.db import lead as store
 from collector.services import jobs
-from collector.services import leads as leads_service
+from companies import public as companies
 from config import settings
+from core import db as core_db
+from refusals import public as refusals
+from research import public as research
 
 RECENT_JOBS = 5
 
 
 def snapshot():
-    leads_db = store.connect()
-    try:
-        system1 = leads_service.stats(leads_db)
-    finally:
-        leads_db.close()
     return {
-        "sourcing": system1,
+        "sourcing": sourcing_stats(clock.now()),
         "writer": writer_stats(),
         "sender": sender_stats(),
         # Режим стенда — состояние бэкенда, а не догадка фронта: сайдбар не
@@ -41,6 +38,17 @@ def snapshot():
             "recent": jobs.recent(RECENT_JOBS),
         },
     }
+
+
+def sourcing_stats(now):
+    """Компании, с каналом для WhatsApp, лиды и отказы — каждое число у своего модуля."""
+    db_path = paths.state_db()
+    if not db_path.exists():
+        return {"companies": 0, "reachable": 0, "leads": 0, "refusals": 0}
+    with closing(core_db.connect(db_path)) as db:
+        found = companies.counts(db)
+        return {"companies": found.companies, "reachable": found.reachable,
+                "leads": len(research.leads(db, now)), "refusals": refusals.count(db)}
 
 
 def writer_stats():
