@@ -7,15 +7,13 @@
  *  и на «Процессах».
  *
  *  Полминуты. Ничего не крутится зря: если джоба идёт, её видно из любого
- *  места; если нет, видна история последних.
+ *  места полоской наверху.
  */
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { fetchTasks, type Task } from "./api";
 import { useLive } from "@/components/live";
-
-const WHEN = new Intl.DateTimeFormat("ru", { hour: "2-digit", minute: "2-digit" });
 
 const TASK_LABEL: Record<Task["kind"], string> = {
   escalated: "ждёт вас",
@@ -56,7 +54,7 @@ function requires(n: number) {
 }
 
 export default function Overview() {
-  const { stats, jobs, refreshTick } = useLive();
+  const { stats, refreshTick } = useLive();
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
 
@@ -122,16 +120,16 @@ export default function Overview() {
               <b>{stats.sourcing.companies}</b>
             </div>
             <div className="metric-row">
-              <span>с intent-сигналами</span>
-              <b>{stats.sourcing.with_intent}</b>
+              <span>лидов</span>
+              <b>{stats.sourcing.leads}</b>
             </div>
             <div className="metric-row">
               <span>с рабочим каналом</span>
-              <b>{stats.sourcing.available}</b>
+              <b>{stats.sourcing.reachable}</b>
             </div>
             <div className="metric-row">
               <span>отказов</span>
-              <b>{stats.sourcing.suppressed}</b>
+              <b>{stats.sourcing.refusals}</b>
             </div>
           </section>
 
@@ -188,27 +186,6 @@ export default function Overview() {
           </div>
         </div>
       )}
-      <section className="card">
-        <h3>История запусков</h3>
-        <div className="jobs-list">
-          {jobs.map((job) => (
-            <div key={job.id} className="jobs-row">
-              <span>
-                <span className="jobs-title">{job.title}</span>
-                {job.error ? <span className="jobs-when"> · {job.error}</span> : null}
-              </span>
-              <span className="jobs-when">{job.finished_at ? WHEN.format(new Date(job.finished_at)) : "…"}</span>
-              <span className={`status is-${job.status}`}>
-                {job.status === "running"
-                  ? `шаг ${job.step + 1} из ${job.step_count}`
-                  : STATUS[job.status] ?? job.status}
-              </span>
-            </div>
-          ))}
-          {jobs.length === 0 && <p className="note">Пока ничего не запускали.</p>}
-        </div>
-      </section>
-
       <Guide />
     </>
   );
@@ -224,25 +201,24 @@ function Guide() {
 
       <ol className="guide-steps">
         <li>
-          <b>Найти компании.</b> Сайдбар → <span className="ui">Лиды</span> →{" "}
-          <span className="ui">Поиск новых лидов</span> — 2ГИС, сайты, инстаграм,
-          пересборка базы. Ход виден сверху в полоске и подробно — на «Процессах»:
-          названные шаги, счётчик и живой лог; остановить — <span className="ui">прервать</span>.
-          Очередь одна: пока джоба идёт, остальные кнопки заблокированы.
+          <b>Выбрать, где искать.</b> Сайдбар → <span className="ui">Настройки</span> →
+          «Сегменты»: города и рубрики 2ГИС. Там же, в «Исследовании», — размер партии,
+          модель и веса сигналов. По умолчанию — шесть рубрик Алматы.
         </li>
         <li>
-          <b>Понять, кто из них годится.</b> Кнопка <span className="ui">Анализ и досье</span>:
-          модель читает отзывы, сайт и инстаграм и ставит intent-скор. Нужен{" "}
-          <code className="mono">OPENROUTER_API_KEY</code> в <code className="mono">backend/.env</code>,
-          иначе шаг упадёт с 503.
+          <b>Найти лидов.</b> Сайдбар → <span className="ui">Лиды</span> →{" "}
+          <span className="ui">Исследовать партию</span>: несобранные сегменты соберутся из
+          2ГИС, затем модель прочитает отзывы и сайт каждой компании партии и найдёт зацепку
+          с цитатой. Ход виден в панели партии; <span className="ui">Остановить</span> —
+          начатые компании доработают. Нужен{" "}
+          <code className="mono">OPENROUTER_API_KEY</code> в <code className="mono">backend/.env</code>.
         </li>
         <li>
-          <b>Посмотреть выдачу.</b> Сайдбар → <span className="ui">Лиды</span>. Слева список
-          по скору (фильтры «все города» и «N лидов» сверху), клик по строке — карточка:
-          разбор скора, досье модели, каналы, сигналы, сырьё и ответы модели. Не писать этой
+          <b>Посмотреть выдачу.</b> В списке лидов — угол, цитата и ссылка «почему сейчас»,
+          канал и оценка. Клик по строке — карточка: досье, разбор оценки по сигналам,
+          контакты и попытки, <span className="ui">Исследовать заново</span>. Не писать этой
           компании никогда — в карточке впишите причину и нажмите{" "}
-          <span className="ui">Больше не писать</span>; запись переживает пересборку
-          и не отменяется.
+          <span className="ui">Больше не писать</span>; запись не отменяется.
         </li>
         <li>
           <b>Написать первое сообщение.</b> Сайдбар → <span className="ui">Холодные</span> →{" "}
@@ -279,23 +255,9 @@ function Guide() {
         </li>
       </ol>
 
-      <p className="note">
-        <b>Пересборка из сырья</b> — когда поменялись веса скоринга или разбор: считает всё заново
-        из уже скачанного, в сеть не ходит и денег не стоит. Она и серые кнопки поштучных шагов
-        (<code className="mono">collect.gis</code>, <code className="mono">probe.serp</code> и
-        прочие) живут на «Процессах»: обычная работа идёт кнопками на своих страницах, а туда
-        ходят за точечной проверкой и историей прогонов.
-      </p>
     </details>
   );
 }
-
-const STATUS: Record<string, string> = {
-  queued: "в очереди",
-  done: "готово",
-  failed: "не прошёл",
-  cancelled: "прервано",
-};
 
 function totalNumbers(sender: { numbers: Record<string, number> }) {
   return Object.values(sender.numbers).reduce((sum, count) => sum + count, 0);

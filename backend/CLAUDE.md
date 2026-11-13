@@ -96,7 +96,7 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 | `schemas.py` | общая база `Schema` (обрезка пробелов) и `Timestamp` (только с зоной, хранится в UTC); схемы ответа модели наследуют не её, а `llm_schema.LLMSchema` |
 | `pages.py` | адаптер сбора: `Pages` (Protocol, `get(url, *, cookies=None, headers=None)` — страница хранится по одному адресу), `ScraplingPages`, `FakePages` (пишет `requested` и `cookies`), `FetchError` и наследники (`HttpStatusError`, `BotCheckError`, `CertificateError` — негодный сертификат, для отката сайта на `http://`) |
 | `model.py` | адаптер модели: `Model` (Protocol), `OpenRouterModel`, `FakeModel`, `ModelError`, `ModelKeyMissingError`; `openrouter_client(api_key)` — клиент SDK для `ChatOpenRouter(client=...)` с общим сроком запроса |
-| `phones.py` | каноническая форма телефона: `canonical(raw)` → `+7XXXXXXXXXX` без `+`, с `+` — 10–15 цифр как набраны (как `numbers.normalize`), иначе `ValueError("errors.phoneInvalid")`; `PHONE` — форма телефона, `WHATSAPP_LINK` — номер из ссылки `wa.me`/`api.whatsapp.com`. Старые копии `resolve.e164` и `numbers.normalize` живут до #7 и #13 |
+| `phones.py` | каноническая форма телефона: `canonical(raw)` → `+7XXXXXXXXXX` без `+`, с `+` — 10–15 цифр как набраны (как `numbers.normalize`), иначе `ValueError("errors.phoneInvalid")`; `PHONE` — форма телефона, `WHATSAPP_LINK` — номер из ссылки `wa.me`/`api.whatsapp.com`. Старая копия `numbers.normalize` живёт до #7 |
 | `contacts.py` | каноническая форма контакта: `canonical(raw)` — телефон и ссылка WhatsApp на него → телефон, остальное — без пробелов по краям и в нижнем регистре; пустой, короче трёх символов или кривой телефон — `ValueError("errors.handleInvalid")` |
 
 - **Настройки модуля** — Pydantic-схема с умолчаниями у каждого поля. `load` накладывает сохранённое на умолчания, неизвестные ключи игнорирует, значение, которое схема больше не принимает, заменяет умолчанием с предупреждением в логе. Кэша нет — правка действует со следующего вызова. `save` пишет раздел целиком и не коммитит: транзакцию держит сервис модуля.
@@ -106,7 +106,7 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 
 ## База данных
 
-- Одна база `backend/data/state.db`; путь знает только `paths.py` (`paths.state_db()` — с учётом прогона песочницы). Пока на старом месте лежит `collector/data/state.db`, приложение не стартует (`LegacyDatabaseError` с командой переноса): в ней отказы, и старт на новой базе спрятал бы их. Проверку удаляет #13.
+- Одна база `backend/data/state.db`; путь знает только `paths.py` (`paths.state_db()` — с учётом прогона песочницы).
 - Соединение — `core.db.connect(path)`: WAL, `foreign_keys=ON`, ожидание блокировки 10 с, `sqlite3.Row`. В роуте — зависимость `Db`: соединение на запрос, закрывается после ответа.
 - Транзакция — `with db:` в сервисе. В стандартном режиме `sqlite3` её неявно начинает первый DML, поэтому «прочитал, потом записал» не защищён — смена статуса только условным `UPDATE … WHERE status = :from`.
 - SQL — сырой, в `repository.py` модуля, параметрами `?`. ORM и SQLAlchemy Core в коде модулей не используются (ADR 0004).
@@ -119,7 +119,7 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 
 ## Миграции
 
-- Схема новых модулей — одна история Alembic в `backend/migrations/` (ADR 0004). Таблицы `writer` и `sender` и STATE-часть `collector/db/schema.sql` остаются вне Alembic до #7 и #13.
+- Схема новых модулей — одна история Alembic в `backend/migrations/` (ADR 0004). Таблицы `writer` и `sender` и старые таблицы `collector/db/schema.sql` (`jobs`, `threads`, `messages`) остаются вне Alembic до #7.
 - Новая ревизия: `uv run alembic revision -m "<что меняется>" --rev-id 0002` (следующий номер после `uv run alembic heads`) → файл `migrations/versions/<дата>_<slug>.py`, `down_revision` проставится текущей головой.
 - Операции — `op.*`, изменение таблицы — `with op.batch_alter_table(...)`: SQLite меняет таблицу только пересозданием. `downgrade` пишется всегда.
 - Каждая ревизия идёт своей транзакцией (`migrations/env.py`): упавшая откатывается целиком. Внешние ключи на время миграции выключены — пересоздание таблицы иначе каскадно удалило бы дочерние строки.

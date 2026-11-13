@@ -88,6 +88,5 @@ function kindOf(href: string) {
 
 function systemOf(kind: string) {
   if (kind === "write") return "cold";
-  if (kind === "discover" || kind === "classify" || kind === "rebuild") return "sourcing";
   return "";
 }

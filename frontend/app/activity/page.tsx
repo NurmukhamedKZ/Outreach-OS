@@ -12,16 +12,12 @@ import {
   ApiError,
   fetchActivity,
   fetchBackup,
-  fetchCatalogue,
   runBackup,
   type ActivityEvent,
   type ActivityWorker,
   type BackupStatus,
-  type PipelineCatalogue,
 } from "../api";
 import { JobMonitor } from "@/components/JobMonitor";
-import { OperationsPanel } from "@/components/OperationsPanel";
-import { RunsHistory } from "@/components/RunsHistory";
 import { useLive } from "@/components/live";
 
 const WHEN = new Intl.DateTimeFormat("ru", {
@@ -52,12 +48,7 @@ export default function ActivityPage() {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [workers, setWorkers] = useState<ActivityWorker[]>([]);
   const [actor, setActor] = useState("");
-  const [catalogue, setCatalogue] = useState<PipelineCatalogue | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetchCatalogue().then(setCatalogue).catch(() => undefined);
-  }, []);
 
   useEffect(() => {
     fetchActivity(200, actor || undefined)
@@ -150,11 +141,6 @@ export default function ActivityPage() {
           ))}
         </div>
       </section>
-
-      <OperationsPanel operations={catalogue?.operations ?? []} />
-      <div style={{ marginTop: 18 }}>
-        <RunsHistory />
-      </div>
     </>
   );
 }
