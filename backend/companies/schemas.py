@@ -25,10 +25,10 @@ class SegmentStatus(StrEnum):
 class SegmentSettings(Schema):
     """Where to look: segments are every city crossed with every rubric (ADR 0003)."""
 
-    cities: list[Item] = Field(default_factory=lambda: list(domain.DEFAULT_CITIES),
-                               max_length=20)
-    rubrics: list[Item] = Field(default_factory=lambda: list(domain.DEFAULT_RUBRICS),
-                                max_length=200)
+    cities: list[Item] = Field(default_factory=lambda: list(domain.DEFAULT_CITIES), max_length=20)
+    rubrics: list[Item] = Field(
+        default_factory=lambda: list(domain.DEFAULT_RUBRICS), max_length=200
+    )
 
 
 class CatalogItem(Schema):

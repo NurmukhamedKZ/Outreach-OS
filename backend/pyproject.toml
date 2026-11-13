@@ -19,7 +19,13 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=1.0"]
+dev = [
+    "import-linter>=2.16",
+    "mypy>=2.4.1",
+    "pytest>=8",
+    "pytest-asyncio>=1.0",
+    "ruff>=0.17.5",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
@@ -31,3 +37,108 @@ asyncio_mode = "auto"
 # (test_schema, test_leads, test_operations) и не являются пакетами — без
 # importlib-режима pytest считает их одним модулем и падает на сборке.
 addopts = "--import-mode=importlib"
+
+# Охват линтеров — новый код (#5): core и модули предметной области с миграциями.
+# collector, writer, sender, sandbox и модули верхнего уровня backend/*.py
+# не проверяются: их переписывают #13 и #7, и правка их находок — работа,
+# которую выбросят. #7 включает свои новые модули в охват сам.
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+include = ["core/**/*.py", "refusals/**/*.py", "companies/**/*.py", "research/**/*.py",
+           "backup/**/*.py", "migrations/**/*.py"]
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "B", "SIM", "RUF"]
+# RUF001-003: строки, docstring и комментарии — по-русски, кириллица и типографские
+# тире с кавычками в них — данные и текст, а не подмена латиницы.
+# PLC0414: `import X as X` — явный реэкспорт фасада, так его понимает mypy strict
+# (implicit_reexport выключен).
+ignore = ["RUF001", "RUF002", "RUF003", "PLC0414"]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["core", "refusals", "companies", "research", "backup", "migrations"]
+
+[tool.importlinter]
+root_packages = ["core", "refusals", "companies", "research", "backup"]
+# Старые системы и модули верхнего уровня видны снаружи графа — одним узлом
+# на имя, этого хватает для запретов ниже.
+include_external_packages = true
+
+# Тесты собирают данные чужими внутренностями (фикстуры, приложение
+# collector.api) — контракты описывают код модулей, а не их тесты.
+[[tool.importlinter.contracts]]
+name = "Слои: research над companies, refusals и backup, они — над core и не знают друг друга"
+type = "layers"
+layers = ["research", "companies | refusals | backup", "core"]
+ignore_imports = ["*.tests.** -> **"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "Новый код не знает старых систем"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = ["core", "refusals", "companies", "research", "backup"]
+forbidden_modules = ["collector", "writer", "sender", "sandbox", "tasks", "analytics"]
+ignore_imports = ["*.tests.** -> **"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "Журнал activity пишет только backup"
+type = "forbidden"
+allow_indirect_imports = true
+source_modules = ["core", "refusals", "companies", "research"]
+forbidden_modules = ["activity"]
+ignore_imports = ["*.tests.** -> **"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "companies: снаружи — только через public"
+type = "protected"
+protected_modules = ["companies.*"]
+allowed_importers = ["companies"]
+ignore_imports = ["** -> companies.public", "*.tests.** -> **"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "refusals: снаружи — только через public"
+type = "protected"
+protected_modules = ["refusals.*"]
+allowed_importers = ["refusals"]
+ignore_imports = ["** -> refusals.public", "*.tests.** -> **"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "backup: снаружи — только через public"
+type = "protected"
+protected_modules = ["backup.*"]
+allowed_importers = ["backup"]
+ignore_imports = ["** -> backup.public", "*.tests.** -> **"]
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "research: снаружи — только через public"
+type = "protected"
+protected_modules = ["research.*"]
+allowed_importers = ["research"]
+ignore_imports = ["** -> research.public", "*.tests.** -> **"]
+unmatched_ignore_imports_alerting = "none"
+
+# Старые системы и модули верхнего уровня вне охвата: mypy читает их типы,
+# но не сообщает их ошибок.
+[[tool.mypy.overrides]]
+module = ["collector.*", "writer.*", "sender.*", "sandbox.*", "activity", "analytics",
+          "clock", "config", "logctx", "logging_setup", "llm_schema", "observability",
+          "paths", "sqlite_tools", "tasks", "main"]
+ignore_errors = true
+
+# Тесты охвата: сигнатуры тестов и фикстур без аннотаций (аргументы-фикстуры — Any),
+# тела проверяются — check_untyped_defs из strict остаётся. Решение main по #5.
+[[tool.mypy.overrides]]
+module = ["*.tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false

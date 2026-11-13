@@ -41,7 +41,7 @@ from delivery import public as delivery
 delivery.enqueue(db, thread_id, now)
 ```
 
-Функции `public.py` тонкие и сами собирают сервис: чужой модуль не зависит от устройства чужих классов. `from x import *` и глубокие пути в чужие модули запрещены. Граф сторожат `*/tests/test_import_graph.py`; import-linter — #5.
+Функции `public.py` тонкие и сами собирают сервис: чужой модуль не зависит от устройства чужих классов. `from x import *` и глубокие пути в чужие модули запрещены. Границы новых модулей сторожит import-linter (`pyproject.toml`, `[tool.importlinter]`): слои `research` → `companies | refusals | backup` → `core`, чужой модуль — только через `public`, старые системы и `tasks`/`analytics` новому коду недоступны, журнал `activity` пишет только `backup`. Новый модуль вписывается в слои и получает свой контракт `protected` тем же PR. Миграции — не пакет, их сторожит `core/tests/test_import_graph.py`.
 
 ## Pydantic
 
@@ -86,7 +86,7 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 
 ## Ядро (`core/`)
 
-Общее без бизнес-логики; не импортирует ни одного модуля предметной области (сторожит `core/tests/test_import_graph.py`).
+Общее без бизнес-логики; не импортирует ни одного модуля предметной области (сторожит import-linter).
 
 | Файл | Что даёт |
 |---|---|
@@ -161,9 +161,10 @@ uv sync                                   # зависимости (uv.lock ко
 uv run pytest                             # все тесты, без сети
 uv run pytest sender/tests/test_gates.py  # один раздел — одним файлом
 uv run python main.py                     # FastAPI, порт 8787
+uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run lint-imports && uv run pytest  # полная проверка
 ```
 
-Линтеры и проверка типов — после #5.
+Охват `ruff`, `mypy` (strict) и `import-linter` — новый код: `core`, `refusals`, `companies`, `research`, `backup`, `migrations` (`[tool.ruff] include`, `[tool.mypy] files` в `pyproject.toml`). Старые `collector`, `writer`, `sender`, `sandbox` и `backend/*.py` вне охвата — их переписывают #13 и #7; новый модуль добавляется в охват тем же PR, что его заводит. У тестов mypy не требует аннотаций сигнатур, тела проверяет. Заглушка — только с кодом правила и причиной: `# noqa: BLE001`, `# type: ignore[arg-type]  # причина`.
 
 ## Анти-паттерны — проверяй в каждом диффе
 

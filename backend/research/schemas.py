@@ -1,4 +1,5 @@
 from enum import StrEnum
+
 from pydantic import Field
 
 from core.schemas import Schema, Timestamp
@@ -102,10 +103,14 @@ class Facts(LLMSchema):
     vacancies: list[Vacancy] = Field(default_factory=list)
     # No default: a reply without it must not read as "prices hidden" and make a signal.
     pricing_visible: bool = Field(description="на сайте выложены цены")
-    decision_maker_hint: str | None = Field(None, description=(
-        "имя и роль человека, принимающего решения, если они прямо названы в данных:"
-        " страница «Команда», подпись под ответом на отзыв. Формат «Айгуль, основатель»."
-        " Не названо — null"))
+    decision_maker_hint: str | None = Field(
+        None,
+        description=(
+            "имя и роль человека, принимающего решения, если они прямо названы в данных:"
+            " страница «Команда», подпись под ответом на отзыв. Формат «Айгуль, основатель»."
+            " Не названо — null"
+        ),
+    )
 
 
 class HookDraft(LLMSchema):

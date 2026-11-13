@@ -18,5 +18,4 @@ class DomainError(Exception):
 
 
 async def domain_error_handler(_request: Request, error: DomainError) -> JSONResponse:
-    return JSONResponse({"code": error.code, "detail": str(error)},
-                        status_code=error.status_code)
+    return JSONResponse({"code": error.code, "detail": str(error)}, status_code=error.status_code)

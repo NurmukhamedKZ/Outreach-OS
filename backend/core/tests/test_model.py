@@ -3,6 +3,7 @@
 import json
 import threading
 import time
+from typing import Any
 
 import httpx
 import pytest
@@ -17,7 +18,7 @@ MESSAGES = [("system", "You write dossiers."), ("human", "Company card...")]
 
 class Dossier(LLMSchema):
     summary: str
-    hooks: list[str] = []
+    hooks: list[str] = []  # noqa: RUF012 — pydantic copies a field default per instance
 
 
 class Client:
@@ -25,9 +26,9 @@ class Client:
 
     def __init__(self, *outcomes):
         self.outcomes = list(outcomes)
-        self.built: dict = {}
-        self.structured: dict = {}
-        self.calls: list[tuple] = []
+        self.built: dict[str, Any] = {}
+        self.structured: dict[str, Any] = {}
+        self.calls: list[tuple[Any, ...]] = []
 
     def __call__(self, **kwargs):
         self.built = kwargs
@@ -60,12 +61,14 @@ def client(monkeypatch, slept):
         fake = Client(*outcomes)
         monkeypatch.setattr(model, "ChatOpenRouter", fake)
         return fake
+
     return install
 
 
 def answer(adapter):
-    return adapter.answer("openai/gpt-5-mini", Dossier, MESSAGES,
-                          session_id="batch-7", name="research")
+    return adapter.answer(
+        "openai/gpt-5-mini", Dossier, MESSAGES, session_id="batch-7", name="research"
+    )
 
 
 def test_reply_parsed_into_schema_with_sdk_retries_off_and_deadline(client):
@@ -89,15 +92,17 @@ def test_langfuse_labels_travel_with_the_call(client):
     messages, config = fake.calls[0]
     assert messages == MESSAGES
     assert config["run_name"] == "research"
-    assert config["metadata"] == {"langfuse_session_id": "batch-7",
-                                  "langfuse_tags": ["research"]}
+    assert config["metadata"] == {"langfuse_session_id": "batch-7", "langfuse_tags": ["research"]}
 
 
-@pytest.mark.parametrize("glitch", [
-    httpx.RemoteProtocolError("peer closed connection"),
-    OutputParserException("[] is not an object"),
-    ResponseValidationError("body cut short", httpx.Response(200), ValueError("eof")),
-])
+@pytest.mark.parametrize(
+    "glitch",
+    [
+        httpx.RemoteProtocolError("peer closed connection"),
+        OutputParserException("[] is not an object"),
+        ResponseValidationError("body cut short", httpx.Response(200), ValueError("eof")),
+    ],
+)
 def test_dropped_connection_or_invalid_reply_is_retried(client, glitch):
     fake = client(glitch, Dossier(summary="ok"))
 
@@ -114,10 +119,13 @@ def test_gives_up_after_the_last_attempt_with_model_error(client, slept):
     assert slept == [1, 2]
 
 
-@pytest.mark.parametrize("refusal", [
-    OpenRouterError("402 payment required", httpx.Response(402)),
-    NoResponseError(),
-])
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        OpenRouterError("402 payment required", httpx.Response(402)),
+        NoResponseError(),
+    ],
+)
 def test_provider_refusal_is_a_model_error_without_retry(client, slept, refusal):
     fake = client(refusal, Dossier(summary="never reached"))
 
@@ -129,8 +137,10 @@ def test_provider_refusal_is_a_model_error_without_retry(client, slept, refusal)
 
 def test_model_error_does_not_carry_the_reply_text(client):
     """The reply is built from lead data, and errors end up in logs."""
-    client(*[OutputParserException("Invalid json output: Ромашка, +77010000001")]
-           * model.TRANSPORT_RETRIES)
+    client(
+        *[OutputParserException("Invalid json output: Ромашка, +77010000001")]
+        * model.TRANSPORT_RETRIES
+    )
 
     with pytest.raises(model.ModelError) as error:
         answer(model.OpenRouterModel("key"))
@@ -184,14 +194,22 @@ class Chunks(httpx.SyncByteStream):
 
     def __iter__(self):
         for start in range(0, len(self.body), 16):
-            yield self.body[start:start + 16]
+            yield self.body[start : start + 16]
 
 
 COMPLETION = {
-    "id": "gen-1", "object": "chat.completion", "created": 0, "model": "openai/gpt-5-mini",
+    "id": "gen-1",
+    "object": "chat.completion",
+    "created": 0,
+    "model": "openai/gpt-5-mini",
     "system_fingerprint": None,
-    "choices": [{"index": 0, "finish_reason": "stop",
-                 "message": {"role": "assistant", "content": '{"summary": "ok", "hooks": []}'}}],
+    "choices": [
+        {
+            "index": 0,
+            "finish_reason": "stop",
+            "message": {"role": "assistant", "content": '{"summary": "ok", "hooks": []}'},
+        }
+    ],
     "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
 }
 
@@ -207,13 +225,15 @@ class OpenRouterStub(httpx.MockTransport):
     def reply(self, request):
         if self.outcomes.pop(0) == "hang":
             self.bodies.append(Trickle())
-            return httpx.Response(200, headers={"content-type": "application/json"},
-                                  stream=self.bodies[-1])
+            return httpx.Response(
+                200, headers={"content-type": "application/json"}, stream=self.bodies[-1]
+            )
         # Streamed in pieces, as the network delivers it: only then does the
         # body pass through the deadline check at all.
         body = json.dumps(COMPLETION).encode()
-        return httpx.Response(200, headers={"content-type": "application/json"},
-                              stream=Chunks(body))
+        return httpx.Response(
+            200, headers={"content-type": "application/json"}, stream=Chunks(body)
+        )
 
 
 @pytest.fixture
@@ -242,8 +262,9 @@ def test_call_cut_by_the_deadline_is_retried(wire):
 
 
 def test_normal_reply_passes_the_deadline_untouched(wire):
-    assert answer(model.OpenRouterModel("key", transport=OpenRouterStub("ok"))) \
-        == Dossier(summary="ok")
+    assert answer(model.OpenRouterModel("key", transport=OpenRouterStub("ok"))) == Dossier(
+        summary="ok"
+    )
 
 
 def test_hung_calls_leave_no_threads_behind(wire):
@@ -257,12 +278,14 @@ def test_hung_calls_leave_no_threads_behind(wire):
     assert threading.active_count() <= before
 
 
-def test_closing_the_client_closes_the_network_transport():
+def test_closing_the_client_closes_the_network_transport(monkeypatch):
     stub = OpenRouterStub()
     sdk = model.openrouter_client("key", stub)
     closed = []
-    stub.close = lambda: closed.append(True)
+    monkeypatch.setattr(stub, "close", lambda: closed.append(True))
+    client = sdk.sdk_configuration.client
+    assert client is not None
 
-    sdk.sdk_configuration.client.close()
+    client.close()
 
     assert closed == [True]

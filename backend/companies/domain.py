@@ -31,31 +31,48 @@ CITIES = {"almaty": "Алматы", "astana": "Астана"}
 # Leaf rubrics of the 2GIS "B2B services" branch picked for the ICP (BRD §4),
 # from [rubrics].include of collector/config.toml.
 RUBRICS = {
-    "653": "Бухгалтерские услуги", "339": "Аудиторские услуги",
-    "1238": "Управленческий консалтинг", "1236": "Финансовый консалтинг",
-    "638": "Регистрация и ликвидация предприятий", "22129": "Call-центры",
-    "51322": "Ресторанный консалтинг", "110472": "Фитнес-консалтинг",
-    "50374": "Тендеры и аукционы", "21302": "Организация внешнеэкономической деятельности",
-    "110447": "Организация бизнес-мероприятий", "942": "Организация выставок",
-    "112587": "Услуги маркировки товаров", "110416": "Фулфилмент",
+    "653": "Бухгалтерские услуги",
+    "339": "Аудиторские услуги",
+    "1238": "Управленческий консалтинг",
+    "1236": "Финансовый консалтинг",
+    "638": "Регистрация и ликвидация предприятий",
+    "22129": "Call-центры",
+    "51322": "Ресторанный консалтинг",
+    "110472": "Фитнес-консалтинг",
+    "50374": "Тендеры и аукционы",
+    "21302": "Организация внешнеэкономической деятельности",
+    "110447": "Организация бизнес-мероприятий",
+    "942": "Организация выставок",
+    "112587": "Услуги маркировки товаров",
+    "110416": "Фулфилмент",
     "103405": "Экспертиза проектной документации и инженерных изысканий",
-    "103135": "Аттестация рабочих мест", "99200": "Независимая инвентаризация",
-    "110429": "Аутсорсинг печати", "110511": "Автоматизация обучения",
-    "527": "Автоматизация бизнес-процессов", "328": "Автоматизация производства",
-    "1235": "Автоматизация торговли", "53136": "Автоматизация медицинских учреждений",
-    "104043": "Автоматизация предприятий общепита", "187": "Информационная безопасность",
-    "188": "Программное обеспечение", "112624": "Разработка программного обеспечения",
-    "51755": "Разработка мобильных приложений", "186": "Бухгалтерские программы",
-    "4456": "Правовые программы", "50372": "Электронные подписи",
-    "326": "Кадровые агентства", "921": "Системное администрирование",
-    "668": "Бизнес-тренинги", "16928": "Тимбилдинг",
+    "103135": "Аттестация рабочих мест",
+    "99200": "Независимая инвентаризация",
+    "110429": "Аутсорсинг печати",
+    "110511": "Автоматизация обучения",
+    "527": "Автоматизация бизнес-процессов",
+    "328": "Автоматизация производства",
+    "1235": "Автоматизация торговли",
+    "53136": "Автоматизация медицинских учреждений",
+    "104043": "Автоматизация предприятий общепита",
+    "187": "Информационная безопасность",
+    "188": "Программное обеспечение",
+    "112624": "Разработка программного обеспечения",
+    "51755": "Разработка мобильных приложений",
+    "186": "Бухгалтерские программы",
+    "4456": "Правовые программы",
+    "50372": "Электронные подписи",
+    "326": "Кадровые агентства",
+    "921": "Системное администрирование",
+    "668": "Бизнес-тренинги",
+    "16928": "Тимбилдинг",
     "112620": "Услуги фасовки и упаковки товаров",
 }
 DEFAULT_CITIES = ("almaty",)
 DEFAULT_RUBRICS = ("653", "339", "326", "112624", "527", "1238")
 RUBRIC_ID = re.compile(r"[0-9]{1,9}")
 
-INITIAL_STATE = re.compile(r"var initialState = JSON\.parse\('(.*?)'\);", re.S)
+INITIAL_STATE = re.compile(r"var initialState = JSON\.parse\('(.*?)'\);", re.DOTALL)
 CONTACT_KINDS = ("phone", "website", "email", "instagram", "whatsapp")
 PHONE_KINDS = ("phone", "whatsapp")
 # A branch id goes into a card address: nothing that could change its path.
@@ -70,11 +87,32 @@ NAME_SIMILARITY = 0.88
 LEGAL_FORMS = ("тоо", "ип", "ао", "оао", "зао", "ооо", "чп", "кх", "llp", "llc", "ltd")
 # Social networks and widgets come in the same card field as the site. As an
 # identity they are disastrous: tiktok.com glued 16 unrelated companies, jivo.chat 11.
-NON_COMPANY_DOMAINS = frozenset("""
-    tiktok.com taplink.cc linktr.ee linktree.com jivo.chat jivosite.com instagram.com
-    facebook.com fb.com wa.me whatsapp.com t.me telegram.me youtube.com youtu.be vk.com
-    linkedin.com twitter.com x.com 2gis.kz 2gis.com google.com
-""".split())
+NON_COMPANY_DOMAINS = frozenset(
+    [
+        "tiktok.com",
+        "taplink.cc",
+        "linktr.ee",
+        "linktree.com",
+        "jivo.chat",
+        "jivosite.com",
+        "instagram.com",
+        "facebook.com",
+        "fb.com",
+        "wa.me",
+        "whatsapp.com",
+        "t.me",
+        "telegram.me",
+        "youtube.com",
+        "youtu.be",
+        "vk.com",
+        "linkedin.com",
+        "twitter.com",
+        "x.com",
+        "2gis.kz",
+        "2gis.com",
+        "google.com",
+    ]
+)
 
 # Kazakhstan numbers start with +76 or +77; codes 71x and 72x are city lines
 # (727 Almaty, 717 Astana), which WhatsApp does not reach.
@@ -114,7 +152,8 @@ def parse_state(html: str) -> dict[str, Any]:
     if not found:
         raise UnexpectedPageError("no initialState on the page")
     try:
-        return json.loads(re.sub(r"\\(['\\])", r"\1", found.group(1)))
+        state: dict[str, Any] = json.loads(re.sub(r"\\(['\\])", r"\1", found.group(1)))
+        return state
     except ValueError:
         raise UnexpectedPageError("initialState is no JSON") from None
 
@@ -137,10 +176,16 @@ def parse_rubric_page(html: str) -> RubricPage:
             if not org or not BRANCH_ID.fullmatch(branch_id):  # stops and ads come here too
                 continue
             reviews = data.get("reviews") or {}
-            branches.append(ListedBranch(
-                branch_id=branch_id, org_id=org.get("id"), name=data.get("name") or "",
-                org_name=org.get("name"), address=data.get("address_name"),
-                review_count=reviews.get("general_review_count") or 0))
+            branches.append(
+                ListedBranch(
+                    branch_id=branch_id,
+                    org_id=org.get("id"),
+                    name=data.get("name") or "",
+                    org_name=org.get("name"),
+                    address=data.get("address_name"),
+                    review_count=reviews.get("general_review_count") or 0,
+                )
+            )
         return RubricPage(meta["total"], meta["pages"], meta.get("currentPage"), branches)
     except (KeyError, TypeError, AttributeError, StopIteration) as error:
         # The type only: the message of a lookup error may quote the page.
@@ -207,15 +252,19 @@ class Identity:
     instagram: str | None
 
 
-def identity(org_id: str | None, name: str, city: str,
-             handles: Iterable[tuple[str, str]]) -> Identity:
+def identity(
+    org_id: str | None, name: str, city: str, handles: Iterable[tuple[str, str]]
+) -> Identity:
     """Return the identity of a branch from its 2GIS names and canonical contacts."""
     own = list(handles)
     return Identity(
-        org_id=org_id, name_norm=normalize_name(name), city=city,
+        org_id=org_id,
+        name_norm=normalize_name(name),
+        city=city,
         domain=_first(normalize_domain(h) for k, h in own if k == "website"),
         phones=tuple(sorted({h for k, h in own if k == "phone"})),
-        instagram=_first(normalize_instagram(h) for k, h in own if k == "instagram"))
+        instagram=_first(normalize_instagram(h) for k, h in own if k == "instagram"),
+    )
 
 
 def group_branches(identities: Mapping[str, Identity]) -> dict[str, list[str]]:
@@ -253,8 +302,12 @@ def group_branches(identities: Mapping[str, Identity]) -> dict[str, list[str]]:
 Union = Callable[[str, str], None]
 
 
-def _join_by(identities: Mapping[str, Identity], union: Union,
-             keys_of: Callable[[Identity], list[str | None]], cap: int | None) -> None:
+def _join_by(
+    identities: Mapping[str, Identity],
+    union: Union,
+    keys_of: Callable[[Identity], list[str | None]],
+    cap: int | None,
+) -> None:
     buckets: dict[str, list[str]] = {}
     for branch_id, data in sorted(identities.items()):
         for key in keys_of(data):
@@ -267,8 +320,9 @@ def _join_by(identities: Mapping[str, Identity], union: Union,
             union(members[0], other)
 
 
-def _join_similar_names(identities: Mapping[str, Identity], union: Union,
-                        find: Callable[[str], str]) -> None:
+def _join_similar_names(
+    identities: Mapping[str, Identity], union: Union, find: Callable[[str], str]
+) -> None:
     """Join similar names within a city: the weakest rule, so it goes last.
 
     Candidates are narrowed by city and first letter, or the comparison is
@@ -281,14 +335,16 @@ def _join_similar_names(identities: Mapping[str, Identity], union: Union,
             buckets.setdefault((data.city, data.name_norm[0]), []).append(branch_id)
     for _key, members in sorted(buckets.items()):
         for i, left in enumerate(members):
-            for right in members[i + 1:]:
+            for right in members[i + 1 :]:
                 if find(left) == find(right):
                     continue
                 a, b = identities[left].domain, identities[right].domain
                 if a and b and a != b:
                     continue
-                if _similarity(identities[left].name_norm,
-                               identities[right].name_norm) >= NAME_SIMILARITY:
+                if (
+                    _similarity(identities[left].name_norm, identities[right].name_norm)
+                    >= NAME_SIMILARITY
+                ):
                     union(left, right)
 
 
@@ -296,8 +352,9 @@ def _similarity(left: str, right: str) -> float:
     return SequenceMatcher(None, left, right).ratio()
 
 
-def link_reason(identities: Mapping[str, Identity], representative: str, branch_id: str,
-                members: list[str]) -> tuple[str, float]:
+def link_reason(
+    identities: Mapping[str, Identity], representative: str, branch_id: str, members: list[str]
+) -> tuple[str, float]:
     """Return the rule and confidence by which a branch belongs to its company.
 
     The fuzzy name is compared with every member, not only the representative:
@@ -347,8 +404,9 @@ class Assignment:
     conflicts: list[tuple[str, ...]] = field(default_factory=list)
 
 
-def assign(identities: Mapping[str, Identity], companies_of: Mapping[str, str],
-           taken: set[str]) -> Assignment:
+def assign(
+    identities: Mapping[str, Identity], companies_of: Mapping[str, str], taken: set[str]
+) -> Assignment:
     """Place every branch not in `companies_of` into a company; placed ones never move.
 
     A company id is stable: dossiers and threads will point at it. A new branch
@@ -420,15 +478,19 @@ def _first(values: Iterable[str | None]) -> str | None:
 
 def is_mobile(phone: str) -> bool:
     """Return True for a canonical Kazakh number outside the city codes."""
-    return (len(phone) == PHONE_LENGTH and phone.startswith(KAZAKH_PREFIXES)
-            and not phone.startswith(CITY_CODE_PREFIXES))
+    return (
+        len(phone) == PHONE_LENGTH
+        and phone.startswith(KAZAKH_PREFIXES)
+        and not phone.startswith(CITY_CODE_PREFIXES)
+    )
 
 
 def channel(handles: Iterable[tuple[str, str]]) -> tuple[str, str] | None:
     """Return the contact to write to in WhatsApp: a WhatsApp one, else a mobile."""
     handles = list(handles)
-    return (next((h for h in handles if h[0] == "whatsapp"), None)
-            or next((h for h in handles if h[0] == "phone" and is_mobile(h[1])), None))
+    return next((h for h in handles if h[0] == "whatsapp"), None) or next(
+        (h for h in handles if h[0] == "phone" and is_mobile(h[1])), None
+    )
 
 
 def is_reachable(handles: Iterable[tuple[str, str]]) -> bool:
@@ -441,8 +503,9 @@ def site_domain(handles: Iterable[tuple[str, str]]) -> str | None:
     return _first(normalize_domain(h) for k, h in handles if k == "website")
 
 
-def priority_key(handles: Iterable[tuple[str, str]], review_count: int,
-                 company_id: str) -> tuple[bool, int, bool, str]:
+def priority_key(
+    handles: Iterable[tuple[str, str]], review_count: int, company_id: str
+) -> tuple[bool, int, bool, str]:
     """Return the sort key before research: WhatsApp, then reviews, then a site."""
     kinds = {kind for kind, _ in handles}
     return ("whatsapp" not in kinds, -review_count, "website" not in kinds, company_id)

@@ -27,20 +27,26 @@ NO_REASON = "причина не записана"
 MIN_REASON_LENGTH = 3
 
 # A frozen copy of the legacy definition: the old collector created it on every connect.
-LEGACY_TABLE = ("CREATE TABLE suppression ("
-                " handle TEXT PRIMARY KEY, added_at TEXT NOT NULL, reason TEXT)")
-LEGACY_VIEW = ("CREATE VIEW suppression AS"
-               " SELECT handle, refused_at AS added_at, reason FROM refusals")
+LEGACY_TABLE = (
+    "CREATE TABLE suppression ( handle TEXT PRIMARY KEY, added_at TEXT NOT NULL, reason TEXT)"
+)
+LEGACY_VIEW = (
+    "CREATE VIEW suppression AS SELECT handle, refused_at AS added_at, reason FROM refusals"
+)
 # A batch rebuild of refusals in a later revision drops these: recreate them there.
 # The INSERT guard covers INSERT OR REPLACE: its implicit delete fires no DELETE
 # trigger while recursive_triggers is off, so it would rewrite the first record.
 GUARDS = [
-    *(f"CREATE TRIGGER refusals_never_{verb.lower()} BEFORE {verb} ON refusals"
-      f" BEGIN SELECT RAISE(ABORT, 'refusals are never {done}'); END"
-      for verb, done in (("DELETE", "deleted"), ("UPDATE", "edited"))),
-    "CREATE TRIGGER refusals_keep_the_first BEFORE INSERT ON refusals"
-    " WHEN EXISTS (SELECT 1 FROM refusals WHERE handle = NEW.handle)"
-    " BEGIN SELECT RAISE(IGNORE); END",
+    *(
+        f"CREATE TRIGGER refusals_never_{verb.lower()} BEFORE {verb} ON refusals"
+        f" BEGIN SELECT RAISE(ABORT, 'refusals are never {done}'); END"
+        for verb, done in (("DELETE", "deleted"), ("UPDATE", "edited"))
+    ),
+    (
+        "CREATE TRIGGER refusals_keep_the_first BEFORE INSERT ON refusals"
+        " WHEN EXISTS (SELECT 1 FROM refusals WHERE handle = NEW.handle)"
+        " BEGIN SELECT RAISE(IGNORE); END"
+    ),
 ]
 
 LegacyRow = tuple[str, str, str | None]
@@ -58,8 +64,9 @@ def upgrade() -> None:
         sa.CheckConstraint(f"length(reason) >= {MIN_REASON_LENGTH}", name="reason_not_short"),
     )
     bind = op.get_bind()
-    legacy = bind.execute(sa.text(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'suppression'")).first()
+    legacy = bind.execute(
+        sa.text("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'suppression'")
+    ).first()
     if legacy:
         rows = bind.execute(sa.text("SELECT handle, added_at, reason FROM suppression")).all()
         op.bulk_insert(refusals, _earliest_per_handle(rows))
@@ -77,8 +84,10 @@ def downgrade() -> None:
     # which creates it on connect; downgrading a fresh database to base leaves it empty.
     if rows:
         op.execute(LEGACY_TABLE)
-        bind.execute(sa.text("INSERT INTO suppression VALUES (:handle, :added_at, :reason)"),
-                     [{"handle": h, "added_at": at, "reason": r} for h, at, r in rows])
+        bind.execute(
+            sa.text("INSERT INTO suppression VALUES (:handle, :added_at, :reason)"),
+            [{"handle": h, "added_at": at, "reason": r} for h, at, r in rows],
+        )
     op.drop_table("refusals")
 
 
@@ -86,8 +95,11 @@ def _earliest_per_handle(rows: Sequence[LegacyRow]) -> list[dict[str, str]]:
     """Normalise legacy rows; handles that meet in canonical form keep the earlier one."""
     earliest: dict[str, dict[str, str]] = {}
     for handle, added_at, reason in rows:
-        row = {"handle": _canonical(handle), "reason": _reason(reason),
-               "refused_at": _utc(added_at)}
+        row = {
+            "handle": _canonical(handle),
+            "reason": _reason(reason),
+            "refused_at": _utc(added_at),
+        }
         kept = earliest.get(row["handle"])
         if kept is None or row["refused_at"] < kept["refused_at"]:
             earliest[row["handle"]] = row

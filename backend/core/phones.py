@@ -12,7 +12,9 @@ PHONE = re.compile(r"\+?[0-9\s()\-‐-―]+")
 # wa.me/<number> and api.whatsapp.com/send?phone=<number>; the number is international.
 WHATSAPP_LINK = re.compile(
     r"(?:https?://)?(?:www\.)?(?:wa\.me/|api\.whatsapp\.com/send/?\?(?:[^#]*&)?phone=)"
-    r"\+?([0-9]+)(?=$|[/?#&])", re.IGNORECASE)
+    r"\+?([0-9]+)(?=$|[/?#&])",
+    re.IGNORECASE,
+)
 KAZAKHSTAN_DIGITS = 11
 MIN_DIGITS, MAX_DIGITS = 10, 15  # E.164 without the country-code-only short numbers
 

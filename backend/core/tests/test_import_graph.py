@@ -1,16 +1,31 @@
-"""core knows no domain module: everything else may depend on it, never back."""
+"""Migrations know no domain module: a migration outlives the code it was written against.
+
+The boundaries of core and the domain modules are import-linter contracts
+(pyproject.toml, [tool.importlinter]); migrations are not a package, so the
+linter cannot see them and this test guards them instead.
+"""
 
 import ast
 from pathlib import Path
 
-CORE = Path(__file__).resolve().parent.parent
-BACKEND = CORE.parent
-DOMAIN = ("collector", "writer", "sender", "sandbox", "companies", "research",
-          "refusals", "conversations", "delivery", "overview", "analytics", "tasks")
+MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations"
+DOMAIN = (
+    "collector",
+    "writer",
+    "sender",
+    "sandbox",
+    "companies",
+    "research",
+    "refusals",
+    "backup",
+    "activity",
+    "analytics",
+    "tasks",
+)
 
 
 def imports(path: Path) -> set[str]:
-    found = set()
+    found: set[str] = set()
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
             found.update(alias.name for alias in node.names)
@@ -19,21 +34,10 @@ def imports(path: Path) -> set[str]:
     return found
 
 
-def sources() -> list[Path]:
-    return [path for path in [*CORE.rglob("*.py"), *(BACKEND / "migrations").rglob("*.py")]
-            if "tests" not in path.relative_to(BACKEND).parts]
-
-
-def test_core_and_migrations_import_no_domain_module():
+def test_migrations_import_no_domain_module():
+    seen = {path.name: imports(path) for path in MIGRATIONS.rglob("*.py")}
     offenders = {
-        path.relative_to(BACKEND).as_posix(): sorted(
-            name for name in imports(path) if name.split(".")[0] in DOMAIN)
-        for path in sources()
+        name: sorted(n for n in names if n.split(".")[0] in DOMAIN) for name, names in seen.items()
     }
-    assert {path: names for path, names in offenders.items() if names} == {}
-
-
-def test_the_guard_sees_the_adapters():
-    seen = {path.name: imports(path) for path in sources()}
-    assert "scrapling.fetchers" in seen["pages.py"]
-    assert "langchain_openrouter" in seen["model.py"]
+    assert {name: names for name, names in offenders.items() if names} == {}
+    assert "paths" in seen["env.py"]  # the guard reads the files it guards

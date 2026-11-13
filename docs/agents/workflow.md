@@ -82,10 +82,10 @@ Main ведёт тикеты сам и зовёт пользователя то�
 
 Полный набор — один раз на финальном коде после ревью (`/workflow:launch-coder`, шаг 4). В цикле TDD — только отдельные тест-файлы.
 
-- **`backend/`:** `cd backend && uv run pytest` (сети не требует, около 15 секунд).
+- **`backend/`:** `cd backend && uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run lint-imports && uv run pytest` (сети не требует, около 30 секунд). Охват линтеров — `backend/CLAUDE.md`, «Команды».
 - **`frontend/`, если дифф его трогает:** `cd frontend && npx tsc --noEmit && npm run build`.
 
-Линтеров и проверки типов бэкенда пока нет — #5. CI в репо нет: проверки идут локально, `/workflow:ci-watch` пропускается.
+Отдельного линтера фронтенда нет: типы проверяют `tsc` и `next build`, а ESLint без правил проекта только шумел бы (#5). CI в репо нет: проверки идут локально, `/workflow:ci-watch` пропускается.
 
 ## Ревью
 
