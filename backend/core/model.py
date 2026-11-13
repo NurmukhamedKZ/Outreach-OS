@@ -7,12 +7,14 @@ record of a paid call is the dossier built from it (#12).
 
 import contextvars
 import threading
-from collections.abc import Sequence
+import weakref
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from time import sleep
+from time import monotonic, sleep
 from typing import Literal, Protocol
 
 import httpx
+import openrouter
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.exceptions import OutputParserException
 from langchain_openrouter import ChatOpenRouter
@@ -29,9 +31,13 @@ type Message = tuple[Literal["system", "human", "ai"], str]
 # back to its own RetryConfig with an hour of backoff per attempt, stacked on
 # top of TRANSPORT_RETRIES below. Only strategy="none" passed per call does.
 NO_SDK_RETRY = RetryConfig("none", BackoffStrategy(0, 0, 1, 0), False)
-# Without a timeout a hung connection blocks invoke() forever; 60 s is ample
-# for a structured reply of a few KB.
+# httpx timeouts bound each wait (connect, a pause between bytes), never the
+# whole request: 60 s of silence ends a dead connection.
 REQUEST_TIMEOUT_MS = 60_000
+# OpenRouter keeps a plain request alive with whitespace while it waits for the
+# provider, so the read timeout above may never fire (#27). This bounds one
+# request end to end; the slowest normal call in the #12 run took about 30 s.
+CALL_DEADLINE_S = 180
 # Retried: a body cut mid-read (RemoteProtocolError, or ResponseValidationError
 # when the SDK wraps it) and a reply off the schema despite strict mode
 # (OutputParserException) — both are one call's bad luck, the same prompt
@@ -78,8 +84,9 @@ class OpenRouterModel:
     """Model through OpenRouter. `answer` blocks the thread for up to minutes:
     call it from async code via asyncio.to_thread."""
 
-    def __init__(self, api_key: str | None):
+    def __init__(self, api_key: str | None, transport: httpx.BaseTransport | None = None):
         self.api_key = api_key
+        self.transport = transport
 
     def answer[S: BaseModel](self, model: str, schema: type[S], messages: Sequence[Message],
                              *, session_id: str, name: str) -> S:
@@ -88,8 +95,9 @@ class OpenRouterModel:
         # require_parameters keeps routing to providers that honour strict
         # json_schema; others ignore response_format and answer off the schema.
         client = ChatOpenRouter(
+            client=openrouter_client(self.api_key, self.transport),
             model=model, api_key=self.api_key, temperature=0, reasoning={"enabled": False},
-            timeout=REQUEST_TIMEOUT_MS, model_kwargs={"retries": NO_SDK_RETRY},
+            model_kwargs={"retries": NO_SDK_RETRY},
             openrouter_provider={"require_parameters": True},
         ).with_structured_output(schema, method="json_schema", strict=True)
         handler = langfuse_handler()
@@ -112,6 +120,57 @@ class OpenRouterModel:
                     _log_trace_in_background(handler)
                 return result
         raise AssertionError("unreachable")
+
+
+def openrouter_client(api_key: str | None, transport: httpx.BaseTransport | None = None,
+                      ) -> openrouter.OpenRouter:
+    """SDK client whose every request ends by CALL_DEADLINE_S.
+
+    Pass it as ChatOpenRouter(client=...): the chat model's own `timeout=` only
+    reaches a client it builds itself. `transport` replaces the network in tests.
+    """
+    http = httpx.Client(transport=DeadlineTransport(transport or httpx.HTTPTransport()),
+                        timeout=REQUEST_TIMEOUT_MS / 1000, follow_redirects=True)
+    sdk = openrouter.OpenRouter(api_key=api_key, client=http)
+    # The SDK closes only clients it built; this one dies with the SDK client.
+    weakref.finalize(sdk, http.close)
+    return sdk
+
+
+class DeadlineTransport(httpx.BaseTransport):
+    """Raises httpx.ReadTimeout (retried like any dropped connection) once the
+    body is still coming CALL_DEADLINE_S after the request started.
+
+    Checked on every chunk, in the calling thread: no timer thread. A body that
+    stops coming altogether is ended by the read timeout instead.
+    """
+
+    def __init__(self, inner: httpx.BaseTransport):
+        self.inner = inner
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        deadline = monotonic() + CALL_DEADLINE_S
+        response = self.inner.handle_request(request)
+        response.stream = _DeadlineStream(response.stream, deadline, request)
+        return response
+
+    def close(self) -> None:
+        self.inner.close()
+
+
+class _DeadlineStream(httpx.SyncByteStream):
+    def __init__(self, stream: httpx.SyncByteStream, deadline: float, request: httpx.Request):
+        self.stream, self.deadline, self.request = stream, deadline, request
+
+    def __iter__(self) -> Iterator[bytes]:
+        for chunk in self.stream:
+            if monotonic() > self.deadline:
+                # httpx closes the response on the way out, and with it the connection.
+                raise httpx.ReadTimeout("model call deadline passed", request=self.request)
+            yield chunk
+
+    def close(self) -> None:
+        self.stream.close()
 
 
 def _log_trace_in_background(handler: BaseCallbackHandler) -> None:

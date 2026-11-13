@@ -1,5 +1,9 @@
 """Model adapter with the OpenRouter client replaced: no request leaves the process."""
 
+import json
+import threading
+import time
+
 import httpx
 import pytest
 from langchain_core.exceptions import OutputParserException
@@ -64,12 +68,14 @@ def answer(adapter):
                           session_id="batch-7", name="research")
 
 
-def test_reply_parsed_into_schema_with_sdk_retries_off_and_timeout(client):
+def test_reply_parsed_into_schema_with_sdk_retries_off_and_deadline(client):
     fake = client(Dossier(summary="ok"))
 
     assert answer(model.OpenRouterModel("key")) == Dossier(summary="ok")
     assert fake.built["model"] == "openai/gpt-5-mini"
-    assert fake.built["timeout"] == model.REQUEST_TIMEOUT_MS
+    http = fake.built["client"].sdk_configuration.client
+    assert isinstance(http._transport, model.DeadlineTransport)
+    assert http.timeout.read == model.REQUEST_TIMEOUT_MS / 1000
     assert fake.built["model_kwargs"] == {"retries": model.NO_SDK_RETRY}
     assert fake.built["openrouter_provider"] == {"require_parameters": True}
     assert fake.structured == {"schema": Dossier, "method": "json_schema", "strict": True}
@@ -151,3 +157,112 @@ def test_fake_replays_answers_and_records_calls():
     assert [call.schema for call in fake.calls] == [Dossier, Dossier]
     assert fake.calls[0].messages == MESSAGES
     assert fake.calls[0].session_id == "batch-7"
+
+
+# --- #27: one request has a deadline, not only a read timeout -----------------
+
+
+class Trickle(httpx.SyncByteStream):
+    """A body that never ends: a space every few milliseconds, as OpenRouter
+    keeps a plain request alive while it waits for the provider."""
+
+    def __init__(self):
+        self.closed = False
+
+    def __iter__(self):
+        while not self.closed:
+            time.sleep(0.01)
+            yield b" "
+
+    def close(self):
+        self.closed = True
+
+
+class Chunks(httpx.SyncByteStream):
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def __iter__(self):
+        for start in range(0, len(self.body), 16):
+            yield self.body[start:start + 16]
+
+
+COMPLETION = {
+    "id": "gen-1", "object": "chat.completion", "created": 0, "model": "openai/gpt-5-mini",
+    "system_fingerprint": None,
+    "choices": [{"index": 0, "finish_reason": "stop",
+                 "message": {"role": "assistant", "content": '{"summary": "ok", "hooks": []}'}}],
+    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+}
+
+
+class OpenRouterStub(httpx.MockTransport):
+    """OpenRouter on the wire: replays one outcome per request, "hang" or "ok"."""
+
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.bodies: list[Trickle] = []
+        super().__init__(self.reply)
+
+    def reply(self, request):
+        if self.outcomes.pop(0) == "hang":
+            self.bodies.append(Trickle())
+            return httpx.Response(200, headers={"content-type": "application/json"},
+                                  stream=self.bodies[-1])
+        # Streamed in pieces, as the network delivers it: only then does the
+        # body pass through the deadline check at all.
+        body = json.dumps(COMPLETION).encode()
+        return httpx.Response(200, headers={"content-type": "application/json"},
+                              stream=Chunks(body))
+
+
+@pytest.fixture
+def wire(monkeypatch, slept):
+    monkeypatch.setattr(model, "langfuse_handler", lambda: None)
+    monkeypatch.setattr(model, "CALL_DEADLINE_S", 0.05)
+
+
+def test_reply_that_never_ends_is_a_model_error_by_the_deadline(wire):
+    stub = OpenRouterStub(*["hang"] * model.TRANSPORT_RETRIES)
+    started = time.monotonic()
+
+    with pytest.raises(model.ModelError):
+        answer(model.OpenRouterModel("key", transport=stub))
+
+    assert time.monotonic() - started < 5
+    assert len(stub.bodies) == model.TRANSPORT_RETRIES
+    assert all(body.closed for body in stub.bodies)
+
+
+def test_call_cut_by_the_deadline_is_retried(wire):
+    stub = OpenRouterStub("hang", "ok")
+
+    assert answer(model.OpenRouterModel("key", transport=stub)) == Dossier(summary="ok")
+    assert stub.outcomes == []
+
+
+def test_normal_reply_passes_the_deadline_untouched(wire):
+    assert answer(model.OpenRouterModel("key", transport=OpenRouterStub("ok"))) \
+        == Dossier(summary="ok")
+
+
+def test_hung_calls_leave_no_threads_behind(wire):
+    adapter = model.OpenRouterModel("key", transport=OpenRouterStub(*["hang"] * 30))
+    before = threading.active_count()
+
+    for _ in range(10):
+        with pytest.raises(model.ModelError):
+            answer(adapter)
+
+    assert threading.active_count() <= before
+
+
+def test_closing_the_client_closes_the_network_transport():
+    stub = OpenRouterStub()
+    sdk = model.openrouter_client("key", stub)
+    closed = []
+    stub.close = lambda: closed.append(True)
+
+    sdk.sdk_configuration.client.close()
+
+    assert closed == [True]
