@@ -18,7 +18,8 @@
 
 - **Симптом:** в worktree кодера #8 `npm run dev` (Turbopack, Next 16.3.1) отвечал 500 на каждой странице: «Module not found: Can't resolve '@vercel/turbopack-next/internal/font/google/font' … next/font/google queries have exactly one entry». `npx next dev --webpack` и `npm run build` работали.
 - **Корень:** не установлен. В свежем worktree после `npm ci` во `frontend/` ошибка не воспроизводится: `npm run dev` отдаёт 200 на `/`, `/activity`, `/settings`, `/leads` (13 ноября 2026). Вероятнее всего, у кодера были не те `node_modules` (скопированные или от другой версии), а не дефект кода.
-- **Исправление:** код не менялся. В новом worktree зависимости фронта ставить `npm ci` во `frontend/`, не копировать и не ссылаться на `node_modules` основного дерева.
+- **Повтор (#17, 13 ноября 2026):** воспроизвелось в свежем worktree и после `npm ci`, и после удаления `frontend/.next`, так что версия «не те `node_modules`» не подтвердилась. Корень по-прежнему не установлен. `npx next dev --webpack` работает. Там же SSE не доезжал до страницы: в worktree нет `frontend/.env.local` (он в `.gitignore`), и `EventSource` шёл через буферизующий прокси Next — список не перечитывался после завершения джобы.
+- **Исправление:** код не менялся. В новом worktree зависимости фронта ставить `npm ci` во `frontend/`, не копировать и не ссылаться на `node_modules` основного дерева. Скопировать `frontend/.env.local` из основного дерева. Если `npm run dev` отдаёт 500 с этой ошибкой — запускать `npx next dev --webpack`.
 - **Класс:** окружение worktree.
 - **Как ловили:** повтор в свежем worktree с `npm ci`.
 
