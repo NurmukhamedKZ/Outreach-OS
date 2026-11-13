@@ -7,14 +7,15 @@ message has one way into the queue and one set of gates.
 
 import logging
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
 import activity
 from conversations import public as conversation
 from core import operator_settings, phones
-from core.whatsapp import Session, TransportError, WhatsApp
+from core.whatsapp import Session, SessionLoggedOutError, TransportError, WhatsApp
 from delivery import domain
 from delivery.exceptions import (
     ClosedThreadError,
@@ -27,6 +28,7 @@ from delivery.exceptions import (
     NumberNotQuarantinedError,
     RowNotFoundError,
     RowNotWaitingError,
+    TransportFailedError,
 )
 from delivery.repository import DeliveryRepository
 from delivery.schemas import (
@@ -141,14 +143,26 @@ class DeliveryService:
         return found
 
     def pair(self, number: str) -> str:
-        """Return a pairing code; Node puts an unlinked session aside first."""
+        """Return a pairing code; Node puts an unlinked session aside first.
+
+        Raises:
+            NumberNotFoundError: no such number.
+            TransportFailedError: Node did not answer.
+        """
         self.number(number)
-        return self._whatsapp.pair(number)
+        with _node():
+            return self._whatsapp.pair(number)
 
     def qr(self, number: str) -> str:
-        """Return a QR to link the number; Node puts an unlinked session aside first."""
+        """Return a QR to link the number; Node puts an unlinked session aside first.
+
+        Raises:
+            NumberNotFoundError: no such number.
+            TransportFailedError: Node did not answer.
+        """
         self.number(number)
-        return self._whatsapp.qr(number)
+        with _node():
+            return self._whatsapp.qr(number)
 
     def mark_warmed(self, number: str, now: datetime) -> NumberCard:
         """Mark a number warmed outside our system: active at once, past the calendar."""
@@ -299,6 +313,7 @@ class DeliveryService:
             NoNumberAvailableError: no number has room for a first touch today.
             NotReachableError: the lead's number has no WhatsApp; the thread is unreachable now.
             SessionLoggedOutError: our number's session is unlinked.
+            TransportFailedError: Node did not answer.
             AlreadyQueuedError: the draft already has a live row.
         """
         if text is not None and not text.strip():
@@ -333,9 +348,13 @@ class DeliveryService:
         Raises:
             NoNumberAvailableError: no number has room today.
             NotReachableError: the lead's number has no WhatsApp; the thread is unreachable now.
+            SessionLoggedOutError: our number's session is unlinked.
+            TransportFailedError: Node did not answer.
         """
         number = domain.take(self.budget(now, self.settings().daily_ceiling))
-        if not self._whatsapp.check(number, thread["channel"]):
+        with _node():
+            reachable = self._whatsapp.check(number, thread["channel"])
+        if not reachable:
             with self._db:
                 conversation.set_status(
                     self._db, thread["company_id"], "unreachable", "у номера лида нет WhatsApp"
@@ -504,6 +523,18 @@ class DeliveryService:
         elif thread["status"] in conversation.AUTOMATON_STOPS:
             # A refused or a human's thread must not wake the seller.
             conversation.mark_handled(self._db, message_id, now)
+
+
+@contextmanager
+def _node() -> Iterator[None]:
+    """Turn Node's silence into a domain error; an unlinked session keeps its own code."""
+    try:
+        yield
+    except SessionLoggedOutError:
+        raise
+    except TransportError as error:
+        log.warning("node failed: %s", error)
+        raise TransportFailedError() from error
 
 
 def channel_of(jid: str | None) -> str | None:

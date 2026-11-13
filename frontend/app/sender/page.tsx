@@ -1,32 +1,75 @@
 "use client";
 
-/** Система 3: отправка. Пул номеров с днём прогрева и остатком дневного
- * лимита, очередь исходящих и kill switch автопилота. Содержимое по-прежнему
+/** Доставка: пул номеров с днём прогрева, сокетом и остатком дневного лимита,
+ * очередь исходящих с автором строки и переключатель автопилота. Содержимое
  * целиком приезжает с бэкенда (GET /api/sender), страница не знает ни
- * календаря прогрева, ни порогов.
+ * календаря прогрева, ни правил режима. SSE нет: страница опрашивает API.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  ApiError,
   AUTOPILOT_LABELS,
+  cancelRow,
+  confirmRow,
   fetchQueue,
   fetchSender,
   liftQuarantine,
   markWarmed,
+  pairNumber,
   qrNumber,
   registerNumber,
   setAutopilot,
   type AutopilotMode,
   type QueueRow,
+  type SenderNumber,
   type SenderStatus,
 } from "../api";
-import { useLive } from "@/components/live";
+
+const POLL_MS = 10_000;
 
 const PHASE_LABEL: Record<string, string> = {
   socket_delay: "сокет не привязан",
   passive: "только входящие",
   internal: "внутренний прогрев",
   cold: "боевые касания",
+};
+
+const NUMBER_STATUS: Record<SenderNumber["status"], string> = {
+  new: "новый",
+  warming: "греется",
+  active: "боевой",
+  quarantined: "карантин",
+  banned: "бан",
+};
+
+const KIND_LABEL: Record<string, string> = {
+  cold: "первое письмо",
+  followup: "касание",
+  reply: "ответ",
+  warmup: "прогрев",
+};
+
+const ROW_STATUS: Record<string, string> = {
+  pending: "ждёт",
+  sending: "уходит",
+  sent: "ушло",
+  failed: "не ушло",
+  cancelled: "отменено",
+  stuck: "судьба неизвестна",
+};
+
+const AUTHOR_LABEL: Record<QueueRow["author"], string> = {
+  operator: "оператор",
+  automat: "автомат",
+};
+
+const ERROR_TEXT: Record<string, string> = {
+  "errors.sessionLoggedOut": "Сессия номера отвязана в WhatsApp — привяжите номер заново: QR или код.",
+  "errors.transportFailed": "WhatsApp-сервис (Node) не ответил — проверьте, что он запущен.",
+  "errors.numberExists": "Этот номер уже в пуле.",
+  "errors.phoneInvalid": "Это не похоже на номер телефона.",
+  "errors.rowNotWaiting": "Строка уже не ждёт: ушла, отменена или подтверждена.",
 };
 
 const WHEN = new Intl.DateTimeFormat("ru", {
@@ -36,35 +79,55 @@ const WHEN = new Intl.DateTimeFormat("ru", {
   minute: "2-digit",
 });
 
+type Pairing = { number: string; qr?: string; code?: string };
+
 export default function Sender() {
-  const { refreshTick } = useLive();
   const [status, setStatus] = useState<SenderStatus | null>(null);
+  const [queue, setQueue] = useState<QueueRow[]>([]);
   const [recent, setRecent] = useState<QueueRow[]>([]);
-  const [qr, setQr] = useState<string | null>(null);
+  const [pairing, setPairing] = useState<Pairing | null>(null);
   const [number, setNumber] = useState("");
   const [skipWarmup, setSkipWarmup] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(() => {
     fetchSender().then(setStatus).catch(() => undefined);
+    fetchQueue()
+      .then((data) => {
+        setQueue(data.queue);
+        setRecent(data.recent);
+      })
+      .catch(() => undefined);
   }, []);
 
-  useEffect(reload, [reload, refreshTick]);
-
   useEffect(() => {
-    fetchQueue().then((data) => setRecent(data.recent)).catch(() => undefined);
-  }, [refreshTick]);
+    reload();
+    const timer = setInterval(reload, POLL_MS);
+    return () => clearInterval(timer);
+  }, [reload]);
 
-  /** Дубликат номера и лежащий Node приезжают сюда ошибкой запроса: без этого
-   * кнопка молча ничего не делает, а в консоли висит unhandled rejection. */
-  const report = (failure: unknown) => setError(String(failure));
+  /** Отказ кнопки приезжает словами: без этого она молча ничего не делает. */
+  const report = (failure: unknown) => {
+    const code = failure instanceof ApiError ? failure.code : undefined;
+    setError((code && ERROR_TEXT[code]) || (failure instanceof Error ? failure.message : String(failure)));
+  };
+
+  const act = (work: () => Promise<unknown>) => {
+    setError(null);
+    work().then(reload).catch(report);
+  };
+
+  const showQr = (target: string) =>
+    act(() => qrNumber(target).then((body) => setPairing({ number: target, qr: body.qr })));
+  const showCode = (target: string) =>
+    act(() => pairNumber(target).then((body) => setPairing({ number: target, code: body.code })));
 
   return (
     <>
       <header className="page-head">
         <h1>Отправка</h1>
         <span className="page-sub">
-          система 3 · автопилот: {status ? AUTOPILOT_LABELS[status.autopilot] ?? status.autopilot : "…"}
+          автопилот: {status ? AUTOPILOT_LABELS[status.autopilot] ?? status.autopilot : "…"}
         </span>
       </header>
 
@@ -96,100 +159,88 @@ export default function Sender() {
             <button
               key={mode}
               className={status?.autopilot === mode ? "btn" : "btn-secondary"}
-              aria-current={status?.autopilot === mode}
-              onClick={() => {
-                setError(null);
-                setAutopilot(mode).then(reload).catch(report);
-              }}
+              aria-pressed={status?.autopilot === mode}
+              onClick={() => act(() => setAutopilot(mode))}
             >
               {label}
             </button>
           ))}
         </div>
         <p className="note">
-          «Стоп» держит всю очередь. «Ручной» — модель готовит черновики, а уходит
-          только то, что вы поставили в очередь кнопкой. То, что автомат успел
-          поставить до переключения в «Ручной», тоже уйдёт: остановить всё — только
-          «Стоп».
+          «Стоп» держит всю очередь, кроме прогрева. «Ручной» отправляет только то, что вы
+          поставили сами; строки, которые автомат поставил раньше, ждут «Отправить». «Только
+          ответы» сам отправляет ответы лидам, «Полный автопилот» — ещё и первые письма и
+          касания. Режим — та же настройка, что в «Настройках» → «Отправка».
         </p>
+        {error && <p className="error-line" role="alert">{error}</p>}
+
+        <h3>Ждут отправки</h3>
+        {queue.length === 0 ? (
+          <p className="page-sub">Очередь пуста.</p>
+        ) : (
+          <QueueTable rows={queue} act={act} />
+        )}
         {recent.length > 0 && (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Сообщение</th><th>Вид</th><th>Номер</th><th>Статус</th><th>Не раньше</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recent.map((row) => (
-                <tr key={row.outbox_id}>
-                  <td className="mono">{row.thread_id ?? "прогрев"}</td>
-                  <td>{row.kind}</td>
-                  <td className="mono">{row.our_number}</td>
-                  <td>{row.status}</td>
-                  <td>{WHEN.format(new Date(row.send_after))}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <>
+            <h3>Последние</h3>
+            <QueueTable rows={recent} />
+          </>
         )}
       </section>
 
       <section className="card">
         <h2>Пул номеров</h2>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Номер</th><th>Статус</th><th>День</th><th>Фаза</th>
-              <th>Сегодня</th><th>Осталось</th><th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {(status?.numbers ?? []).map((row) => (
-              <tr key={row.number}>
-                <td className="mono">{row.number}</td>
-                <td>{row.status}</td>
-                <td>{row.day}</td>
-                <td>{PHASE_LABEL[row.phase] ?? row.phase}</td>
-                <td>{row.sent_today} / {row.daily_limit}</td>
-                <td>{row.capacity}</td>
-                <td>
-                  {row.status === "quarantined" && (
-                    <button
-                      className="btn"
-                      onClick={() => {
-                        setError(null);
-                        liftQuarantine(row.number).then(reload).catch(report);
-                      }}
-                    >
-                      Снять карантин
-                    </button>
-                  )}
-                  <button
-                    className="btn"
-                    onClick={() => {
-                      setError(null);
-                      setNumber(row.number);
-                      qrNumber(row.number).then((body) => setQr(body.qr)).catch(report);
-                    }}
-                  >
-                    QR
-                  </button>
-                  {!row.skip_warmup && (
-                    <button
-                      className="btn"
-                      onClick={() => {
-                        setError(null);
-                        markWarmed(row.number).then(reload).catch(report);
-                      }}
-                    >
-                      Уже прогрет
-                    </button>
-                  )}
-                </td>
+        <div className="settings-table">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Номер</th><th>Статус</th><th>День</th><th>Фаза</th>
+                <th>Сегодня</th><th>Осталось</th><th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(status?.numbers ?? []).map((row) => (
+                <tr key={row.number}>
+                  <td className="mono">{row.number}</td>
+                  <td>
+                    {NUMBER_STATUS[row.status] ?? row.status}
+                    {row.session === "loggedOut" && (
+                      <div>
+                        <span className="tone is-stop">отвязан — привяжите заново</span>
+                      </div>
+                    )}
+                    {row.note && <div className="page-sub">{row.note}</div>}
+                  </td>
+                  <td>{row.day}</td>
+                  <td>{PHASE_LABEL[row.phase] ?? row.phase}</td>
+                  <td>{row.sent_today} / {row.daily_limit}</td>
+                  <td>{row.capacity}</td>
+                  <td>
+                    <div className="row-actions">
+                      {row.status === "quarantined" && (
+                        <button className="btn" onClick={() => act(() => liftQuarantine(row.number))}>
+                          Снять карантин
+                        </button>
+                      )}
+                      <button className="btn-secondary" onClick={() => showQr(row.number)}>
+                        QR
+                      </button>
+                      <button className="btn-secondary" onClick={() => showCode(row.number)}>
+                        Код
+                      </button>
+                      {!row.skip_warmup && (
+                        <button className="btn-secondary" onClick={() => act(() => markWarmed(row.number))}>
+                          Уже прогрет
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {pairing && <PairingHint pairing={pairing} />}
       </section>
 
       <section className="card">
@@ -222,7 +273,7 @@ export default function Sender() {
                 <tr key={row.outbox_id}>
                   <td>{WHEN.format(new Date(row.updated_at))}</td>
                   <td className="mono">{row.our_number} → {row.recipient}</td>
-                  <td>{row.status}</td>
+                  <td>{ROW_STATUS[row.status] ?? row.status}</td>
                 </tr>
               ))}
             </tbody>
@@ -235,6 +286,7 @@ export default function Sender() {
         <input
           className="input mono"
           placeholder="+77001112233"
+          aria-label="Номер"
           value={number}
           onChange={(event) => setNumber(event.target.value)}
         />
@@ -246,35 +298,80 @@ export default function Sender() {
           />
           {" "}уже прогрет — сразу боевой, без рампы
         </label>
-        <button
-          className="btn"
-          onClick={() => {
-            setError(null);
-            registerNumber(number, skipWarmup).then(reload).catch(report);
-          }}
-          disabled={!number}
-        >
-          Добавить в пул
-        </button>
-        <button
-          className="btn"
-          onClick={() => {
-            setError(null);
-            qrNumber(number).then((body) => setQr(body.qr)).catch(report);
-          }}
-          disabled={!number}
-        >
-          Показать QR
-        </button>
-        {error && <p className="error-line">{error}</p>}
-        {qr && (
-          <p>
-            WhatsApp → Связанные устройства → Привязать устройство → отсканировать:
-            <br />
-            <img src={qr} alt="QR-код привязки WhatsApp" width={264} height={264} />
-          </p>
-        )}
+        <div className="row-actions">
+          <button
+            className="btn"
+            onClick={() => act(() => registerNumber(number, skipWarmup))}
+            disabled={!number}
+          >
+            Добавить в пул
+          </button>
+        </div>
       </section>
     </>
+  );
+}
+
+/** Строки очереди; с `act` — с кнопками: «Отправить» у ждущей строки автомата,
+ *  «Отменить» у любой ждущей. */
+function QueueTable({ rows, act }: { rows: QueueRow[]; act?: (work: () => Promise<unknown>) => void }) {
+  return (
+    <div className="settings-table">
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Тред</th><th>Вид</th><th>Автор</th><th>Номер</th><th>Статус</th><th>Не раньше</th>
+            {act && <th></th>}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.outbox_id}>
+              <td className="mono">{row.thread_id ?? "прогрев"}</td>
+              <td>{KIND_LABEL[row.kind] ?? row.kind}</td>
+              <td>{AUTHOR_LABEL[row.author] ?? row.author}</td>
+              <td className="mono">{row.our_number}</td>
+              <td>
+                {ROW_STATUS[row.status] ?? row.status}
+                {row.error && <div className="page-sub">{row.error}</div>}
+              </td>
+              <td>{WHEN.format(new Date(row.send_after))}</td>
+              {act && (
+                <td>
+                  {row.status === "pending" && (
+                    <div className="row-actions">
+                      {row.author === "automat" && (
+                        <button className="btn" onClick={() => act(() => confirmRow(row.outbox_id))}>
+                          Отправить
+                        </button>
+                      )}
+                      <button className="btn-secondary" onClick={() => act(() => cancelRow(row.outbox_id))}>
+                        Отменить
+                      </button>
+                    </div>
+                  )}
+                </td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PairingHint({ pairing }: { pairing: Pairing }) {
+  return (
+    <div className="pairing">
+      <p>
+        <span className="mono">{pairing.number}</span>: WhatsApp → Связанные устройства →
+        Привязать устройство →{" "}
+        {pairing.qr ? "отсканировать:" : "Привязать по номеру телефона и ввести код:"}
+      </p>
+      {pairing.qr && (
+        <img src={pairing.qr} alt="QR-код привязки WhatsApp" width={264} height={264} />
+      )}
+      {pairing.code && <p className="pairing-code mono">{pairing.code}</p>}
+    </div>
   );
 }

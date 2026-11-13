@@ -526,3 +526,18 @@ def test_a_reply_in_a_thread_the_human_leads_goes_to_telegram(http, db, notes):
     http.post("/api/sender/webhook", json=incoming())
     assert thread_of(db, "c1")["status"] == "escalated"
     assert notes and "сколько это стоит?" in notes[0]
+
+
+def test_a_dead_node_answers_with_a_code_on_the_buttons(http, db, whatsapp):
+    add_number(db)
+    open_thread(db)
+    add_draft(db)
+    whatsapp.error = TransportError("down")
+
+    assert code_of(http.post(f"/api/sender/numbers/{OURS}/qr")) == (502, "errors.transportFailed")
+    assert code_of(http.post(f"/api/sender/numbers/{OURS}/pair"))[0] == 502
+    assert code_of(http.post("/api/sender/queue", json={"thread_id": "c1"})) == (
+        502,
+        "errors.transportFailed",
+    )
+    assert thread_of(db)["status"] == "queued"

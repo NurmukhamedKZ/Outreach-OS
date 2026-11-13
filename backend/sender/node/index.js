@@ -2,6 +2,7 @@
 // ни тредов, ни лимитов, ни расписания — всё это решает Python, потому что
 // эту часть нельзя протестировать без живого WhatsApp.
 
+import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import makeWASocket, {
@@ -32,6 +33,18 @@ let lastWebhookLog = 0;
 
 const today = () => new Date().toISOString().slice(0, 10);
 
+// Ошибка ручки с кодом: Python ветвится по `code`, а не по тексту. Отвязанная
+// сессия — 409 sessionLoggedOut, а не 500: её чинит новая привязка, а не повтор.
+class RouteError extends Error {
+  constructor(status, code, message) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+const loggedOut = (number) => sockets.get(number)?.state === "loggedOut";
+
 // Счётчик реконнектов суточный, а не за всё время работы процесса: Python
 // сравнивает его с health.reconnects_per_day_alert, и накопительный счётчик
 // отправил бы в карантин весь пул за один длинный аптайм.
@@ -53,6 +66,9 @@ async function connect(number) {
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
+    // Сокет, который уже заменили новым (отложенная сессия), молчит: его close
+    // иначе перезаписал бы состояние нового сокета и запустил бы реконнект.
+    if (sockets.get(number)?.sock !== sock) return;
     const current = sockets.get(number);
     // QR-логин и pairing-code — два взаимоисключающих способа привязать один
     // и тот же неавторизованный сокет: Baileys шлёт `qr`, пока ничей код не
@@ -159,6 +175,30 @@ async function socketOf(number) {
   return sockets.get(number).sock;
 }
 
+// WhatsApp отвязал сессию (loggedOut): по старым ключам Baileys больше не войдёт,
+// и QR на мёртвом сокете не придёт никогда. Каталог сессии откладывается, а не
+// удаляется — это невосстановимый слой, — и открывается новый неавторизованный
+// сокет, который и выдаст QR или код привязки.
+async function freshSession(number) {
+  if (!loggedOut(number)) return;
+  const { sock } = sockets.get(number);
+  sockets.delete(number);
+  try {
+    sock.end(undefined);
+  } catch {
+    // мёртвый сокет закрывать нечего
+  }
+  const dir = path.join(SESSIONS, number);
+  const aside = `${dir}.bak.${Math.floor(Date.now() / 1000)}`;
+  try {
+    await fs.rename(dir, aside);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  log.warn({ number, aside: path.basename(aside) }, "отвязанная сессия отложена, новый сокет");
+  await connect(number);
+}
+
 async function waitForQr(number) {
   const start = Date.now();
   while (Date.now() - start < QR_WAIT_MS) {
@@ -181,6 +221,8 @@ const routes = {
       log.info({ number, to, key }, "повтор по ключу, второй отправки нет");
       return { ok: true, sent: true, provider_id: sentKeys.get(key) };
     }
+    // Отвязанная сессия: фрейм точно не уйдёт — честное sent:false, а не 500.
+    if (loggedOut(number)) return { ok: false, sent: false, error: "loggedOut" };
     const sock = await socketOf(number);
     const content = {
       text: { text },
@@ -205,18 +247,21 @@ const routes = {
     }
   },
   "POST /check": async ({ number, to }) => {
+    if (loggedOut(number)) throw new RouteError(409, "sessionLoggedOut", "сессия отвязана");
     const sock = await socketOf(number);
     const [found] = await sock.onWhatsApp(jid(to));
     return { has_whatsapp: Boolean(found?.exists) };
   },
   "POST /pair": async ({ number }) => {
+    await freshSession(number);
     const sock = await socketOf(number);
     return { code: await sock.requestPairingCode(number.replace(/\D/g, "")) };
   },
   "POST /qr": async ({ number }) => {
+    await freshSession(number);
     await socketOf(number);
     const qr = await waitForQr(number);
-    if (!qr) throw new Error("QR не пришёл вовремя");
+    if (!qr) throw new RouteError(504, "qrTimeout", "QR не пришёл вовремя");
     return { qr };
   },
 };
@@ -244,6 +289,6 @@ http.createServer(async (request, response) => {
     reply(200, await handler(JSON.parse(Buffer.concat(chunks).toString() || "{}")));
   } catch (error) {
     log.error({ error: String(error), route }, "ручка упала");
-    reply(500, { error: String(error) });
+    reply(error.status ?? 500, { code: error.code ?? "nodeError", error: String(error.message ?? error) });
   }
 }).listen(PORT, () => log.info({ port: PORT }, "sender-node слушает"));

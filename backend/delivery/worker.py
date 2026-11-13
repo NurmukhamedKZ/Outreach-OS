@@ -21,7 +21,7 @@ import paths
 from conversations import public as conversation
 from core import db as core_db
 from core.model import Model
-from core.whatsapp import Session, TransportError, WhatsApp
+from core.whatsapp import Session, SessionLoggedOutError, TransportError, WhatsApp
 from delivery import domain
 from delivery.exceptions import (
     AlreadyQueuedError,
@@ -29,6 +29,7 @@ from delivery.exceptions import (
     NoNumberAvailableError,
     NothingToQueueError,
     NotReachableError,
+    TransportFailedError,
 )
 from delivery.repository import DeliveryRepository, stamp
 from delivery.schemas import Author, DeliverySettings, Kind, Mode, NumberStatus, Phase
@@ -513,7 +514,8 @@ class Worker:
                 NothingToQueueError,
                 AlreadyQueuedError,
                 NoNumberAvailableError,
-                TransportError,
+                SessionLoggedOutError,
+                TransportFailedError,
             ) as skip:
                 log.info("company %s not queued: %s", company_id, type(skip).__name__)
                 return None

@@ -2,21 +2,28 @@
 
 /** Настройки оператора (ADR 0003). Каждый раздел принадлежит своему модулю и
  * пишется руками под него: «Сегменты» модуля companies, «Исследование»
- * модуля research и «Переписка» модуля conversations. Страница
+ * модуля research, «Переписка» модуля conversations и «Отправка» модуля
+ * delivery. Страница
  * опрашивает API, пока идёт сбор, и не использует SSE (#4, решение 14).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
+  AUTOPILOT_LABELS,
   SIGNAL_LABELS,
   fetchConversationSettings,
+  fetchDeliverySettings,
+  saveDeliverySettings,
   fetchResearchSettings,
   saveConversationSettings,
   fetchSegments,
   saveResearchSettings,
   saveSegments,
+  type AutopilotMode,
   type ConversationSettings,
+  type DeliverySettings,
+  type SendWindow,
   type ResearchSettings,
   type SignalType,
   type SegmentSettings,
@@ -51,12 +58,13 @@ export default function Settings() {
       <header className="page-head">
         <h1>Настройки</h1>
         <span className="page-sub">
-          где искать компании, как их исследовать и что им писать
+          где искать компании, как их исследовать, что им писать и как отправлять
         </span>
       </header>
       <Segments />
       <Research />
       <Conversations />
+      <Delivery />
     </>
   );
 }
@@ -564,6 +572,243 @@ function Conversations() {
       </form>
       {error && <p className="error-line" role="alert">{error}</p>}
     </section>
+  );
+}
+
+const WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+
+/** Раздел модуля delivery: режим автопилота, окна, дневной потолок, каденция,
+ *  стоп-слова и предохранители автоответа. Сохраняется целиком; режим — та же
+ *  настройка, что переключатель на «Отправке». */
+function Delivery() {
+  const [saved, setSaved] = useState<DeliverySettings | null>(null);
+  const [draft, setDraft] = useState<DeliverySettings | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    fetchDeliverySettings()
+      .then((next) => {
+        setSaved(next);
+        setDraft(next);
+      })
+      .catch((failure) => setError(messageOf(failure)));
+  }, []);
+
+  if (!saved || !draft) {
+    return <section className="card">{error ? <p className="error-line">{error}</p> : "Загрузка…"}</section>;
+  }
+
+  const edit = (patch: Partial<DeliverySettings>) => {
+    setDone(false);
+    setDraft({ ...draft, ...patch });
+  };
+
+  const save = () => {
+    setError(null);
+    setSaving(true);
+    saveDeliverySettings(draft)
+      .then((next) => {
+        setSaved(next);
+        setDraft(next);
+        setDone(true);
+      })
+      .catch((failure) => {
+        const invalid = failure instanceof ApiError && failure.status === 422;
+        setError(
+          invalid
+            ? "Значение не подходит: окно открывается раньше, чем закрывается, и в нём есть день;" +
+                " паузы — дни от 1 до 60; стоп-слово — от двух букв."
+            : messageOf(failure),
+        );
+      })
+      .finally(() => setSaving(false));
+  };
+
+  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+  const complete =
+    [draft.daily_ceiling, draft.auto_replies_per_thread, draft.max_reply_chars,
+      ...draft.window.hours, ...draft.reply_window.hours, ...draft.follow_up_days]
+      .every(Number.isFinite) &&
+    draft.follow_up_days.length > 0 &&
+    draft.stopwords.length > 0;
+
+  return (
+    <section className="card settings-section" aria-labelledby="delivery-title">
+      <h2 id="delivery-title">Отправка</h2>
+      <p className="card-sub">
+        Режим решает, что уходит само: «Стоп» держит всю очередь, «Ручной» — только поставленное
+        вами, «Только ответы» сам отвечает лидам, «Полный автопилот» — ещё и первые письма и
+        касания. Окна — по времени Алматы. Темп, джиттер, прогрев и ретраи — в коде: они
+        защищают номер от бана.
+      </p>
+
+      <form
+        key={JSON.stringify(saved)}
+        className="settings-fields"
+        onSubmit={(event) => {
+          event.preventDefault();
+          save();
+        }}
+      >
+        <label className="settings-field">
+          <span>Режим автопилота</span>
+          <select
+            className="input"
+            value={draft.autopilot}
+            onChange={(event) => edit({ autopilot: event.target.value as AutopilotMode })}
+          >
+            {(Object.entries(AUTOPILOT_LABELS) as [AutopilotMode, string][]).map(([mode, label]) => (
+              <option key={mode} value={mode}>{label}</option>
+            ))}
+          </select>
+          <span className="settings-id">то же, что на «Отправке»</span>
+        </label>
+
+        <h3>Окно отправки</h3>
+        <WindowFields
+          name="Окно отправки"
+          value={draft.window}
+          onChange={(window) => edit({ window })}
+        />
+        <p className="page-sub">Первые письма и касания: будят человека, поэтому в рабочее время.</p>
+
+        <h3>Окно ответа</h3>
+        <WindowFields
+          name="Окно ответа"
+          value={draft.reply_window}
+          onChange={(reply_window) => edit({ reply_window })}
+        />
+        <p className="page-sub">Ответ лиду, который написал сам и ждёт сейчас.</p>
+
+        <h3>Лимиты и каденция</h3>
+        <label className="settings-field">
+          <span>Потолок в день на номер</span>
+          <NumberInput
+            min={1}
+            max={30}
+            step={1}
+            value={draft.daily_ceiling}
+            onChange={(daily_ceiling) => edit({ daily_ceiling })}
+          />
+          <span className="settings-id">сообщений, 1–30: выше растёт риск бана</span>
+        </label>
+        <label className="settings-field">
+          <span>Паузы между касаниями</span>
+          <DaysInput value={draft.follow_up_days} onChange={(follow_up_days) => edit({ follow_up_days })} />
+          <span className="settings-id">дней через запятую · касаний: {saved.touches}</span>
+        </label>
+        <label className="settings-field">
+          <span>Автоответов на тред</span>
+          <NumberInput
+            min={0}
+            max={10}
+            step={1}
+            value={draft.auto_replies_per_thread}
+            onChange={(auto_replies_per_thread) => edit({ auto_replies_per_thread })}
+          />
+          <span className="settings-id">в «Только ответы» и «Полном»; дальше — к человеку</span>
+        </label>
+        <label className="settings-field">
+          <span>Длина автоответа</span>
+          <NumberInput
+            min={50}
+            max={4000}
+            step={1}
+            value={draft.max_reply_chars}
+            onChange={(max_reply_chars) => edit({ max_reply_chars })}
+          />
+          <span className="settings-id">знаков; длиннее или с ценой — к человеку</span>
+        </label>
+
+        <h3>Стоп-слова</h3>
+        <textarea
+          className="settings-text"
+          rows={6}
+          aria-label="Стоп-слова"
+          value={draft.stopwords.join("\n")}
+          onChange={(event) =>
+            edit({ stopwords: event.target.value.split("\n").map((line) => line.trim()).filter(Boolean) })
+          }
+        />
+        <p className="page-sub">
+          По одному на строку. Фрагмент текста, а не слово целиком: «отпиш» закрывает и «отпишите»,
+          и «отпишитесь». Сработавшее стоп-слово закрывает тред и записывает отказ — до модели.
+        </p>
+
+        <div className="settings-save">
+          <button type="submit" className="btn" disabled={!dirty || !complete || saving}>
+            {saving ? "Сохраняю…" : "Сохранить"}
+          </button>
+          {done && !dirty && <span className="page-sub">Сохранено</span>}
+        </div>
+      </form>
+      {error && <p className="error-line" role="alert">{error}</p>}
+    </section>
+  );
+}
+
+function WindowFields({
+  name,
+  value,
+  onChange,
+}: {
+  name: string;
+  value: SendWindow;
+  onChange: (value: SendWindow) => void;
+}) {
+  const [opens, closes] = value.hours;
+  const toggle = (day: number) =>
+    onChange({
+      ...value,
+      weekdays: value.weekdays.includes(day)
+        ? value.weekdays.filter((d) => d !== day)
+        : [...value.weekdays, day].sort(),
+    });
+  return (
+    <>
+      <label className="settings-field">
+        <span>Открывается</span>
+        <NumberInput min={0} max={23} step={1} value={opens} onChange={(hour) => onChange({ ...value, hours: [hour, closes] })} />
+        <span className="settings-id">час, 0–23</span>
+      </label>
+      <label className="settings-field">
+        <span>Закрывается</span>
+        <NumberInput min={1} max={24} step={1} value={closes} onChange={(hour) => onChange({ ...value, hours: [opens, hour] })} />
+        <span className="settings-id">час, 1–24, не включая</span>
+      </label>
+      <div className="settings-days" role="group" aria-label={`${name}: дни`}>
+        {WEEKDAYS.map((label, index) => (
+          <label key={label} className="settings-check">
+            <input
+              type="checkbox"
+              checked={value.weekdays.includes(index + 1)}
+              onChange={() => toggle(index + 1)}
+            />
+            {label}
+          </label>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/** Дни через запятую: «3, 7». Кривое число уходит наверх как NaN, и «Сохранить» ждёт. */
+function DaysInput({ value, onChange }: { value: number[]; onChange: (value: number[]) => void }) {
+  const [text, setText] = useState(value.join(", "));
+  return (
+    <input
+      className="input mono"
+      required
+      inputMode="numeric"
+      value={text}
+      onChange={(event) => {
+        setText(event.target.value);
+        const parts = event.target.value.split(",").map((part) => part.trim()).filter(Boolean);
+        onChange(parts.map((part) => (/^\d+$/.test(part) ? Number(part) : NaN)));
+      }}
+    />
   );
 }
 

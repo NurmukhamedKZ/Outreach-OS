@@ -115,3 +115,13 @@ class NumberNotQuarantinedError(DomainError):
 
     def __init__(self) -> None:
         super().__init__("номер не в карантине")
+
+
+class TransportFailedError(DomainError):
+    """Node did not answer or refused: nothing changed on our side, the operator may retry."""
+
+    code = "errors.transportFailed"
+    status_code = 502
+
+    def __init__(self) -> None:
+        super().__init__("WhatsApp-сервис (Node) не ответил — проверьте, что он запущен")
