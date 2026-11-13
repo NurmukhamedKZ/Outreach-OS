@@ -62,8 +62,7 @@ export default function RefusalForm({
         </button>
       </form>
       <p className="note">
-        Запись уходит в список отказов и переживает пересборку базы. Отменить
-        нельзя — список не очищается.
+        Запись уходит в список отказов. Отменить нельзя — список не очищается.
       </p>
       {failure && <p className="failure">{failure}</p>}
     </div>
