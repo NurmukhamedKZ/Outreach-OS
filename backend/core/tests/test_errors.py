@@ -16,8 +16,7 @@ class NumberExistsError(DomainError):
 
 def test_domain_error_becomes_code_and_detail_with_its_status():
     app = FastAPI()
-    # Starlette types a handler for Exception; this one takes its subclass.
-    app.add_exception_handler(DomainError, domain_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(DomainError, domain_error_handler)  # type: ignore[arg-type]  # Starlette types a handler for Exception, not its subclass
 
     @app.post("/numbers")
     def add_number() -> None:
@@ -34,8 +33,7 @@ def test_domain_error_becomes_code_and_detail_with_its_status():
 
 def test_other_exceptions_are_not_touched_by_the_handler():
     app = FastAPI()
-    # Starlette types a handler for Exception; this one takes its subclass.
-    app.add_exception_handler(DomainError, domain_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(DomainError, domain_error_handler)  # type: ignore[arg-type]  # Starlette types a handler for Exception, not its subclass
 
     @app.get("/boom")
     def boom() -> None:

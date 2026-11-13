@@ -18,7 +18,7 @@ MESSAGES = [("system", "You write dossiers."), ("human", "Company card...")]
 
 class Dossier(LLMSchema):
     summary: str
-    hooks: list[str] = []  # noqa: RUF012 — pydantic copies a field default per instance
+    hooks: list[str] = []  # noqa: RUF012  # pydantic copies a field default per instance
 
 
 class Client:

@@ -41,7 +41,7 @@ from delivery import public as delivery
 delivery.enqueue(db, thread_id, now)
 ```
 
-Функции `public.py` тонкие и сами собирают сервис: чужой модуль не зависит от устройства чужих классов. `from x import *` и глубокие пути в чужие модули запрещены. Границы новых модулей сторожит import-linter (`pyproject.toml`, `[tool.importlinter]`): слои `research` → `companies | refusals | backup` → `core`, чужой модуль — только через `public`, старые системы и `tasks`/`analytics` новому коду недоступны, журнал `activity` пишет только `backup`. Новый модуль вписывается в слои и получает свой контракт `protected` тем же PR. Миграции — не пакет, их сторожит `core/tests/test_import_graph.py`.
+Функции `public.py` тонкие и сами собирают сервис: чужой модуль не зависит от устройства чужих классов. `from x import *` и глубокие пути в чужие модули запрещены. Границы новых модулей сторожит import-linter (`pyproject.toml`, `[tool.importlinter]`): слои `research` → `companies` → `refusals | backup` → `core` (`refusals` и `backup` зовут все, друг друга не знают), чужой модуль — только через `public`, старые системы и `tasks`/`analytics` новому коду недоступны, журнал `activity` пишет только `backup`. Новый модуль вписывается в слои и получает свой контракт `protected` тем же PR. Миграции — не пакет, их сторожит `core/tests/test_import_graph.py`.
 
 ## Pydantic
 

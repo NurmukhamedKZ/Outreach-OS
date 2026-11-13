@@ -110,8 +110,7 @@ class OpenRouterModel:
             raise ModelKeyMissingError()
         # require_parameters keeps routing to providers that honour strict
         # json_schema; others ignore response_format and answer off the schema.
-        # ChatOpenRouter takes `model` by its alias; the stubs know the field name only.
-        client = ChatOpenRouter(  # type: ignore[call-arg]
+        client = ChatOpenRouter(  # type: ignore[call-arg]  # takes `model` by alias, stubs know model_name
             client=openrouter_client(self.api_key, self.transport),
             model=model,
             api_key=self.api_key,

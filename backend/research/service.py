@@ -296,8 +296,7 @@ class ResearchService:
                 self._repo.release(batch_id, company_id)
                 self._repo.halt(batch_id, BOT_CHECK)
             return error
-        # Any other failure is this company's failed attempt: the batch goes on.
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:  # noqa: BLE001  # one company's failure: the batch goes on
             _log_failure(error, "research of company %s in batch %d failed", company_id, batch_id)
             self._end(batch_id, company_id, ResearchStatus.FAILED, _reason(error), rejected, now)
             return error
@@ -600,5 +599,4 @@ def _contact(contact: BaseModel) -> Contact:
 
 def _fields(row: sqlite3.Row, schema: type[BaseModel]) -> dict[str, Any]:
     """Return the row's columns that the schema has."""
-    # A Row iterates over its values, not its column names.
-    return {key: row[key] for key in row.keys() if key in schema.model_fields}  # noqa: SIM118
+    return {key: row[key] for key in row.keys() if key in schema.model_fields}  # noqa: SIM118  # a Row iterates over its values

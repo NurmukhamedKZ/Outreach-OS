@@ -71,9 +71,9 @@ include_external_packages = true
 # Тесты собирают данные чужими внутренностями (фикстуры, приложение
 # collector.api) — контракты описывают код модулей, а не их тесты.
 [[tool.importlinter.contracts]]
-name = "Слои: research над companies, refusals и backup, они — над core и не знают друг друга"
+name = "Слои: research → companies → refusals | backup → core; refusals и backup зовут все"
 type = "layers"
-layers = ["research", "companies | refusals | backup", "core"]
+layers = ["research", "companies", "refusals | backup", "core"]
 ignore_imports = ["*.tests.** -> **"]
 unmatched_ignore_imports_alerting = "none"
 
@@ -128,7 +128,7 @@ ignore_imports = ["** -> research.public", "*.tests.** -> **"]
 unmatched_ignore_imports_alerting = "none"
 
 # Старые системы и модули верхнего уровня вне охвата: mypy читает их типы,
-# но не сообщает их ошибок.
+# но не сообщает их ошибок. Модуль уходит из списка, когда его переписывают (#13, #7).
 [[tool.mypy.overrides]]
 module = ["collector.*", "writer.*", "sender.*", "sandbox.*", "activity", "analytics",
           "clock", "config", "logctx", "logging_setup", "llm_schema", "observability",
