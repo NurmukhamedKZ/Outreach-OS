@@ -2,6 +2,7 @@ import shutil
 import sqlite3
 import threading
 from contextlib import closing
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -10,13 +11,14 @@ import paths
 from core import db
 
 
-def schema_of(path) -> list[tuple]:
+def schema_of(path) -> list[tuple[Any, ...]]:
     with closing(sqlite3.connect(path)) as conn:
         return conn.execute(
-            "SELECT type, name, sql FROM sqlite_master ORDER BY type, name").fetchall()
+            "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
+        ).fetchall()
 
 
-def revision_of(path) -> list[tuple]:
+def revision_of(path) -> list[tuple[Any, ...]]:
     with closing(sqlite3.connect(path)) as conn:
         return conn.execute("SELECT version_num FROM alembic_version").fetchall()
 
@@ -33,11 +35,13 @@ def test_connection_may_be_used_from_another_thread(tmp_path):
     """A sync dependency opens it in one threadpool thread, the route may run in another."""
     failures = []
     with closing(db.connect(tmp_path / "state.db")) as conn:
+
         def query():
             try:
                 conn.execute("SELECT 1")
             except sqlite3.ProgrammingError as error:
                 failures.append(error)
+
         thread = threading.Thread(target=query)
         thread.start()
         thread.join()
@@ -75,7 +79,7 @@ def test_downgrade_to_base_and_upgrade_again_restores_the_schema(tmp_path):
     assert schema_of(path) == upgraded
 
 
-FAILING_REVISION = '''
+FAILING_REVISION = """
 from alembic import op
 import sqlalchemy as sa
 
@@ -92,7 +96,7 @@ def upgrade():
 
 def downgrade():
     pass
-'''
+"""
 
 
 def test_failed_revision_rolls_back_whole_and_keeps_the_previous_head(tmp_path, monkeypatch):
@@ -100,10 +104,12 @@ def test_failed_revision_rolls_back_whole_and_keeps_the_previous_head(tmp_path, 
     db.migrate(path)
     head = revision_of(path)
     history = tmp_path / "migrations"
-    shutil.copytree(db.ALEMBIC_INI.parent / "migrations", history,
-                    ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(
+        db.ALEMBIC_INI.parent / "migrations", history, ignore=shutil.ignore_patterns("__pycache__")
+    )
     (history / "versions" / "2099-01-01_failing.py").write_text(
-        FAILING_REVISION.format(head=head[0][0]), encoding="utf-8")
+        FAILING_REVISION.format(head=head[0][0]), encoding="utf-8"
+    )
     config = db._config(path)
     config.set_main_option("script_location", str(history))
     monkeypatch.setattr(db, "_config", lambda _path: config)
@@ -140,7 +146,7 @@ def test_request_dependency_serves_a_sync_route_and_closes_after(tmp_path, monke
     app = FastAPI()
 
     @app.get("/probe")
-    def probe(conn: db.Db) -> dict:
+    def probe(conn: db.Db) -> dict[str, Any]:
         opened.append(conn)
         return {"one": conn.execute("SELECT 1").fetchone()[0]}
 

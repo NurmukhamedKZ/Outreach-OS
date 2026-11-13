@@ -17,13 +17,30 @@ from core.pages import BotCheckError, CertificateError, FetchError, HttpStatusEr
 from refusals import public as refusals
 from research import domain
 from research.domain import Card, Findings, Signal
-from research.exceptions import (BatchNotRunningError, BatchRunningError, CompanyNotFoundError,
-                                 CompanyRefusedError, NothingToReadError, UnexpectedPageError,
-                                 UnverifiedResearchError)
+from research.exceptions import (
+    BatchNotRunningError,
+    BatchRunningError,
+    CompanyNotFoundError,
+    CompanyRefusedError,
+    NothingToReadError,
+    UnexpectedPageError,
+    UnverifiedResearchError,
+)
 from research.repository import ResearchRepository
-from research.schemas import (Attempt, BatchCompany, BatchStatus, BatchView, CompanyResearch,
-                              Contact, Contribution, Dossier, Lead, ResearchAnswer,
-                              ResearchSettings, ResearchStatus)
+from research.schemas import (
+    Attempt,
+    BatchCompany,
+    BatchStatus,
+    BatchView,
+    CompanyResearch,
+    Contact,
+    Contribution,
+    Dossier,
+    Lead,
+    ResearchAnswer,
+    ResearchSettings,
+    ResearchStatus,
+)
 
 log = logging.getLogger(__name__)
 
@@ -39,14 +56,22 @@ GONE = (404, 410)
 # balance would otherwise spend an attempt of every company in it.
 MODEL_FAILURES_TO_HALT = 3
 BOT_CHECK = "2GIS показал проверку робота — партия остановлена, повторите позже"
-MODEL_DOWN = ("Модель не отвечает несколько раз подряд — партия остановлена: проверьте модель"
-              " в настройках и баланс OpenRouter")
+MODEL_DOWN = (
+    "Модель не отвечает несколько раз подряд — партия остановлена: проверьте модель"
+    " в настройках и баланс OpenRouter"
+)
 NOTHING_TAKEN = "Нечего исследовать: сегменты не собраны, или все компании уже исследованы"
 REFUSED = "Компания в отказах — не исследуем"
 UNEXPECTED = "Внутренняя ошибка исследования, подробности в логе"
 # Failures with a known cause: anything else is a bug and is logged with its traceback.
-EXPECTED = (UnverifiedResearchError, NothingToReadError, ModelError, ModelKeyMissingError,
-            FetchError, UnexpectedPageError)
+EXPECTED = (
+    UnverifiedResearchError,
+    NothingToReadError,
+    ModelError,
+    ModelKeyMissingError,
+    FetchError,
+    UnexpectedPageError,
+)
 
 
 @dataclass(frozen=True)
@@ -115,7 +140,9 @@ class ResearchService:
             BatchRunningError: a batch is already running.
         """
         if self._refused(self._company(company_id)):
-            raise CompanyRefusedError("Компания в отказах — ей больше не пишем, исследовать незачем")
+            raise CompanyRefusedError(
+                "Компания в отказах — ей больше не пишем, исследовать незачем"
+            )
         with _one_at_a_time(), self._db:
             batch_id = self._repo.create_batch(1, BatchStatus.RESEARCHING, now)
             self._repo.add_companies(batch_id, [company_id])
@@ -141,8 +168,7 @@ class ResearchService:
         with self._db:
             self._repo.interrupt_running()
 
-    def run(self, batch_id: int, pages: Pages, model: Model,
-            now: Callable[[], datetime]) -> None:
+    def run(self, batch_id: int, pages: Pages, model: Model, now: Callable[[], datetime]) -> None:
         """Run a started batch to its end; blocks for minutes.
 
         A batch with no companies yet collects the chosen segments not collected
@@ -170,8 +196,9 @@ class ResearchService:
         size = self._repo.batch(batch_id)["size"]
         skip = self._repo.not_to_take()
         taken: list[str] = []
-        while len(taken) < size and (offered := companies.prioritized(
-                self._db, size - len(taken), skip)):
+        while len(taken) < size and (
+            offered := companies.prioritized(self._db, size - len(taken), skip)
+        ):
             for company in offered:
                 skip.add(company.company_id)
                 if not self._refused(company):
@@ -183,8 +210,9 @@ class ResearchService:
                 self._repo.note(batch_id, NOTHING_TAKEN)
         log.info("batch %d took %d companies", batch_id, len(taken))
 
-    def _research_all(self, batch_id: int, pages: Pages, model: Model,
-                      now: Callable[[], datetime]) -> None:
+    def _research_all(
+        self, batch_id: int, pages: Pages, model: Model, now: Callable[[], datetime]
+    ) -> None:
         """Research the batch's pending companies in parallel until done or stopped.
 
         This thread alone touches the database: workers fetch and call the model,
@@ -202,8 +230,16 @@ class ResearchService:
                     if (company_id := next(pending, None)) is None:
                         break
                     if self._claim(batch_id, by_id[company_id], now()):
-                        running[pool.submit(investigate, pages, model, model_name,
-                                            f"batch-{batch_id}", by_id[company_id])] = company_id
+                        running[
+                            pool.submit(
+                                investigate,
+                                pages,
+                                model,
+                                model_name,
+                                f"batch-{batch_id}",
+                                by_id[company_id],
+                            )
+                        ] = company_id
                 if not running:
                     return
                 done, _ = wait(running, return_when=FIRST_COMPLETED)
@@ -211,8 +247,11 @@ class ResearchService:
                     error = self._record(batch_id, running.pop(future), future, model_name, now())
                     model_failures = model_failures + 1 if isinstance(error, ModelError) else 0
                     if model_failures == MODEL_FAILURES_TO_HALT:
-                        log.warning("batch %d stopped: the model failed %d times in a row",
-                                    batch_id, model_failures)
+                        log.warning(
+                            "batch %d stopped: the model failed %d times in a row",
+                            batch_id,
+                            model_failures,
+                        )
                         with self._db:
                             self._repo.halt(batch_id, MODEL_DOWN)
 
@@ -231,8 +270,14 @@ class ResearchService:
             self._repo.end(batch_id, company.company_id, ResearchStatus.FAILED, REFUSED, 0, now)
         return False
 
-    def _record(self, batch_id: int, company_id: str, future: Future[Investigation],
-                model_name: str, now: datetime) -> Exception | None:
+    def _record(
+        self,
+        batch_id: int,
+        company_id: str,
+        future: Future[Investigation],
+        model_name: str,
+        now: datetime,
+    ) -> Exception | None:
         """Write one company's research: a new dossier version, or the failure and why.
 
         Returns:
@@ -251,35 +296,50 @@ class ResearchService:
                 self._repo.release(batch_id, company_id)
                 self._repo.halt(batch_id, BOT_CHECK)
             return error
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001  # one company's failure: the batch goes on
             _log_failure(error, "research of company %s in batch %d failed", company_id, batch_id)
             self._end(batch_id, company_id, ResearchStatus.FAILED, _reason(error), rejected, now)
             return error
         try:
             with self._db:
                 self._repo.add_dossier(
-                    company_id, batch_id, model_name,
+                    company_id,
+                    batch_id,
+                    model_name,
                     json.dumps(result.messages, ensure_ascii=False),
-                    result.answer.model_dump_json(), result.findings.dossier.model_dump_json(),
-                    result.findings.signals, now)
-                ended = self._repo.end(batch_id, company_id, ResearchStatus.DONE, None,
-                                       rejected, now)
+                    result.answer.model_dump_json(),
+                    result.findings.dossier.model_dump_json(),
+                    result.findings.signals,
+                    now,
+                )
+                ended = self._repo.end(
+                    batch_id, company_id, ResearchStatus.DONE, None, rejected, now
+                )
         # A write that fails must not drop the batch with the other paid answers in flight.
         except sqlite3.Error as error:
             log.exception("dossier of company %s in batch %d not written", company_id, batch_id)
             self._end(batch_id, company_id, ResearchStatus.FAILED, UNEXPECTED, rejected, now)
             return error
         if not ended:
-            log.warning("company %s in batch %d was no longer being researched",
-                        company_id, batch_id)
+            log.warning(
+                "company %s in batch %d was no longer being researched", company_id, batch_id
+            )
         return None
 
-    def _end(self, batch_id: int, company_id: str, status: ResearchStatus, error: str | None,
-             rejected: int, now: datetime) -> None:
+    def _end(
+        self,
+        batch_id: int,
+        company_id: str,
+        status: ResearchStatus,
+        error: str | None,
+        rejected: int,
+        now: datetime,
+    ) -> None:
         with self._db:
             if not self._repo.end(batch_id, company_id, status, error, rejected, now):
-                log.warning("company %s in batch %d was no longer being researched",
-                            company_id, batch_id)
+                log.warning(
+                    "company %s in batch %d was no longer being researched", company_id, batch_id
+                )
 
     # --- reading ----------------------------------------------------------------
 
@@ -288,8 +348,9 @@ class ResearchService:
         row = self._repo.batch(batch_id)
         rows = self._repo.companies_of(batch_id)
         names = companies.by_id(self._db, [r["company_id"] for r in rows])
-        listed = [BatchCompany(name=names[r["company_id"]].name, **_fields(r, BatchCompany))
-                  for r in rows]
+        listed = [
+            BatchCompany(name=names[r["company_id"]].name, **_fields(r, BatchCompany)) for r in rows
+        ]
         counts = {status: sum(c.status == status for c in listed) for status in ResearchStatus}
         return BatchView(counts=counts, companies=listed, **_fields(row, BatchView))
 
@@ -312,11 +373,19 @@ class ResearchService:
         for row in rows:
             company = found[row["company_id"]]
             seen = self._assess(company, row, signals.get(row["dossier_id"], []), settings, now)
-            if seen.lead:
-                leads.append(Lead(company_id=company.company_id, name=company.name,
-                                  city=company.city, channel=seen.channel, score=seen.score,
-                                  why_now=domain.why_now(seen.dossier),
-                                  breakdown=seen.breakdown, dossier=seen.dossier))
+            if seen.lead and seen.dossier:
+                leads.append(
+                    Lead(
+                        company_id=company.company_id,
+                        name=company.name,
+                        city=company.city,
+                        channel=seen.channel,
+                        score=seen.score,
+                        why_now=domain.why_now(seen.dossier),
+                        breakdown=seen.breakdown,
+                        dossier=seen.dossier,
+                    )
+                )
         return sorted(leads, key=lambda lead: (-lead.score, lead.company_id))
 
     def company(self, company_id: str, now: datetime) -> CompanyResearch:
@@ -327,34 +396,62 @@ class ResearchService:
         """
         company = self._company(company_id)
         row = next(iter(self._repo.current_dossiers(company_id)), None)
-        signals = self._repo.signals_of([row["dossier_id"]]).get(row["dossier_id"], []) if row else []
+        signals = (
+            self._repo.signals_of([row["dossier_id"]]).get(row["dossier_id"], []) if row else []
+        )
         seen = self._assess(company, row, signals, self.settings(), now)
         return CompanyResearch(
-            company_id=company_id, name=company.name, city=company.city,
-            contacts=[_contact(c) for c in company.contacts], channel=seen.channel,
-            refused=seen.refused, lead=seen.lead, score=seen.score, breakdown=seen.breakdown,
+            company_id=company_id,
+            name=company.name,
+            city=company.city,
+            contacts=[_contact(c) for c in company.contacts],
+            channel=seen.channel,
+            refused=seen.refused,
+            lead=seen.lead,
+            score=seen.score,
+            breakdown=seen.breakdown,
             why_now=domain.why_now(seen.dossier) if seen.dossier and seen.dossier.hooks else None,
-            dossier=seen.dossier, model=row["model"] if row else None,
+            dossier=seen.dossier,
+            model=row["model"] if row else None,
             researched_at=row["created_at"] if row else None,
             versions=row["versions"] if row else 0,
-            attempts=[Attempt(**_fields(r, Attempt)) for r in self._repo.attempts(company_id)])
+            attempts=[Attempt(**_fields(r, Attempt)) for r in self._repo.attempts(company_id)],
+        )
 
-    def _assess(self, company: companies.Company, row: sqlite3.Row | None,
-                signals: list[Signal], settings: ResearchSettings, now: datetime) -> Assessment:
+    def _assess(
+        self,
+        company: companies.Company,
+        row: sqlite3.Row | None,
+        signals: list[Signal],
+        settings: ResearchSettings,
+        now: datetime,
+    ) -> Assessment:
         """Apply the lead rules to the company and its current dossier, if any."""
         channel = companies.channel(company)
         refused = self._refused(company)
         if row is None:
-            return Assessment(channel=_contact(channel) if channel else None, refused=refused,
-                              dossier=None, lead=False, score=0, breakdown=[])
+            return Assessment(
+                channel=_contact(channel) if channel else None,
+                refused=refused,
+                dossier=None,
+                lead=False,
+                score=0,
+                breakdown=[],
+            )
         dossier = Dossier.model_validate_json(row["dossier"])
-        score, breakdown = domain.score(signals, settings.weights.model_dump(),
-                                        settings.half_life_days, now)
+        score, breakdown = domain.score(
+            signals, settings.weights.model_dump(), settings.half_life_days, now
+        )
         return Assessment(
-            channel=_contact(channel) if channel else None, refused=refused, dossier=dossier,
-            lead=domain.is_ready(hooks=len(dossier.hooks), has_channel=channel is not None,
-                                 refused=refused),
-            score=score, breakdown=breakdown)
+            channel=_contact(channel) if channel else None,
+            refused=refused,
+            dossier=dossier,
+            lead=domain.is_ready(
+                hooks=len(dossier.hooks), has_channel=channel is not None, refused=refused
+            ),
+            score=score,
+            breakdown=breakdown,
+        )
 
     def _company(self, company_id: str) -> companies.Company:
         found = companies.by_id(self._db, [company_id])
@@ -377,8 +474,9 @@ def _one_at_a_time() -> Iterator[None]:
         raise BatchRunningError("Партия уже идёт — дождитесь её или остановите") from None
 
 
-def investigate(pages: Pages, model: Model, model_name: str, session_id: str,
-                company: companies.Company) -> Investigation:
+def investigate(
+    pages: Pages, model: Model, model_name: str, session_id: str, company: companies.Company
+) -> Investigation:
     """Collect one company's reviews and site and ask the model once; no database.
 
     Raises:
@@ -393,12 +491,17 @@ def investigate(pages: Pages, model: Model, model_name: str, session_id: str,
     if not reviews and not any(p.text for p in site_pages):
         # A hook can only be quoted from reviews or the site: a call would be paid for nothing.
         raise NothingToReadError("Нечего читать: нет ни отзывов с текстом, ни сайта")
-    card = Card(name=company.name, city=company.city,
-                addresses=[b.address for b in company.branches if b.address],
-                review_count=company.review_count, site=site)
+    card = Card(
+        name=company.name,
+        city=company.city,
+        addresses=[b.address for b in company.branches if b.address],
+        review_count=company.review_count,
+        site=site,
+    )
     messages = domain.prompt(card, reviews, site_pages)
-    answer = model.answer(model_name, ResearchAnswer, messages, session_id=session_id,
-                          name="research")
+    answer = model.answer(
+        model_name, ResearchAnswer, messages, session_id=session_id, name="research"
+    )
     return Investigation(messages, answer, domain.findings(answer, reviews, site_pages))
 
 
@@ -496,4 +599,4 @@ def _contact(contact: BaseModel) -> Contact:
 
 def _fields(row: sqlite3.Row, schema: type[BaseModel]) -> dict[str, Any]:
     """Return the row's columns that the schema has."""
-    return {key: row[key] for key in row.keys() if key in schema.model_fields}
+    return {key: row[key] for key in row.keys() if key in schema.model_fields}  # noqa: SIM118  # a Row iterates over its values

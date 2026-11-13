@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Protocol
+from typing import Any, Protocol
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -69,8 +69,13 @@ class BotCheckError(FetchError):
 class Pages(Protocol):
     """Source of web pages; scrapling in production, FakePages in tests."""
 
-    def get(self, url: str, *, cookies: Mapping[str, str] | None = None,
-            headers: Mapping[str, str] | None = None) -> Page:
+    def get(
+        self,
+        url: str,
+        *,
+        cookies: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> Page:
         """Return the page, from files when it was fetched before.
 
         The page is kept by its address alone: cookies and headers only help the
@@ -100,8 +105,11 @@ class Pacer:
         """Exact host, else the longest matching suffix, else the default."""
         if host in self.intervals:
             return self.intervals[host]
-        matches = [(len(name), value) for name, value in self.intervals.items()
-                   if host.endswith(f".{name}")]
+        matches = [
+            (len(name), value)
+            for name, value in self.intervals.items()
+            if host.endswith(f".{name}")
+        ]
         return max(matches)[1] if matches else self.default
 
     def wait(self, url: str) -> None:
@@ -122,34 +130,47 @@ class ScraplingPages:
     would each keep their own slots and double it.
     """
 
-    def __init__(self, root: Path, now: Callable[[], datetime], *,
-                 intervals: Mapping[str, float] = HOST_INTERVALS,
-                 default_interval: float = DEFAULT_INTERVAL):
+    def __init__(
+        self,
+        root: Path,
+        now: Callable[[], datetime],
+        *,
+        intervals: Mapping[str, float] = HOST_INTERVALS,
+        default_interval: float = DEFAULT_INTERVAL,
+    ):
         self.root = root
         self.now = now
         self.pacer = Pacer(intervals, default_interval)
 
-    def get(self, url: str, *, cookies: Mapping[str, str] | None = None,
-            headers: Mapping[str, str] | None = None) -> Page:
+    def get(
+        self,
+        url: str,
+        *,
+        cookies: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> Page:
         body, sidecar = self._paths(url)
         if sidecar.exists():
             try:
                 return self._read(body, sidecar)
             except (OSError, EOFError, zlib.error, ValueError, KeyError, TypeError) as error:
-                log.warning("stored page for %s is unreadable (%s), fetching again",
-                            url, error)
+                log.warning("stored page for %s is unreadable (%s), fetching again", url, error)
                 body.unlink(missing_ok=True)
                 sidecar.unlink(missing_ok=True)
         page = self._fetch(url, cookies, headers)
         self._store(url, page)
         return page
 
-    def _fetch(self, url: str, cookies: Mapping[str, str] | None,
-               headers: Mapping[str, str] | None) -> Page:
+    def _fetch(
+        self, url: str, cookies: Mapping[str, str] | None, headers: Mapping[str, str] | None
+    ) -> Page:
         self.pacer.wait(url)
         # Only what the caller gave: an empty value would replace scrapling's own headers.
-        extra = {name: dict(value) for name, value in (("cookies", cookies), ("headers", headers))
-                 if value}
+        extra: dict[str, Any] = {
+            name: dict(value)
+            for name, value in (("cookies", cookies), ("headers", headers))
+            if value
+        }
         try:
             response = Fetcher.get(url, impersonate="chrome", **extra)
         # curl reports a malformed address the same way (InvalidURL is a CurlError).
@@ -172,9 +193,11 @@ class ScraplingPages:
 
     def _read(self, body: Path, sidecar: Path) -> Page:
         meta = json.loads(sidecar.read_text(encoding="utf-8"))
-        return Page(text=gzip.decompress(body.read_bytes()).decode("utf-8"),
-                    final_url=meta["final_url"],
-                    fetched_at=datetime.fromisoformat(meta["fetched_at"]))
+        return Page(
+            text=gzip.decompress(body.read_bytes()).decode("utf-8"),
+            final_url=meta["final_url"],
+            fetched_at=datetime.fromisoformat(meta["fetched_at"]),
+        )
 
     def _store(self, url: str, page: Page) -> None:
         """Write the page, then the sidecar, each atomically.
@@ -185,8 +208,12 @@ class ScraplingPages:
         body, sidecar = self._paths(url)
         self.root.mkdir(parents=True, exist_ok=True)
         _write_atomically(body, gzip.compress(page.text.encode("utf-8")))
-        meta = {"url": url, "final_url": page.final_url, "status": 200,
-                "fetched_at": page.fetched_at.isoformat(timespec="seconds")}
+        meta = {
+            "url": url,
+            "final_url": page.final_url,
+            "status": 200,
+            "fetched_at": page.fetched_at.isoformat(timespec="seconds"),
+        }
         _write_atomically(sidecar, json.dumps(meta, ensure_ascii=False).encode("utf-8"))
 
 
@@ -200,15 +227,21 @@ def _write_atomically(path: Path, data: bytes) -> None:
 class FakePages:
     """Pages for tests: known urls answer, an Exception value is raised, others 404."""
 
-    def __init__(self, pages: Mapping[str, str | Page | Exception],
-                 fetched_at: datetime | None = None):
+    def __init__(
+        self, pages: Mapping[str, str | Page | Exception], fetched_at: datetime | None = None
+    ):
         self.pages = pages
         self.fetched_at = fetched_at or datetime.fromisoformat("2026-11-12T09:00:00+00:00")
         self.requested: list[str] = []
         self.cookies: list[Mapping[str, str] | None] = []
 
-    def get(self, url: str, *, cookies: Mapping[str, str] | None = None,
-            headers: Mapping[str, str] | None = None) -> Page:
+    def get(
+        self,
+        url: str,
+        *,
+        cookies: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> Page:
         self.requested.append(url)
         self.cookies.append(cookies)
         if url not in self.pages:

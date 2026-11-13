@@ -28,8 +28,9 @@ def upgrade() -> None:
         sa.Column("capped", sa.Boolean, nullable=False, server_default=sa.false()),
         sa.Column("error", sa.Text),
         sa.Column("updated_at", sa.Text, nullable=False),
-        sa.CheckConstraint("status IN ({})".format(", ".join(f"'{s}'" for s in STATUSES)),
-                           name="status_known"),
+        sa.CheckConstraint(
+            "status IN ({})".format(", ".join(f"'{s}'" for s in STATUSES)), name="status_known"
+        ),
         sa.CheckConstraint("branches >= 0", name="branches_not_negative"),
     )
     op.create_table(
@@ -71,8 +72,9 @@ def upgrade() -> None:
         sa.Column("kind", sa.Text, primary_key=True),
         # Canonical form (core.contacts), the one refusals are kept in.
         sa.Column("handle", sa.Text, primary_key=True),
-        sa.CheckConstraint("kind IN ({})".format(", ".join(f"'{k}'" for k in CONTACT_KINDS)),
-                           name="kind_known"),
+        sa.CheckConstraint(
+            "kind IN ({})".format(", ".join(f"'{k}'" for k in CONTACT_KINDS)), name="kind_known"
+        ),
     )
 
 

@@ -19,23 +19,31 @@ def client(state, monkeypatch):
 
 
 def test_a_new_refusal_is_created(client):
-    response = client.post("/api/refusals",
-                           json={"handle": "8 701 000 00 01", "reason": "  просил не писать "})
+    response = client.post(
+        "/api/refusals", json={"handle": "8 701 000 00 01", "reason": "  просил не писать "}
+    )
 
     assert response.status_code == 201
-    assert response.json() == {"handle": "+77010000001", "reason": "просил не писать",
-                               "refused_at": "2026-11-12T10:00:00Z"}
+    assert response.json() == {
+        "handle": "+77010000001",
+        "reason": "просил не писать",
+        "refused_at": "2026-11-12T10:00:00Z",
+    }
 
 
 def test_a_repeat_returns_the_first_record_with_200(client):
     client.post("/api/refusals", json={"handle": "+77010000001", "reason": "первая причина"})
 
-    response = client.post("/api/refusals",
-                           json={"handle": "+7 701 000 00 01", "reason": "вторая причина"})
+    response = client.post(
+        "/api/refusals", json={"handle": "+7 701 000 00 01", "reason": "вторая причина"}
+    )
 
     assert response.status_code == 200
-    assert response.json() == {"handle": "+77010000001", "reason": "первая причина",
-                               "refused_at": "2026-11-12T10:00:00Z"}
+    assert response.json() == {
+        "handle": "+77010000001",
+        "reason": "первая причина",
+        "refused_at": "2026-11-12T10:00:00Z",
+    }
 
 
 def test_a_malformed_handle_is_422_with_a_code(client):
@@ -55,10 +63,15 @@ def test_a_refusal_without_a_reason_is_422_with_a_code(client, reason):
     assert client.get("/api/refusals").json() == []
 
 
-@pytest.mark.parametrize("handle,reason,status", [
-    ("a" * 200, "а" * 3, 201), ("a" * 200, "а" * 500, 201),
-    ("a" * 201, "просил", 422), ("+77010000001", "а" * 501, 422),
-])
+@pytest.mark.parametrize(
+    "handle,reason,status",
+    [
+        ("a" * 200, "а" * 3, 201),
+        ("a" * 200, "а" * 500, 201),
+        ("a" * 201, "просил", 422),
+        ("+77010000001", "а" * 501, 422),
+    ],
+)
 def test_the_length_limits(client, handle, reason, status):
     response = client.post("/api/refusals", json={"handle": handle, "reason": reason})
 
@@ -77,7 +90,10 @@ def test_refusals_of_the_same_moment_are_ordered_by_handle(state, monkeypatch):
         client.post("/api/refusals", json={"handle": handle, "reason": "просил"})
 
     assert [row["handle"] for row in client.get("/api/refusals").json()] == [
-        "+77010000001", "info@kofe.kz", "kofe_almaty"]
+        "+77010000001",
+        "info@kofe.kz",
+        "kofe_almaty",
+    ]
 
 
 def test_the_list_shows_the_freshest_first(client):
@@ -106,18 +122,25 @@ def test_the_export_is_a_csv_of_every_refusal(client):
     ]
 
 
-@pytest.mark.parametrize("method,url", [("get", "/api/suppression"),
-                                        ("post", "/api/suppression"),
-                                        ("get", "/api/suppression/export.csv")])
+@pytest.mark.parametrize(
+    "method,url",
+    [
+        ("get", "/api/suppression"),
+        ("post", "/api/suppression"),
+        ("get", "/api/suppression/export.csv"),
+    ],
+)
 def test_the_old_endpoints_are_gone(client, method, url):
     assert getattr(client, method)(url).status_code in (404, 405)
 
 
 def test_the_export_does_not_let_a_spreadsheet_run_a_formula(client):
-    client.post("/api/refusals", json={"handle": "=cmd|' /c calc'!a1", "reason": "=HYPERLINK(\"x\")"})
+    client.post("/api/refusals", json={"handle": "=cmd|' /c calc'!a1", "reason": '=HYPERLINK("x")'})
     client.post("/api/refusals", json={"handle": "+77010000001", "reason": "@SUM(1)"})
 
     rows = list(csv.reader(io.StringIO(client.get("/api/refusals/export.csv").text)))
 
-    assert rows[1:] == [["+77010000001", "2026-11-12T11:00:00Z", "'@SUM(1)"],
-                        ["'=cmd|' /c calc'!a1", "2026-11-12T10:00:00Z", "'=HYPERLINK(\"x\")"]]
+    assert rows[1:] == [
+        ["+77010000001", "2026-11-12T11:00:00Z", "'@SUM(1)"],
+        ["'=cmd|' /c calc'!a1", "2026-11-12T10:00:00Z", '\'=HYPERLINK("x")'],
+    ]

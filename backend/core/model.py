@@ -11,12 +11,13 @@ import weakref
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from time import monotonic, sleep
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 import httpx
 import openrouter
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.exceptions import OutputParserException
+from langchain_core.runnables import RunnableConfig
 from langchain_openrouter import ChatOpenRouter
 from openrouter.errors import NoResponseError, OpenRouterError, ResponseValidationError
 from openrouter.utils import BackoffStrategy, RetryConfig
@@ -60,15 +61,23 @@ class ModelKeyMissingError(DomainError):
     status_code = 503
 
     def __init__(self) -> None:
-        super().__init__("OPENROUTER_API_KEY is empty: set it in backend/.env"
-                         " (see backend/.env.example)")
+        super().__init__(
+            "OPENROUTER_API_KEY is empty: set it in backend/.env (see backend/.env.example)"
+        )
 
 
 class Model(Protocol):
     """Structured-output LLM; OpenRouter in production, FakeModel in tests."""
 
-    def answer[S: BaseModel](self, model: str, schema: type[S], messages: Sequence[Message],
-                             *, session_id: str, name: str) -> S:
+    def answer[S: BaseModel](
+        self,
+        model: str,
+        schema: type[S],
+        messages: Sequence[Message],
+        *,
+        session_id: str,
+        name: str,
+    ) -> S:
         """Return the model's reply parsed into `schema`.
 
         `session_id` groups calls into a Langfuse session, `name` labels the call.
@@ -88,20 +97,30 @@ class OpenRouterModel:
         self.api_key = api_key
         self.transport = transport
 
-    def answer[S: BaseModel](self, model: str, schema: type[S], messages: Sequence[Message],
-                             *, session_id: str, name: str) -> S:
+    def answer[S: BaseModel](
+        self,
+        model: str,
+        schema: type[S],
+        messages: Sequence[Message],
+        *,
+        session_id: str,
+        name: str,
+    ) -> S:
         if not self.api_key:
             raise ModelKeyMissingError()
         # require_parameters keeps routing to providers that honour strict
         # json_schema; others ignore response_format and answer off the schema.
-        client = ChatOpenRouter(
+        client = ChatOpenRouter(  # type: ignore[call-arg]  # takes `model` by alias, stubs know model_name
             client=openrouter_client(self.api_key, self.transport),
-            model=model, api_key=self.api_key, temperature=0, reasoning={"enabled": False},
+            model=model,
+            api_key=self.api_key,
+            temperature=0,
+            reasoning={"enabled": False},
             model_kwargs={"retries": NO_SDK_RETRY},
             openrouter_provider={"require_parameters": True},
         ).with_structured_output(schema, method="json_schema", strict=True)
         handler = langfuse_handler()
-        config = {
+        config: RunnableConfig = {
             "run_name": name,
             "metadata": {"langfuse_session_id": session_id, "langfuse_tags": [name]},
             "callbacks": [handler] if handler else [],
@@ -118,19 +137,25 @@ class OpenRouterModel:
             else:
                 if handler:
                     _log_trace_in_background(handler)
-                return result
+                # strict json_schema validates the answer into `schema`, never a dict.
+                return cast(S, result)
         raise AssertionError("unreachable")
 
 
-def openrouter_client(api_key: str | None, transport: httpx.BaseTransport | None = None,
-                      ) -> openrouter.OpenRouter:
+def openrouter_client(
+    api_key: str | None,
+    transport: httpx.BaseTransport | None = None,
+) -> openrouter.OpenRouter:
     """SDK client whose every request ends by CALL_DEADLINE_S.
 
     Pass it as ChatOpenRouter(client=...): the chat model's own `timeout=` only
     reaches a client it builds itself. `transport` replaces the network in tests.
     """
-    http = httpx.Client(transport=DeadlineTransport(transport or httpx.HTTPTransport()),
-                        timeout=REQUEST_TIMEOUT_MS / 1000, follow_redirects=True)
+    http = httpx.Client(
+        transport=DeadlineTransport(transport or httpx.HTTPTransport()),
+        timeout=REQUEST_TIMEOUT_MS / 1000,
+        follow_redirects=True,
+    )
     sdk = openrouter.OpenRouter(api_key=api_key, client=http)
     # The SDK closes only clients it built; this one dies with the SDK client.
     weakref.finalize(sdk, http.close)
@@ -151,7 +176,9 @@ class DeadlineTransport(httpx.BaseTransport):
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         deadline = monotonic() + CALL_DEADLINE_S
         response = self.inner.handle_request(request)
-        response.stream = _DeadlineStream(response.stream, deadline, request)
+        # A sync transport answers with a sync stream.
+        stream = cast(httpx.SyncByteStream, response.stream)
+        response.stream = _DeadlineStream(stream, deadline, request)
         return response
 
     def close(self) -> None:
@@ -196,12 +223,19 @@ class FakeModel:
     schema; an Exception is raised instead.
     """
 
-    def __init__(self, *answers: BaseModel | dict | Exception):
+    def __init__(self, *answers: BaseModel | dict[str, Any] | Exception):
         self.answers = list(answers)
         self.calls: list[Call] = []
 
-    def answer[S: BaseModel](self, model: str, schema: type[S], messages: Sequence[Message],
-                             *, session_id: str, name: str) -> S:
+    def answer[S: BaseModel](
+        self,
+        model: str,
+        schema: type[S],
+        messages: Sequence[Message],
+        *,
+        session_id: str,
+        name: str,
+    ) -> S:
         self.calls.append(Call(model, schema, messages, session_id, name))
         if not self.answers:
             raise AssertionError("FakeModel: no answer queued for this call")

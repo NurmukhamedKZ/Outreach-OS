@@ -16,8 +16,15 @@ depends_on = None
 BATCH_STATUSES = ("collecting", "researching", "done", "stopped", "interrupted")
 RUNNING = ("collecting", "researching")
 RESEARCH_STATUSES = ("pending", "researching", "done", "failed")
-SIGNAL_TYPES = ("reviews_missed_lead", "reviews_unanswered_complaint", "site_hiring_sales",
-                "site_no_pricing", "crm_widget", "ads_platform", "inbound_widget")
+SIGNAL_TYPES = (
+    "reviews_missed_lead",
+    "reviews_unanswered_complaint",
+    "site_hiring_sales",
+    "site_no_pricing",
+    "crm_widget",
+    "ads_platform",
+    "inbound_widget",
+)
 
 
 def _one_of(column: str, values: tuple[str, ...]) -> str:
@@ -40,13 +47,14 @@ def upgrade() -> None:
         sa.CheckConstraint("size >= 1", name="size_positive"),
     )
     # One batch at a time, held by the schema: two start requests race otherwise.
-    op.execute("CREATE UNIQUE INDEX one_running_batch ON batches"
-               f" (({_one_of('status', RUNNING)})) WHERE {_one_of('status', RUNNING)}")
+    op.execute(
+        "CREATE UNIQUE INDEX one_running_batch ON batches"
+        f" (({_one_of('status', RUNNING)})) WHERE {_one_of('status', RUNNING)}"
+    )
     op.create_table(
         "batch_companies",
         sa.Column("batch_id", sa.Integer, sa.ForeignKey("batches.batch_id"), primary_key=True),
-        sa.Column("company_id", sa.Text, sa.ForeignKey("companies.company_id"),
-                  primary_key=True),
+        sa.Column("company_id", sa.Text, sa.ForeignKey("companies.company_id"), primary_key=True),
         # The order of research: the priority the company was taken by.
         sa.Column("position", sa.Integer, nullable=False),
         sa.Column("status", sa.Text, nullable=False),
@@ -74,16 +82,16 @@ def upgrade() -> None:
         # What of the reply stands: verified hooks with their place, sorted pains.
         sa.Column("dossier", sa.Text, nullable=False),
         sa.Column("created_at", sa.Text, nullable=False),
-        sa.CheckConstraint("json_valid(prompt) AND json_valid(answer) AND json_valid(dossier)",
-                           name="json_valid"),
+        sa.CheckConstraint(
+            "json_valid(prompt) AND json_valid(answer) AND json_valid(dossier)", name="json_valid"
+        ),
         # A company is researched once per batch: a second write is a bug, not a version.
         sa.UniqueConstraint("company_id", "batch_id", name="one_dossier_per_batch"),
     )
     op.create_index("dossiers_by_company", "dossiers", ["company_id", "dossier_id"])
     op.create_table(
         "signals",
-        sa.Column("dossier_id", sa.Integer, sa.ForeignKey("dossiers.dossier_id"),
-                  primary_key=True),
+        sa.Column("dossier_id", sa.Integer, sa.ForeignKey("dossiers.dossier_id"), primary_key=True),
         # One signal per type per research: Bitrix and amoCRM are one fact, one weight.
         sa.Column("type", sa.Text, primary_key=True),
         sa.Column("observed_at", sa.Text, nullable=False),

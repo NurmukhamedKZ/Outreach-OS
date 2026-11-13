@@ -26,11 +26,18 @@ def test_a_backup_on_demand_is_written_and_shown(client, icloud):
     response = client.post("/api/backup")
 
     assert response.status_code == 201
-    assert response.json() == {"name": "2026-11-12T090000Z", "taken_at": "2026-11-12T09:00:00Z",
-                               "pages_added": 1}
+    assert response.json() == {
+        "name": "2026-11-12T090000Z",
+        "taken_at": "2026-11-12T09:00:00Z",
+        "pages_added": 1,
+    }
     assert client.get("/api/backup").json() == {
-        "enabled": True, "running": False, "target": str(icloud),
-        "last_at": "2026-11-12T09:00:00Z", "snapshots": 1}
+        "enabled": True,
+        "running": False,
+        "target": str(icloud),
+        "last_at": "2026-11-12T09:00:00Z",
+        "snapshots": 1,
+    }
 
 
 def test_a_second_backup_while_one_runs_is_409(client, service):
@@ -65,6 +72,7 @@ def test_a_broken_copy_is_500_without_paths(client, monkeypatch):
 
 def test_today_lists_the_backup_task(client, state, monkeypatch):
     import tasks
+
     monkeypatch.setattr(tasks, "_state", state)
     app.state.backup, previous = app.dependency_overrides[get_backup](), app.state.backup
     try:

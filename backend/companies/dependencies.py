@@ -15,15 +15,17 @@ from core.pages import Pages
 
 def get_pages(request: Request) -> Pages:
     """Return the process's one page adapter: the pace belongs to the host."""
-    return request.app.state.pages
+    pages: Pages = request.app.state.pages
+    return pages
 
 
 def get_company_service(db: Db) -> CompanyService:
     return CompanyService(db)
 
 
-def collect_in_background(path: Path, pages: Pages, segments: list[Segment],
-                          now: Callable[[], datetime]) -> None:
+def collect_in_background(
+    path: Path, pages: Pages, segments: list[Segment], now: Callable[[], datetime]
+) -> None:
     """Collect claimed segments on a connection of their own: the request's is closed."""
     with closing(core_db.connect(path)) as db:
         CompanyService(db).collect(pages, segments, now)

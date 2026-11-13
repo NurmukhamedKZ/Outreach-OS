@@ -24,7 +24,8 @@ def canonical_handle(raw: str) -> str:
         return contacts.canonical(raw)
     except ValueError:
         raise InvalidHandleError(
-            "Контакт пустой, короче трёх символов или не похож на телефон") from None
+            "Контакт пустой, короче трёх символов или не похож на телефон"
+        ) from None
 
 
 def comparable_handle(raw: str) -> str:
