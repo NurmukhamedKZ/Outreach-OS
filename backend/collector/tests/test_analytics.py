@@ -10,13 +10,20 @@ from pathlib import Path
 import pytest
 
 import analytics
-from writer.db import thread_store
+import clock
+from conversations.repository import ConversationRepository
+from core import db as core_db
+
+
+def _now():
+    return clock.now().isoformat(timespec="seconds")
 
 
 @pytest.fixture
 def state(tmp_path):
     path = tmp_path / "state.db"
-    db = thread_store.connect(path)
+    core_db.migrate(path)
+    db = core_db.connect(path)
     db.executescript(
         "CREATE TABLE IF NOT EXISTS outbox ("
         "  id INTEGER PRIMARY KEY, message_id INTEGER, status TEXT NOT NULL,"
@@ -29,20 +36,22 @@ def state(tmp_path):
 
 def _thread(db, thread_id, *, stage="contact", outcome=None, sent=True, delivered=False,
             replied=False, angle="site_no_pricing", variant="pay_per_meeting"):
-    thread_store.open_thread(db, thread_id, f"c{thread_id}", {"name": "Ромашка"})
-    thread_store.set_stage(db, thread_id, stage)
+    """A thread of company c<thread_id> on the number thread_id."""
+    repo, company_id = ConversationRepository(db), f"c{thread_id}"
+    repo.open_thread(company_id, thread_id, {"name": "Ромашка"}, clock.now())
+    repo.set_stage(company_id, stage)
     if outcome:
-        thread_store.set_outcome(db, thread_id, outcome)
+        repo.set_outcome(company_id, outcome, _now() if outcome.startswith("meeting_") else None)
     if sent:
-        message_id = thread_store.add_draft(db, thread_id, "текст", angle,
-                                            offer_variant=variant)
+        message_id = repo.add_draft(company_id, "текст", angle, clock.now(),
+                                    offer_variant=variant)
         db.execute("UPDATE messages SET sent_text = 'текст', sent_at = ?"
-                   " WHERE message_id = ?", (thread_store.now(), message_id))
+                   " WHERE message_id = ?", (_now(), message_id))
         db.execute("INSERT INTO outbox (message_id, status, delivered_at)"
                    " VALUES (?, 'sent', ?)",
-                   (message_id, thread_store.now() if delivered else None))
+                   (message_id, _now() if delivered else None))
     if replied:
-        thread_store.add_incoming(db, thread_id, "интересно")
+        repo.add_incoming(company_id, "интересно", None, clock.now())
     db.commit()
 
 
@@ -123,18 +132,13 @@ def test_endpoint_answers_with_the_full_report(state):
 
 
 def test_report_survives_a_database_without_foreign_layers(tmp_path):
-    """state.db, которую создал только collector: ни outbox системы 3, ни
-    stage/outcome системы 2 в ней ещё нет. Страница обязана показать нули —
-    аналитика читает три чужих слоя и не создаёт ни одного."""
-    import pathlib
-
+    """state.db, где система 3 ещё не стартовала: outbox нет. Страница обязана
+    показать нули — аналитика читает чужие слои и не создаёт ни одного."""
     path = tmp_path / "state.db"
+    core_db.migrate(path)
     db = sqlite3.connect(path)
-    schema = (pathlib.Path(__file__).resolve().parent.parent / "db" / "schema.sql"
-              ).read_text(encoding="utf-8")
-    db.executescript(schema)
-    db.execute("INSERT INTO threads (thread_id, company_id, seed, created_at)"
-               " VALUES ('+77010000001', 'c_ok', '{}', '2026-01-01')")
+    db.execute("INSERT INTO threads (company_id, channel, seed, created_at)"
+               " VALUES ('c_ok', '+77010000001', '{}', '2026-01-01T00:00:00+00:00')")
     db.commit()
     db.close()
     analytics.use(path)
@@ -152,9 +156,10 @@ def test_a_thread_lands_in_one_row_per_breakdown(state):
     сумма по разрезу превышала бы sent из воронки."""
     db, path = state
     _thread(db, "+77010000001", angle="site_no_pricing", variant="pay_per_meeting")
-    followup = thread_store.add_draft(db, "+77010000001", "касание", "ig_dormant")
+    followup = ConversationRepository(db).add_draft("c+77010000001", "касание", "ig_dormant",
+                                                    clock.now())
     db.execute("UPDATE messages SET sent_text = 'касание', sent_at = ?"
-               " WHERE message_id = ?", (thread_store.now(), followup))
+               " WHERE message_id = ?", (_now(), followup))
     db.commit()
     analytics.use(path)
 
@@ -168,14 +173,15 @@ def test_a_thread_lands_in_one_row_per_breakdown(state):
 
 
 def _sent_thread(db, thread_id, company_id, *, replied=False, held=False):
-    thread_store.open_thread(db, thread_id, company_id, {"name": "Компания"})
-    message_id = thread_store.add_draft(db, thread_id, "текст", "reviews_missed_lead")
+    repo = ConversationRepository(db)
+    repo.open_thread(company_id, thread_id, {"name": "Компания"}, clock.now())
+    message_id = repo.add_draft(company_id, "текст", "reviews_missed_lead", clock.now())
     db.execute("UPDATE messages SET sent_text = 'текст', sent_at = ? WHERE message_id = ?",
-               (thread_store.now(), message_id))
+               (_now(), message_id))
     if replied:
-        thread_store.add_incoming(db, thread_id, "интересно")
+        repo.add_incoming(company_id, "интересно", None, clock.now())
     if held:
-        thread_store.set_outcome(db, thread_id, "meeting_held")
+        repo.set_outcome(company_id, "meeting_held", _now())
     db.commit()
 
 
@@ -186,10 +192,10 @@ def test_the_segment_breakdown_names_the_rubric_and_city_of_the_company(tmp_path
     from companies.repository import CompanyRepository
     from companies.schemas import Segment
     from core import db as core_db
-    from writer.tests.research_leads import NOW, add_lead, migrate
+    from conversations.tests.leads import NOW, add_lead
 
     path = tmp_path / "state.db"
-    migrate(path)
+    core_db.migrate(path)
     with closing(core_db.connect(path)) as db:
         add_lead(db, "2gis:1", [("whatsapp", "+77010000001")])
         add_lead(db, "2gis:2", [("whatsapp", "+77010000002")])

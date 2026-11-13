@@ -19,10 +19,10 @@ import activity
 import clock
 import paths
 from config import settings
+from conversations import public as conversation
 from sender import notify
-from sender.db import conversation, migrate, numbers, outbox
+from sender.db import migrate, numbers, outbox
 from sender.services import config, refusal
-from writer.services import stages
 
 router = APIRouter(prefix="/api/sender")
 log = logging.getLogger(__name__)
@@ -48,8 +48,8 @@ class Event(BaseModel):
 
 INCOMING = "incoming"
 
-# Чат лида в WhatsApp — это JID (`77010000001@s.whatsapp.net`), а тред живёт
-# как `+77010000001`. Групповые чаты (`@g.us`) и `@lid`-формат вне области v1.
+# Чат лида в WhatsApp — это JID (`77010000001@s.whatsapp.net`), а тред открыт на
+# канале `+77010000001`. Групповые чаты (`@g.us`) и `@lid`-формат вне области v1.
 PERSONAL_JID = "@s.whatsapp.net"
 
 # Метка вместо текста, которого не было. Голосовое, фото и стикер приезжают от
@@ -67,7 +67,8 @@ HUMAN_LEADS = "escalated"
 
 
 def thread_of(jid: str | None) -> str | None:
-    """Тред по адресу отправителя. None — адрес не личного чата или не номер."""
+    """Номер лида по адресу отправителя: канал, на котором открыт тред. None —
+    адрес не личного чата или не номер."""
     if not jid or not jid.endswith(PERSONAL_JID):
         return None
     try:
@@ -148,7 +149,7 @@ def _wake_the_thread(db: sqlite3.Connection, provider_id: str) -> None:
                      (provider_id,)).fetchone()
     if row is None or row["thread_id"] is None:
         return
-    thread = conversation.get(db, row["thread_id"])
+    thread = conversation.thread(db, row["thread_id"])
     if thread and thread["status"] == STARTS_THE_CHAT:
         conversation.set_status(db, row["thread_id"], "active",
                                 "первое сообщение доставлено")
@@ -163,22 +164,23 @@ async def _record_incoming(event: Event, moment: datetime) -> bool:
     треда (юридический контур F21), медиа сильнее обычной обработки (модели
     нечего читать), и только потом решается, будить агента или нет.
     """
-    thread_id = thread_of(event.sender)
-    if thread_id is None:
-        log.info("входящее не из личного чата, пропускаем: %s", event.sender)
+    channel = thread_of(event.sender)
+    if channel is None:
+        log.info("входящее не из личного чата, пропускаем")
         return False
     settings = config.load()
     text = event.text or ""
     refused = stopword(text, settings)
     with closing(connect()) as db:
-        thread = conversation.get(db, thread_id)
+        thread = conversation.thread_on_channel(db, channel)
         if thread is None:
-            await notify.send(f"Пишет {thread_id}, треда с ним нет: {text!r}")
+            await notify.send(f"Пишет {channel}, треда с ним нет: {text!r}")
             return False
+        thread_id = thread["company_id"]
         try:
             with db:
                 message_id = conversation.add_incoming(
-                    db, thread_id, text or MEDIA_MARKER, event.provider_id)
+                    db, thread_id, text or MEDIA_MARKER, event.provider_id, moment)
                 outbox.cancel_scheduled(db, thread_id, "лид ответил", moment)
                 conversation.clear_schedule(db, thread_id)
                 _settle(db, thread, message_id, moment, refused, bool(text))
@@ -190,22 +192,23 @@ async def _record_incoming(event: Event, moment: datetime) -> bool:
             activity.record_quietly("webhook", "duplicate", subject=thread_id,
                                     detail=event.provider_id)
             return False
-        # После коммита, а не внутри: этап — не часть записи сообщения, и
+        # После коммита, своей транзакцией: этап — не часть записи сообщения, и
         # держать ради него открытой транзакцию state.db, за которой стоит
         # очередь, незачем.
-        stages.note_incoming(db, thread_id)
+        with db:
+            conversation.note_incoming(db, thread_id)
     activity.record("webhook", "incoming", subject=thread_id)
     if refused:
         # Отказ пишется ПОСЛЕ коммита: шов ходит в чужую базу, и держать на нём
         # открытую транзакцию state.db значило бы блокировать очередь.
-        refusal.refuse(thread_id, f"стоп-слово: {refused}")
+        refusal.refuse(channel, f"стоп-слово: {refused}")
         log.warning("тред %s закрыт по стоп-слову %r", thread_id, refused)
         activity.record("webhook", "refused", subject=thread_id, detail=refused)
         return True
     if not text:
-        await notify.send(f"{thread_id} прислал медиа — текста нет, разбирай руками")
+        await notify.send(f"{channel} прислал медиа — текста нет, разбирай руками")
     elif thread["status"] == HUMAN_LEADS:
-        await notify.send(f"{thread_id} (тред ведёшь ты): {text}")
+        await notify.send(f"{channel} (тред ведёшь ты): {text}")
     return True
 
 
@@ -213,7 +216,7 @@ def _settle(db, thread: dict, message_id: int, moment: datetime,
             refused: str | None, has_text: bool) -> None:
     """Состояние треда сразу после записи входящего — той же транзакцией.
     `handled_at` здесь означает «тику тут делать нечего»: агента не позовут."""
-    thread_id = thread["thread_id"]
+    thread_id = thread["company_id"]
     if refused:
         conversation.set_status(db, thread_id, "closed_refused",
                                 f"стоп-слово в ответе: {refused}")

@@ -18,7 +18,6 @@ const WHEN = new Intl.DateTimeFormat("ru", {
 export default function MessageComposer({
   companyId,
   messageId,
-  threadId,
   text,
   angle,
   model,
@@ -27,15 +26,15 @@ export default function MessageComposer({
   onQueued,
   onRegenerate,
 }: {
+  /** Тред — компания (#36): по её id ставится в очередь и читается промпт. */
   companyId: string;
   messageId: number;
-  threadId: string;
   text: string;
   angle: string | null;
   model: string | null;
   hasPrompt: boolean;
   /** Первое касание и follow-up строятся разными задачами; ответ лида пишет
-   *  агент-продавец, и его промпт здесь не сохраняется. */
+   *  агент-продавец. Промпт сохраняется у всех трёх. */
   draftKind?: "first" | "followup" | "reply";
   onQueued: () => void;
   onRegenerate: () => void;
@@ -80,7 +79,7 @@ export default function MessageComposer({
     setBusy(true);
     setFailure(null);
     try {
-      setQueued(await queueMessage(threadId, value));
+      setQueued(await queueMessage(companyId, value));
       onQueued();
     } catch (error) {
       setFailure((error as Error).message);

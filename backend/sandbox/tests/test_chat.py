@@ -9,20 +9,20 @@ import sqlite3
 import pytest
 
 from sandbox import chat
+from core import db as core_db
 from sender.db import migrate
-from writer.db import thread_store
 
-THREAD = "+77010000001"
+THREAD = "c_romashka"
 
 
 @pytest.fixture
 def db(tmp_path):
     path = tmp_path / "run.db"
-    thread_store.connect(path).close()
+    core_db.migrate(path)
     connection = migrate.connect(path)
     connection.execute(
-        "INSERT INTO threads (thread_id, company_id, seed, created_at, stage,"
-        " status, touch_no) VALUES (?, 'c_romashka', '{}',"
+        "INSERT INTO threads (company_id, channel, seed, created_at, stage,"
+        " status, touch_no) VALUES (?, '+77010000001', '{}',"
         " '2026-09-03T09:00:00+00:00', 'probing', 'active', 2)", (THREAD,))
     connection.commit()
     yield connection
@@ -30,7 +30,7 @@ def db(tmp_path):
 
 
 def _message(db, **values):
-    columns = {"thread_id": THREAD, "role": "outgoing", "draft_text": None,
+    columns = {"company_id": THREAD, "role": "outgoing", "draft_text": None,
                "queued_text": None, "sent_text": None,
                "created_at": "2026-09-03T09:05:00+00:00", **values}
     names = ", ".join(columns)

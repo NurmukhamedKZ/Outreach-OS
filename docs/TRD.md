@@ -66,9 +66,10 @@ hh.kz, Serper, прогоны `derived.db`) — в истории git и `docs/l
 | `research/` | партии, исследование, досье, сигналы, оценка, правила лида | `leads`, `company`, `forget_interrupted` |
 | `refusals/` | отказы (F21), единственный писатель | `record`, `is_refused`, `count`, `canonical` |
 | `backup/` | снимки `state.db`, страниц и сессий WhatsApp в iCloud Drive | `back_up`, `loop`, `now` |
+| `conversations/` | тред компании, сообщения, черновики модели, входящие, follow-up, «Черновики топ-N» (#36) | `thread`, `thread_on_channel`, `add_incoming`, `confirm_sent`, `bump_touch`, `followup_turn`/`write`, `reply_turn`/`sell`, `forget_interrupted` |
 
-Зависимости идут в одну сторону: `companies` → `research` → `writer` (#7 —
-`conversations`) → `sender` (#7 — `delivery`); `refusals` зовут все. Другие модули
+Зависимости идут в одну сторону: `companies` → `research` → `conversations` →
+`sender` (#7 — `delivery`); `refusals` зовут все. Другие модули
 импортируют только `public.py`; граф сторожат `*/tests/test_import_graph.py`.
 
 Модули верхнего уровня `backend/` (`config.py`, `clock.py`, `paths.py`,

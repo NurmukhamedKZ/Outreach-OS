@@ -1,8 +1,8 @@
 "use client";
 
 /** Настройки оператора (ADR 0003). Каждый раздел принадлежит своему модулю и
- * пишется руками под него: «Сегменты» модуля companies и «Исследование»
- * модуля research. Страница
+ * пишется руками под него: «Сегменты» модуля companies, «Исследование»
+ * модуля research и «Переписка» модуля conversations. Страница
  * опрашивает API, пока идёт сбор, и не использует SSE (#4, решение 14).
  */
 
@@ -10,10 +10,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
   SIGNAL_LABELS,
+  fetchConversationSettings,
   fetchResearchSettings,
+  saveConversationSettings,
   fetchSegments,
   saveResearchSettings,
   saveSegments,
+  type ConversationSettings,
   type ResearchSettings,
   type SignalType,
   type SegmentSettings,
@@ -47,10 +50,13 @@ export default function Settings() {
     <>
       <header className="page-head">
         <h1>Настройки</h1>
-        <span className="page-sub">где искать компании, как идёт сбор и как их исследовать</span>
+        <span className="page-sub">
+          где искать компании, как их исследовать и что им писать
+        </span>
       </header>
       <Segments />
       <Research />
+      <Conversations />
     </>
   );
 }
@@ -351,6 +357,203 @@ function Research() {
             <span className="settings-id">0–100</span>
           </label>
         ))}
+
+        <div className="settings-save">
+          <button type="submit" className="btn" disabled={!dirty || !complete || saving}>
+            {saving ? "Сохраняю…" : "Сохранить"}
+          </button>
+          {done && !dirty && <span className="page-sub">Сохранено</span>}
+        </div>
+      </form>
+      {error && <p className="error-line" role="alert">{error}</p>}
+    </section>
+  );
+}
+
+/** Раздел модуля conversations: модель и размер «Черновики топ-N», о каких
+ *  сигналах писать, отсечка давности повода, оффер и его варианты. Сохраняется
+ *  целиком, как «Исследование». */
+function Conversations() {
+  const [saved, setSaved] = useState<ConversationSettings | null>(null);
+  const [draft, setDraft] = useState<ConversationSettings | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [done, setDone] = useState(false);
+
+  useEffect(() => {
+    fetchConversationSettings()
+      .then((next) => {
+        setSaved(next);
+        setDraft(next);
+      })
+      .catch((failure) => setError(messageOf(failure)));
+  }, []);
+
+  if (!saved || !draft) {
+    return <section className="card">{error ? <p className="error-line">{error}</p> : "Загрузка…"}</section>;
+  }
+
+  const edit = (patch: Partial<ConversationSettings>) => {
+    setDone(false);
+    setDraft({ ...draft, ...patch });
+  };
+
+  const toggle = (signal: SignalType) =>
+    edit({
+      pitchable: draft.pitchable.includes(signal)
+        ? draft.pitchable.filter((s) => s !== signal)
+        : [...draft.pitchable, signal],
+    });
+
+  const editVariant = (index: number, patch: Partial<{ id: string; text: string }>) =>
+    edit({ variants: draft.variants.map((v, i) => (i === index ? { ...v, ...patch } : v)) });
+
+  const save = () => {
+    setError(null);
+    setSaving(true);
+    saveConversationSettings(draft)
+      .then((next) => {
+        setSaved(next);
+        setDraft(next);
+        setDone(true);
+      })
+      .catch((failure) => {
+        const invalid = failure instanceof ApiError && failure.status === 422;
+        setError(
+          invalid
+            ? "Значение вне допустимых границ — поправьте поле. У вариантов id — латиница," +
+                " цифры и «_», без повторов."
+            : messageOf(failure),
+        );
+      })
+      .finally(() => setSaving(false));
+  };
+
+  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+  const complete =
+    [draft.top_n, draft.max_age_days].every(Number.isFinite) &&
+    draft.model.trim() !== "" &&
+    draft.offer.trim() !== "" &&
+    draft.variants.every((v) => v.id.trim() !== "" && v.text.trim() !== "");
+
+  return (
+    <section className="card settings-section" aria-labelledby="conversations-title">
+      <h2 id="conversations-title">Переписка</h2>
+      <p className="card-sub">
+        «Черновики топ-N» берёт новых лидов по оценке и пишет каждому первое письмо. Повод —
+        зацепка досье или сигнал из списка ниже, не старше отсечки. Тред аргументирует один
+        вариант оффера навсегда; без вариантов — базовый оффер.
+      </p>
+
+      <form
+        key={JSON.stringify(saved)}
+        className="settings-fields"
+        onSubmit={(event) => {
+          event.preventDefault();
+          save();
+        }}
+      >
+        <label className="settings-field">
+          <span>Лидов за прогон</span>
+          <NumberInput
+            min={1}
+            max={100}
+            step={1}
+            value={draft.top_n}
+            onChange={(top_n) => edit({ top_n })}
+          />
+          <span className="settings-id">«Черновики топ-N», 1–100</span>
+        </label>
+        <label className="settings-field">
+          <span>Модель</span>
+          <input
+            className="input mono"
+            required
+            maxLength={200}
+            value={draft.model}
+            onChange={(event) => edit({ model: event.target.value })}
+          />
+          <span className="settings-id">id модели OpenRouter</span>
+        </label>
+        <label className="settings-field">
+          <span>Повод не старше</span>
+          <NumberInput
+            min={1}
+            max={3650}
+            step={1}
+            value={draft.max_age_days}
+            onChange={(max_age_days) => edit({ max_age_days })}
+          />
+          <span className="settings-id">дней</span>
+        </label>
+
+        <h3>О каких сигналах писать</h3>
+        <div className="settings-checks settings-rubrics">
+          {(Object.keys(SIGNAL_LABELS) as SignalType[]).map((signal) => (
+            <label key={signal} className="settings-check">
+              <input
+                type="checkbox"
+                checked={draft.pitchable.includes(signal)}
+                onChange={() => toggle(signal)}
+              />
+              {SIGNAL_LABELS[signal]}
+            </label>
+          ))}
+        </div>
+
+        <h3>Оффер</h3>
+        <textarea
+          className="settings-text"
+          required
+          maxLength={2000}
+          rows={5}
+          aria-label="Оффер"
+          value={draft.offer}
+          onChange={(event) => edit({ offer: event.target.value })}
+        />
+
+        <h3>Варианты оффера</h3>
+        {draft.variants.map((variant, index) => (
+          <div key={index} className="settings-variant">
+            <div className="settings-variant-head">
+              <input
+                className="input mono"
+                required
+                maxLength={64}
+                pattern="[a-z0-9_]+"
+                aria-label={`id варианта ${index + 1}`}
+                value={variant.id}
+                onChange={(event) => editVariant(index, { id: event.target.value })}
+              />
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => edit({ variants: draft.variants.filter((_, i) => i !== index) })}
+              >
+                Убрать
+              </button>
+            </div>
+            <textarea
+              className="settings-text"
+              required
+              maxLength={2000}
+              rows={3}
+              aria-label={`Текст варианта ${index + 1}`}
+              value={variant.text}
+              onChange={(event) => editVariant(index, { text: event.target.value })}
+            />
+          </div>
+        ))}
+        <div>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={draft.variants.length >= 10}
+            onClick={() => edit({ variants: [...draft.variants, { id: "", text: "" }] })}
+          >
+            Добавить вариант
+          </button>
+        </div>
 
         <div className="settings-save">
           <button type="submit" className="btn" disabled={!dirty || !complete || saving}>

@@ -1,7 +1,7 @@
 """Что требуется от человека — по образцу test_analytics.py: свой каталог у
 backend/*.py тестов нет, а фикстура базы собрана так же, как в
-sender/tests/conftest.py — таблицы переписки создаёт их владелец
-(thread_store), sender только доливает свои колонки (migrate).
+sender/tests/conftest.py — таблицы переписки создаёт Alembic (conversations),
+sender доливает свои (migrate).
 """
 
 from datetime import datetime, timezone
@@ -9,26 +9,34 @@ from datetime import datetime, timezone
 import pytest
 
 import tasks
-from sender.db import conversation, migrate
-from writer.db import thread_store
+from conversations import public as conversation
+from conversations.repository import ConversationRepository
+from core import db as core_db
+from sender.db import migrate
 
-NOW = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc).isoformat(timespec="seconds")
+MOMENT = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+NOW = MOMENT.isoformat(timespec="seconds")
 
 
 @pytest.fixture
 def db(tmp_path):
     path = tmp_path / "state.db"
-    owner = thread_store.connect(path)   # threads и messages
-    owner.close()
-    connection = migrate.connect(path)   # numbers, outbox, колонки status/status_reason
+    core_db.migrate(path)                # threads и messages
+    connection = migrate.connect(path)   # numbers, outbox
     tasks.use(path)                      # без базы компаний: имя компании = company_id
     yield connection
     connection.close()
     tasks.use(None)
 
 
-def _thread(db, thread_id, company_id):
-    thread_store.open_thread(db, thread_id, company_id, {"name": company_id})
+def _thread(db, channel, company_id):
+    with db:
+        ConversationRepository(db).open_thread(company_id, channel, {"name": company_id}, MOMENT)
+
+
+def _draft(db, company_id, text, angle):
+    with db:
+        conversation.add_draft(db, company_id, text, angle, MOMENT)
 
 
 def _stuck_row(db, thread_id, our_number="+77010000000"):
@@ -44,7 +52,7 @@ def _stuck_row(db, thread_id, our_number="+77010000000"):
 def test_an_escalated_thread_becomes_a_task_with_its_reason(db):
     """Счётчик `escalated: 3` не говорит, кто эти трое, — за этим план и писался."""
     _thread(db, "+77010000001", "c1")
-    conversation.set_status(db, "+77010000001", "escalated",
+    conversation.set_status(db, "c1", "escalated",
                             "заинтересован, назвал бюджет")
     db.commit()
 
@@ -54,7 +62,7 @@ def test_an_escalated_thread_becomes_a_task_with_its_reason(db):
     row = rows[0]
     assert row["kind"] == "escalated"
     assert row["company_id"] == "c1"
-    assert row["thread_id"] == "+77010000001"
+    assert row["channel"] == "+77010000001"
     assert row["why"] == "заинтересован, назвал бюджет"
 
 
@@ -63,8 +71,7 @@ def test_a_thread_without_a_saved_reason_says_so_instead_of_guessing(db):
     _thread(db, "+77010000002", "c2")
     # Треды до плана 001 эскалировались без status_reason — как migrate.py
     # размечает старые треды с перепиской, не заполняя причину.
-    db.execute("UPDATE threads SET status = 'escalated' WHERE thread_id = ?",
-               ("+77010000002",))
+    db.execute("UPDATE threads SET status = 'escalated' WHERE company_id = ?", ("c2",))
     db.commit()
 
     rows = tasks.tasks()
@@ -76,13 +83,13 @@ def test_a_thread_without_a_saved_reason_says_so_instead_of_guessing(db):
 def test_tasks_are_ordered_by_urgency(db):
     """Порядок — правило предметной области, и он принадлежит бэкенду."""
     _thread(db, "+77010000003", "c-draft")
-    thread_store.add_draft(db, "+77010000003", "черновик первого письма", "site_no_pricing")
+    _draft(db, "c-draft", "черновик первого письма", "site_no_pricing")
 
     _thread(db, "+77010000004", "c-escalated")
-    conversation.set_status(db, "+77010000004", "escalated", "интересно")
+    conversation.set_status(db, "c-escalated", "escalated", "интересно")
     db.commit()
 
-    _stuck_row(db, "+77010000004")
+    _stuck_row(db, "c-escalated")
 
     kinds = [row["kind"] for row in tasks.tasks()]
 
@@ -98,48 +105,47 @@ def test_no_state_database_means_no_tasks_and_no_exception(tmp_path):
     tasks.use(None)
 
 
-def test_a_database_without_the_sender_columns_yields_no_tasks_and_no_exception(tmp_path):
-    """Таблицу threads создаёт writer, колонки состояния — sender, и порядок
-    старта не гарантирован. Жёсткий SELECT отдал бы 500 на главной."""
+def test_a_database_where_sender_never_started_still_lists_threads(tmp_path):
+    """outbox создаёт sender, и порядок старта не гарантирован: без неё нет
+    только застрявших отправок, а не страницы."""
     path = tmp_path / "state.db"
-    owner = thread_store.connect(path)   # threads и messages, БЕЗ migrate.connect
-    thread_store.open_thread(owner, "+77010000006", "c-presender", {"name": "c-presender"})
-    owner.close()
+    core_db.migrate(path)
+    with core_db.connect(path) as owner:
+        _thread(owner, "+77010000006", "c-presender")
+        _draft(owner, "c-presender", "черновик", "site_no_pricing")
     tasks.use(path)
 
-    assert tasks.tasks() == []
+    assert [row["kind"] for row in tasks.tasks()] == ["draft"]
 
     tasks.use(None)
 
 
 def test_a_draft_that_was_regenerated_appears_once(db):
-    """Копия SQL из cold_drafts обязана сохранить оговорку про последний
-    черновик треда: «Перегенерировать» оставляет предыдущий вариант в таблице."""
+    """«Перегенерировать» оставляет предыдущий вариант в таблице, а задача на
+    тред — одна: «черновик первого касания» берётся у conversations."""
     _thread(db, "+77010000005", "c-regen")
-    thread_store.add_draft(db, "+77010000005", "первый вариант", "site_no_pricing")
-    thread_store.add_draft(db, "+77010000005", "второй вариант", "ig_dormant")
+    _draft(db, "c-regen", "первый вариант", "site_no_pricing")
+    _draft(db, "c-regen", "второй вариант", "site_hiring_sales")
 
     drafts = [row for row in tasks.tasks() if row["kind"] == "draft"]
 
     assert len(drafts) == 1
-    # Без дедупа по max(message_id) строк было бы две — прямое доказательство,
-    # что копия запроса всё ещё воспроизводит именно это условие cold_drafts.
-    assert drafts[0]["thread_id"] == "+77010000005"
+    assert drafts[0]["channel"] == "+77010000005"
 
 
 def test_an_overdue_backup_is_a_task_after_threads_and_before_drafts(db):
     """Потеря базы — беда, но лид, который ждёт ответа, ждёт сейчас."""
     _thread(db, "+77010000003", "c-draft")
-    thread_store.add_draft(db, "+77010000003", "черновик первого письма", "site_no_pricing")
+    _draft(db, "c-draft", "черновик первого письма", "site_no_pricing")
     _thread(db, "+77010000004", "c-escalated")
-    conversation.set_status(db, "+77010000004", "escalated", "интересно")
+    conversation.set_status(db, "c-escalated", "escalated", "интересно")
     db.commit()
 
     rows = tasks.tasks(backup_why="бэкапа ещё не было")
 
     assert [row["kind"] for row in rows] == ["escalated", "backup", "draft"]
     assert rows[1]["why"] == "бэкапа ещё не было"
-    assert (rows[1]["company_name"], rows[1]["thread_id"]) == ("Бэкап", "")
+    assert (rows[1]["company_name"], rows[1]["channel"]) == ("Бэкап", "")
     assert rows[0]["company_name"] == "c-escalated"
 
 
@@ -155,17 +161,16 @@ def test_a_task_names_the_company_the_thread_was_opened_for(tmp_path):
     """#17: the thread points at a company of companies, and its name comes from there."""
     from contextlib import closing
 
-    from core import db as core_db
-    from writer.tests.research_leads import add_lead, migrate
+    from conversations.tests.leads import add_lead
 
     path = tmp_path / "state.db"
-    migrate(path)
+    core_db.migrate(path)
     with closing(core_db.connect(path)) as db:
         add_lead(db, "2gis:1", [("whatsapp", "+77010000001")])
-        thread_store.open_thread(db, "+77010000001", "2gis:1", {"name": "Компания"})
-        thread_store.open_thread(db, "+77010000002", "2gis:gone", {"name": "Пропала"})
-        for thread_id in ("+77010000001", "+77010000002"):
-            conversation.set_status(db, thread_id, "escalated", "назвал бюджет")
+        _thread(db, "+77010000001", "2gis:1")
+        _thread(db, "+77010000002", "2gis:gone")
+        for company_id in ("2gis:1", "2gis:gone"):
+            conversation.set_status(db, company_id, "escalated", "назвал бюджет")
         db.commit()
     tasks.use(path, path)
 
@@ -179,7 +184,7 @@ def test_a_task_names_the_company_the_thread_was_opened_for(tmp_path):
 def test_without_a_companies_table_the_company_is_named_by_its_id(db, tmp_path, companies_db):
     """No file, or a file the companies migration has not reached yet."""
     _thread(db, "+77010000001", "2gis:1")
-    conversation.set_status(db, "+77010000001", "escalated", "назвал бюджет")
+    conversation.set_status(db, "2gis:1", "escalated", "назвал бюджет")
     db.commit()
     tasks.use(tmp_path / "state.db", tmp_path / companies_db)
 

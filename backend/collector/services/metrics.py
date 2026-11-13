@@ -20,6 +20,7 @@ import sqlite_tools
 from collector.services import jobs
 from companies import public as companies
 from config import settings
+from conversations import public as conversations
 from refusals import public as refusals
 from research import public as research
 
@@ -71,16 +72,12 @@ def sourcing_stats(now):
 
 
 def writer_stats():
+    """Треды и сообщения — счётчик модуля conversations, а не свой SQL."""
     db_path = paths.state_db()
     if not db_path.exists():
         return {"threads": 0, "drafts": 0, "sent": 0, "replies": 0}
     with closing(sqlite3.connect(db_path)) as db:
-        return {
-            "threads": db.execute("SELECT count(*) FROM threads").fetchone()[0],
-            "drafts": counted(db, "role = 'outgoing' AND sent_text IS NULL"),
-            "sent": counted(db, "role = 'outgoing' AND sent_text IS NOT NULL"),
-            "replies": counted(db, "role = 'incoming'"),
-        }
+        return conversations.stats(db)
 
 
 def sender_stats():
@@ -90,7 +87,7 @@ def sender_stats():
     определение «созревших, но не отправленных» здесь значило бы иметь две
     версии главного симптома аварии.
     """
-    from sender.db import conversation, outbox
+    from sender.db import outbox
     db_path = paths.state_db()
     if not db_path.exists():
         return {"status": "live", "numbers": {}, "queue": {},
@@ -101,7 +98,7 @@ def sender_stats():
             rows = db.execute(
                 "SELECT status, count(*) FROM numbers GROUP BY status").fetchall()
             queue = outbox.counters(db, clock.now())
-            threads = conversation.counters(db)
+            threads = conversations.counters(db)
         except sqlite3.OperationalError:
             return {"status": "live", "numbers": {}, "queue": {},
                     "threads": {"waiting": 0, "escalated": 0}, "heartbeat": None}
@@ -120,7 +117,3 @@ def _worker_heartbeat() -> str | None:
     except activity.NotConfiguredError:
         return None
     return None
-
-
-def counted(db, condition):
-    return db.execute(f"SELECT count(*) FROM messages WHERE {condition}").fetchone()[0]

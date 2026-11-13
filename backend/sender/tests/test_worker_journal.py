@@ -23,7 +23,8 @@ async def test_a_sent_row_names_the_number_and_the_thread(db):
     event = activity.recent(actor="sender.tick")[0]
     assert event["outcome"] == "sent"
     assert event["subject"] == "+77001112233"
-    assert "+77010000001" in (event["detail"] or "")
+    # The journal names the thread by its company: no phones in the journal (#36).
+    assert "c1" in (event["detail"] or "")
 
 
 async def test_an_empty_tick_writes_idle_once(db):

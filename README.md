@@ -5,7 +5,7 @@
 
 Все три системы лежат в `backend/` под одним venv и одним `backend/main.py`:
 система 1 — модули `companies/`, `research/`, `refusals/` поверх `core/`;
-система 2 — `writer/`; система 3 — `sender/`. `collector/` — сборщик приложения
+система 2 — `conversations/`; система 3 — `sender/`. `collector/` — сборщик приложения
 и старые ручки дашборда (до #7).
 
 ## Путь лида

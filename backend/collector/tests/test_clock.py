@@ -45,16 +45,6 @@ def test_the_seam_reaches_system_three():
         assert moment - datetime.now(timezone.utc) > timedelta(days=2, hours=23)
 
 
-def test_the_seam_reaches_the_conversation_stamp():
-    """Время записи сообщения тоже принадлежит прогону: иначе в ленте
-    песочницы у первого касания и у follow-up стояла бы одна дата."""
-    from writer.db import thread_store
-
-    clock.use(timedelta(days=3))
-    stamped = datetime.fromisoformat(thread_store.now())
-    assert stamped - datetime.now(timezone.utc) > timedelta(days=2, hours=23)
-
-
 def test_the_seam_reaches_the_dashboard(tmp_path, monkeypatch):
     """Счётчики очереди на /api/stats считаются по тем же часам, что тик
     воркера. Иначе после сдвига дашборд показывает ноль просроченных, пока
@@ -62,11 +52,11 @@ def test_the_seam_reaches_the_dashboard(tmp_path, monkeypatch):
     """
     import paths
     from collector.services import metrics
+    from core import db as core_db
     from sender.db import migrate
-    from writer.db import thread_store
 
     path = tmp_path / "state.db"
-    thread_store.connect(path).close()
+    core_db.migrate(path)
     db = migrate.connect(path)
     ripe = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat(
         timespec="seconds")

@@ -1773,6 +1773,40 @@ a.nav-item:hover {
   }
 }
 
+/* Оффер и его варианты в разделе «Переписка». */
+.settings-text {
+  font: inherit;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-btn);
+  background: var(--canvas);
+  color: var(--ink);
+  resize: vertical;
+}
+
+.settings-text:focus {
+  outline: 2px solid var(--ink);
+  outline-offset: -1px;
+}
+
+.settings-variant {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-variant-head {
+  display: flex;
+  gap: 8px;
+}
+
+.settings-variant-head .input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 320px;
+}
+
 /* --- партия исследования ------------------------------------------------------ */
 
 .batch {

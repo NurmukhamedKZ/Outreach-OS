@@ -161,9 +161,12 @@ async def test_a_poisoned_head_row_does_not_block_the_whole_queue(db, telegram):
     """
     from sender.db import outbox as queue_rows
     from sender.tests.test_worker import INSIDE, ready
+    from sender.tests.threads import open_thread
 
+    # The thread exists; the number the row goes from is not in the pool — that raises.
+    open_thread(db, "+77010000009")
     with db:
-        poisoned = queue_rows.put(db, 999, "+77010000009", "номера-нет-в-пуле", INSIDE)
+        poisoned = queue_rows.put(db, 999, "c9", "номера-нет-в-пуле", INSIDE)
     good, _ = ready(db)
 
     assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "retry"

@@ -15,7 +15,8 @@
 import logging
 from datetime import datetime
 
-from sender.db import conversation, outbox
+from conversations import public as conversation
+from sender.db import outbox
 from sender.services import pool
 
 log = logging.getLogger(__name__)
@@ -36,9 +37,10 @@ class ClosedThreadError(Exception):
 
 async def enqueue(db, transport, thread_id: str, now: datetime, config: dict,
                   text: str | None = None, kind: str = "cold") -> int:
-    thread = conversation.get(db, thread_id)
+    """`thread_id` — тред, то есть компания (#36): номер лида — `channel` треда."""
+    thread = conversation.thread(db, thread_id)
     if thread is None:
-        raise conversation.UnknownThreadError(thread_id)
+        raise conversation.ThreadNotFoundError(thread_id)
     if thread["status"] in conversation.AUTOMATON_STOPS:
         raise ClosedThreadError(f"тред {thread_id} в состоянии {thread['status']}")
 
@@ -47,7 +49,7 @@ async def enqueue(db, transport, thread_id: str, now: datetime, config: dict,
         raise NothingToQueueError(thread_id)
 
     our_number = thread["our_number"] or await _first_number(
-        db, transport, thread_id, now, config)
+        db, transport, thread_id, thread["channel"], now, config)
     # Правка оператора ложится в базу той же транзакцией, что строка очереди, и
     # только если строка встала. Иначе отказ («уже в очереди») оставлял бы текст
     # записанным, и стоящая строка отправила бы именно его — тот текст, который
@@ -61,12 +63,12 @@ async def enqueue(db, transport, thread_id: str, now: datetime, config: dict,
     return outbox_id
 
 
-async def _first_number(db, transport, thread_id: str, now: datetime,
-                        config: dict) -> str:
+async def _first_number(db, transport, thread_id: str, channel: str,
+                        now: datetime, config: dict) -> str:
     """Номер выбирается один раз на тред: для лида сообщение с другого номера —
     новый чат без истории, поэтому перебалансировки здесь нет."""
     number = pool.assign(db, now, config)          # NoNumberAvailableError наружу
-    if not await transport.check(number, thread_id):
+    if not await transport.check(number, channel):
         with db:
             conversation.set_status(db, thread_id, "unreachable",
                                     "у номера нет WhatsApp")

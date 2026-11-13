@@ -84,6 +84,15 @@ def test_reply_parsed_into_schema_with_sdk_retries_off_and_deadline(client):
     assert fake.structured == {"schema": Dossier, "method": "json_schema", "strict": True}
 
 
+def test_temperature_is_zero_unless_the_caller_writes_to_people(client):
+    fake = client(Dossier(summary="ok"), Dossier(summary="ok"))
+
+    answer(model.OpenRouterModel("key"))
+    assert fake.built["temperature"] == 0
+    answer(model.OpenRouterModel("key", temperature=0.7))
+    assert fake.built["temperature"] == 0.7
+
+
 def test_langfuse_labels_travel_with_the_call(client):
     fake = client(Dossier(summary="ok"))
 

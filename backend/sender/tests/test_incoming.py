@@ -7,12 +7,21 @@
 import pytest
 
 import activity
-from sender.db import conversation, numbers
+from conversations import public as conversation
+from sender.db import numbers
 from sender.services import config as sender_config, incoming, refusal
 from sender.tests.conftest import NOW, FakeTransport
-from sender.tests.test_conversation import open_thread
-from writer.services import seller
-from writer.services.seller import Reply
+from core.model import FakeModel
+from sender.tests.threads import open_thread
+
+SellerAnswer = conversation.SellerAnswer
+
+
+def Reply(text=None, status=None, reason=None):
+    """The seller's move as the old tests wrote it: text, or a verdict with its reason."""
+    if status is None:
+        return SellerAnswer(decision="answer", reason=reason or "ответил", text=text)
+    return SellerAnswer(decision=status, reason=reason)
 
 CONFIG = sender_config.load()
 
@@ -24,9 +33,9 @@ def answered(db, monkeypatch):
     numbers.set_status(db, "+77001112233", "active")
     open_thread(db, "+77010000001", status="active")
     with db:
-        conversation.assign_number(db, "+77010000001", "+77001112233")
-        conversation.add_incoming(db, "+77010000001", "а сколько стоит?", "IN1")
-    db.execute("UPDATE threads SET seed = ? WHERE thread_id = '+77010000001'",
+        conversation.assign_number(db, "c1", "+77001112233")
+        conversation.add_incoming(db, "c1", "а сколько стоит?", "IN1", NOW)
+    db.execute("UPDATE threads SET seed = ? WHERE company_id = 'c1'",
                ('{"name": "Ромашка", "city": "Алматы", "signals": []}',))
     db.commit()
     monkeypatch.setattr(sender_config, "autopilot", lambda: "replies")
@@ -36,7 +45,7 @@ def answered(db, monkeypatch):
 def говорит(monkeypatch, reply):
     """Агент отвечает заранее заданным исходом, в сеть не ходит."""
     monkeypatch.setattr(incoming, "_seller", lambda: object())
-    monkeypatch.setattr(incoming, "_ask", lambda agent, *args, **kwargs: reply)
+    monkeypatch.setattr(incoming, "_ask", lambda model, turn: reply)
 
 
 async def test_the_agent_is_actually_reached_with_a_live_connection(answered, monkeypatch):
@@ -47,20 +56,18 @@ async def test_the_agent_is_actually_reached_with_a_live_connection(answered, mo
     вызывался ни разу ни на одном живом входящем, а каждый ответ лида сгорал
     тремя попытками в эскалацию — и суита этого не видела.
     """
-    seen = {}
-
-    def respond(agent, seed, history, offer, *, session_id, stage=None):
-        seen["seed"], seen["history"], seen["session"] = seed, history, session_id
-        return Reply(text="Цену назовём после разговора.", status=None, reason=None)
-
-    monkeypatch.setattr(incoming, "_seller", lambda: object())
-    monkeypatch.setattr(seller, "respond", respond)
+    model = FakeModel(Reply(text="Цену назовём после разговора."))
+    monkeypatch.setattr(incoming, "_seller", lambda: model)
 
     assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "answered"
 
-    assert seen["seed"]["name"] == "Ромашка"
-    assert seen["history"][-1]["text"] == "а сколько стоит?"
-    assert seen["session"] == "+77010000001"
+    [call] = model.calls
+    assert "Ромашка" in call.messages[1][1]
+    assert "а сколько стоит?" in call.messages[1][1]
+    assert call.session_id == "c1"
+    # The seller's request lies next to its draft, as every draft's does.
+    stored = answered.execute("SELECT prompt FROM messages WHERE role = 'outgoing'").fetchone()
+    assert "а сколько стоит?" in stored[0]
 
 
 async def test_free_text_becomes_a_draft_and_a_queued_row(answered, monkeypatch):
@@ -72,7 +79,7 @@ async def test_free_text_becomes_a_draft_and_a_queued_row(answered, monkeypatch)
         "SELECT draft_text, angle FROM messages WHERE role = 'outgoing'").fetchone()
     assert draft["draft_text"] == "Цену назовём после разговора."
     assert answered.execute("SELECT kind FROM outbox").fetchone()[0] == "reply"
-    thread = conversation.get(answered, "+77010000001")
+    thread = conversation.thread(answered, "c1")
     assert thread["auto_replies"] == 1 and thread["status"] == "active"
     assert answered.execute("SELECT handled_at FROM messages WHERE role = 'incoming'"
                             ).fetchone()[0] is not None
@@ -101,12 +108,12 @@ async def test_manual_drafts_an_answer_to_every_incoming(answered, monkeypatch):
 
     assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "answered"
     with answered:
-        conversation.add_incoming(answered, "+77010000001", "а когда можно?", "IN2")
+        conversation.add_incoming(answered, "c1", "а когда можно?", "IN2", NOW)
     assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "answered"
 
     assert answered.execute("SELECT count(*) FROM messages WHERE role = 'outgoing'"
                             ).fetchone()[0] == 2
-    thread = conversation.get(answered, "+77010000001")
+    thread = conversation.thread(answered, "c1")
     assert thread["auto_replies"] == 0 and thread["status"] == "active"
     assert answered.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
 
@@ -121,7 +128,7 @@ async def test_manual_drafts_even_where_the_automaton_answered_before(answered,
     говорит(monkeypatch, Reply(text="Ответ агента", status=None, reason=None))
 
     assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "answered"
-    assert conversation.get(answered, "+77010000001")["status"] == "active"
+    assert conversation.thread(answered, "c1")["status"] == "active"
     assert answered.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
 
 
@@ -138,7 +145,7 @@ async def test_switching_to_replies_mid_turn_does_not_bypass_the_limit(answered,
 
     assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "answered"
     assert answered.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
-    assert conversation.get(answered, "+77010000001")["auto_replies"] == 1
+    assert conversation.thread(answered, "c1")["auto_replies"] == 1
 
 
 async def test_the_automaton_answers_in_its_own_words_only_once(answered, monkeypatch):
@@ -149,7 +156,7 @@ async def test_the_automaton_answers_in_its_own_words_only_once(answered, monkey
 
     assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "escalated"
 
-    assert conversation.get(answered, "+77010000001")["status"] == "escalated"
+    assert conversation.thread(answered, "c1")["status"] == "escalated"
     assert answered.execute("SELECT count(*) FROM messages WHERE role = 'outgoing'"
                             ).fetchone()[0] == 0, "агента звали, хотя не должны были"
 
@@ -163,7 +170,7 @@ async def test_an_invented_price_never_reaches_the_lead(answered, monkeypatch):
     assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "escalated"
 
     assert answered.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
-    assert conversation.get(answered, "+77010000001")["status"] == "escalated"
+    assert conversation.thread(answered, "c1")["status"] == "escalated"
 
 
 async def test_a_long_answer_is_escalated(answered, monkeypatch):
@@ -185,7 +192,7 @@ async def test_every_verdict_moves_the_thread(answered, monkeypatch, status, exp
 
     await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW)
 
-    assert conversation.get(answered, "+77010000001")["status"] == expected
+    assert conversation.thread(answered, "c1")["status"] == expected
 
 
 async def test_a_refusal_verdict_writes_the_suppression(answered, monkeypatch):
@@ -197,12 +204,6 @@ async def test_a_refusal_verdict_writes_the_suppression(answered, monkeypatch):
     await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW)
 
     assert written == ["+77010000001"]
-
-
-async def test_an_unknown_verdict_goes_to_the_human(answered, monkeypatch):
-    говорит(monkeypatch, Reply(text=None, status="unknown", reason="чушь"))
-
-    assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "escalated"
 
 
 async def test_a_failing_agent_spends_an_attempt_and_does_not_kill_the_tick(answered, monkeypatch):
@@ -230,7 +231,7 @@ async def test_the_fourth_visit_escalates_instead_of_calling_the_model(answered,
 
     assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "escalated"
 
-    assert conversation.get(answered, "+77010000001")["status"] == "escalated"
+    assert conversation.thread(answered, "c1")["status"] == "escalated"
     assert answered.execute("SELECT handled_at FROM messages WHERE role = 'incoming'"
                             ).fetchone()[0] is not None
 
@@ -246,12 +247,12 @@ async def test_an_escalation_says_why_in_the_thread_and_in_the_journal(answered,
 
     assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "escalated"
 
-    thread = conversation.get(answered, "+77010000001")
+    thread = conversation.thread(answered, "c1")
     assert thread["status"] == "escalated"
     assert "цен" in thread["status_reason"]
     event = activity.recent(actor="sender.tick")[0]
     assert event["outcome"] == "escalated"
-    assert event["subject"] == "+77010000001"
+    assert event["subject"] == "c1"
     assert "цен" in (event["detail"] or "")
 
 
@@ -263,7 +264,7 @@ async def test_a_verdict_keeps_the_agents_own_words(answered, monkeypatch):
 
     assert await incoming.handle_one(answered, FakeTransport(), CONFIG, NOW) == "escalated"
 
-    thread = conversation.get(answered, "+77010000001")
+    thread = conversation.thread(answered, "c1")
     assert thread["status_reason"] == "просит прислать КП на почту"
     assert "просит прислать КП" in (activity.recent(actor="sender.tick")[0]["detail"] or "")
 

@@ -87,6 +87,18 @@ const RESEARCH_STATUS: Record<string, Outcome> = {
   failed: { label: "неудача", tone: "stop" },
 };
 
+/** Статус прогона «Черновики топ-N»: `conversations.schemas.RunStatus`. */
+const OUTREACH_STATUS: Record<string, Outcome> = {
+  running: { label: "пишет черновики", tone: "ok" },
+  done: { label: "готов", tone: "idle" },
+  stopped: { label: "остановлен", tone: "attention" },
+  failed: { label: "оборвался", tone: "stop" },
+};
+
+export function outreachStatus(status: string): Outcome {
+  return OUTREACH_STATUS[status] ?? unknown(status);
+}
+
 export function batchStatus(status: string): Outcome {
   return BATCH_STATUS[status] ?? unknown(status);
 }

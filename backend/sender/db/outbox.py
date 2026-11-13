@@ -171,8 +171,10 @@ def rates(db: sqlite3.Connection, our_number: str, now: datetime,
     border = stamp(now - timedelta(days=window_days))
     row = db.execute(
         "SELECT count(*), count(delivered_at), count(DISTINCT thread_id),"
-        " (SELECT count(DISTINCT m.thread_id) FROM messages m"
-        "  WHERE m.role = 'incoming' AND m.thread_id IN"
+        # ponytail: SQL to conversations' messages (outbox.thread_id is the
+        # company since #36); delivery (#7) asks conversations.public instead.
+        " (SELECT count(DISTINCT m.company_id) FROM messages m"
+        "  WHERE m.role = 'incoming' AND m.company_id IN"
         "        (SELECT thread_id FROM outbox WHERE our_number = ?"
         "         AND status = 'sent' AND message_id IS NOT NULL AND updated_at >= ?))"
         " FROM outbox WHERE our_number = ? AND status = 'sent'"

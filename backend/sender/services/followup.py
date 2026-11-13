@@ -14,11 +14,8 @@ from datetime import datetime
 from functools import lru_cache
 
 import logctx
-from sender.db import conversation
+from conversations import public as conversation
 from sender.services import config as sender_config, pool, queue
-from writer.db import leads_source, thread_store
-from writer.services import (agent, config as writer_config,
-                             followup as writer_followup, offers)
 
 log = logging.getLogger(__name__)
 
@@ -40,42 +37,35 @@ async def touch_one(db, transport, config: dict, now: datetime) -> str | None:
         # и из чужого бросает ProgrammingError. Уехало бы в to_thread — ни одно
         # касание не было бы написано, а тик логировал бы трассировку каждые
         # двадцать секунд, потому что срок при неудаче остаётся на месте.
-        card = thread_store.thread(db, thread["thread_id"])
-        history = thread_store.history(db, thread["thread_id"])
-        task = writer_followup.task(db, card)
-        config = writer_config.load()
-        attempt = await asyncio.to_thread(
-            _write, _llm(), card, history, task,
-            offers.variant_of(thread["thread_id"], config)["text"],
-            leads_source.pitch_rules(config, now.date()).pitchable)
-        draft = attempt.draft
+        turn = conversation.followup_turn(db, thread["company_id"], now)
+        draft = await asyncio.to_thread(_write, _llm(), turn)
     except Exception:
         # Срок остаётся на месте: следующий тик попробует снова, и лид не
         # теряет касание из-за одного таймаута.
-        log.exception("не смогли написать касание в тред %s", thread["thread_id"])
+        log.exception("не смогли написать касание в тред %s", thread["company_id"])
         return None
 
     if draft.stop:
         with db:
-            conversation.clear_schedule(db, thread["thread_id"])
-            conversation.set_status(db, thread["thread_id"], "exhausted",
+            conversation.clear_schedule(db, thread["company_id"])
+            conversation.set_status(db, thread["company_id"], "exhausted",
                                     "новых поводов написать нет")
-        log.info("тред %s исчерпан: новых поводов нет", thread["thread_id"])
+        log.info("тред %s исчерпан: новых поводов нет", thread["company_id"])
         return "exhausted"
 
     with db:
-        conversation.add_draft(db, thread["thread_id"], draft.text, draft.angle,
-                               prompt=attempt.prompt, model=attempt.model)
-        conversation.clear_schedule(db, thread["thread_id"])
+        conversation.add_draft(db, thread["company_id"], draft.text, draft.angle, now,
+                               prompt=turn.messages, model=turn.model)
+        conversation.clear_schedule(db, thread["company_id"])
     if sender_config.autopilot() not in FULL_MODES:
         log.info("касание в тред %s осталось черновиком: автопилот не полный",
-                 thread["thread_id"])
+                 thread["company_id"])
         return "touched"
     try:
-        await queue.enqueue(db, transport, thread["thread_id"], now, config, kind=KIND)
+        await queue.enqueue(db, transport, thread["company_id"], now, config, kind=KIND)
     except (queue.ClosedThreadError, queue.NothingToQueueError,
             pool.NoNumberAvailableError) as skip:
-        log.info("касание в %s не встало в очередь: %s", thread["thread_id"], skip)
+        log.info("касание в %s не встало в очередь: %s", thread["company_id"], skip)
     return "touched"
 
 
@@ -88,28 +78,23 @@ def _next_due(db, now: datetime) -> dict | None:
     и без этой строки касание ушло бы человеку, который только что ответил.
     """
     for thread in conversation.due_touches(db, now):
-        if not conversation.lead_spoke_last(db, thread["thread_id"]):
+        if not conversation.lead_spoke_last(db, thread["company_id"]):
             return thread
         with db:
-            conversation.clear_schedule(db, thread["thread_id"])
-        log.info("расписание треда %s погашено: лид ответил", thread["thread_id"])
+            conversation.clear_schedule(db, thread["company_id"])
+        log.info("расписание треда %s погашено: лид ответил", thread["company_id"])
     return None
 
 
 @lru_cache
 def _llm():
-    """Клиент модели один на процесс — как у операции writer.outreach."""
-    return agent.model(writer_config.load())
+    """Модель одна на процесс — как у «Черновики топ-N»."""
+    return conversation.model()
 
 
-def _write(llm, card: dict, history: list[dict], task: str, offer: str,
-           pitchable: frozenset[str]):
+def _write(model, turn):
     """Ровно поход в сеть — его и уносит to_thread. Базы здесь нет и быть не
-    может: соединение принадлежит потоку цикла, поэтому этап, оффер и список
-    поводов приезжают сюда готовыми значениями."""
-    with logctx.entity(card["thread_id"]):
-        return agent.draft(llm, card["seed"], history, task,
-                           session_id=card["thread_id"],
-                           name="sender.followup", offer=offer,
-                           model_name=writer_config.load()["llm"]["model"],
-                           stage=card["stage"], pitchable=pitchable)
+    может: соединение принадлежит потоку цикла, поэтому промпт приезжает сюда
+    готовым."""
+    with logctx.entity(turn.session_id):
+        return conversation.write(model, turn)

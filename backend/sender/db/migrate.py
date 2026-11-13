@@ -1,11 +1,11 @@
 """Схема системы 3 в state.db — невосстановимый слой.
 
-Ровно как у переписки системы 2: CREATE TABLE IF NOT EXISTS, никаких DROP.
-Отличие в том, что sender ещё и правит чужие таблицы (threads, messages), а
-ALTER TABLE ADD COLUMN в SQLite не идемпотентен — при том, что схема
-применяется на каждом старте процесса. Отсюда ensure_column: смотрит
-PRAGMA table_info и добавляет колонку, только если её нет. Alembic ради двух
-таблиц в проект не тащим.
+CREATE TABLE IF NOT EXISTS, никаких DROP. ALTER TABLE ADD COLUMN в SQLite не
+идемпотентен — при том, что схема применяется на каждом старте процесса.
+Отсюда ensure_column: смотрит PRAGMA table_info и добавляет колонку, только
+если её нет. Таблицы переписки (threads, messages) и их колонки состояния —
+у модуля conversations, в ревизии Alembic 0005; outbox и numbers переедут в
+Alembic вместе с delivery (#7).
 """
 
 import sqlite3
@@ -60,24 +60,6 @@ def connect(path: Path) -> sqlite3.Connection:
     return db
 
 
-# Колонки состояния в чужих таблицах. Таблицы принадлежат системе 2, состояние
-# в них ведёт система 3: другого места для «с какого номера идёт чат» нет —
-# заводить свою копию треда значило бы два источника правды на одну переписку.
-CONVERSATION_COLUMNS = (
-    ("threads", "our_number", "TEXT"),
-    ("threads", "status_reason", "TEXT"),
-    ("threads", "auto_replies", "INTEGER NOT NULL DEFAULT 0"),
-    ("threads", "next_touch_at", "TEXT"),
-    ("threads", "touch_no", "INTEGER NOT NULL DEFAULT 0"),
-    ("messages", "provider_id", "TEXT"),
-    ("messages", "handled_at", "TEXT"),
-    ("messages", "queued_text", "TEXT"),
-    ("messages", "handle_attempts", "INTEGER NOT NULL DEFAULT 0"),
-    ("messages", "prompt", "TEXT"),
-    ("messages", "model", "TEXT"),
-)
-
-
 def apply(db: sqlite3.Connection) -> None:
     # Индекс, а не таблица: данных он не несёт, поэтому его замена запрета на
     # DROP в невосстановимом слое не нарушает.
@@ -94,30 +76,7 @@ def apply(db: sqlite3.Connection) -> None:
     # Номер, уже прогретый вне нашей системы: подключается сразу боевым, минуя
     # календарь warmup.plan() целиком (см. warmup.plan_for).
     ensure_column(db, "numbers", "skip_warmup", "INTEGER NOT NULL DEFAULT 0")
-    _conversation_state(db)
     db.commit()
-
-
-def _conversation_state(db: sqlite3.Connection) -> None:
-    """Состояние треда и сообщения. Ничего не делает, пока таблиц переписки нет:
-    их создаёт владелец (writer/collector), и порядок старта не гарантирован."""
-    if ensure_column(db, "threads", "status", "TEXT NOT NULL DEFAULT 'queued'"):
-        # Эскалируем не все старые треды, а только те, где уже была реальная
-        # переписка (sent_text) — то есть их вёл человек. Черновик без единого
-        # отправленного сообщения не отличить от треда, который просто ждал
-        # первого запуска sender'а на этой базе: гнать его в escalated значило
-        # бы хоронить лида, до которого автомат ещё не успел дойти.
-        db.execute("""
-            UPDATE threads SET status = 'escalated'
-            WHERE thread_id IN (
-                SELECT DISTINCT thread_id FROM messages WHERE sent_text IS NOT NULL
-            )
-        """)
-    for table, column, ddl in CONVERSATION_COLUMNS:
-        ensure_column(db, table, column, ddl)
-    if sqlite_tools.has_table(db, "messages"):
-        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS messages_provider"
-                   " ON messages (provider_id) WHERE provider_id IS NOT NULL")
 
 
 def ensure_column(db: sqlite3.Connection, table: str, column: str, ddl: str) -> bool:

@@ -5,23 +5,20 @@
 предохранители. Все они `if`, ни один не промпт: промпт — это просьба, которую
 модель нарушает именно там, где важно.
 
-Историю и карточку компании читаем через thread_store системы 2: своей копии
-переписки у sender'а нет и быть не должно, а второе определение «что считается
-историей» разъехалось бы с первым молча.
+Историю, карточку компании и промпт продавца собирает conversations: своей
+копии переписки у sender'а нет и быть не должно, а второе определение «что
+считается историей» разъехалось бы с первым молча.
 """
 
 import asyncio
 import logging
-import re
 from datetime import datetime
 from functools import lru_cache
 
 import activity
+from conversations import public as conversation
 from sender import notify
-from sender.db import conversation
 from sender.services import config as sender_config, pool, queue, refusal
-from writer.db import thread_store
-from writer.services import config as writer_config, offers, seller, stages
 
 log = logging.getLogger(__name__)
 
@@ -30,20 +27,7 @@ log = logging.getLogger(__name__)
 # промпт.
 REPLY_MODES = ("replies", "full")
 
-# Цифра рядом с валютой. Самый дорогой класс ошибки — придуманная цена: это
-# обещание, которое даёт живому человеку компания, а не модель. Стоп-правило
-# выката написано ровно про этот случай.
-PRICE = re.compile(r"\d[\d\s.,]*\s*(₸|тг\b|тенге|руб|₽|\$|usd|kzt|eur|€)", re.IGNORECASE)
-
-# Куда вердикт агента двигает тред. Все четыре терминальны для автомата.
-VERDICT_STATUS = {
-    "interested": "escalated",
-    "refusal": "closed_refused",
-    "wrong_number": "closed_junk",
-    "junk": "closed_junk",
-}
-
-ANGLE = "answer"
+ANGLE = conversation.ANSWER_ANGLE
 
 
 async def handle_one(db, transport, config: dict, now: datetime) -> str | None:
@@ -52,7 +36,7 @@ async def handle_one(db, transport, config: dict, now: datetime) -> str | None:
     row = conversation.unhandled_incoming(db)
     if row is None:
         return None
-    thread = conversation.get(db, row["thread_id"])
+    thread = conversation.thread(db, row["company_id"])
 
     if row["handle_attempts"] >= config["limits"]["max_handle_attempts"]:
         return await _escalate(db, thread, row, now,
@@ -67,30 +51,27 @@ async def handle_one(db, transport, config: dict, now: datetime) -> str | None:
     with db:
         conversation.count_attempt(db, row["message_id"])
     try:
-        # База читается ЗДЕСЬ, в своём потоке, и в to_thread уезжают уже готовые
-        # данные. sqlite3-соединение создано в потоке цикла и из чужого потока
+        # База читается ЗДЕСЬ, в своём потоке, и в to_thread уезжает уже готовый
+        # промпт. sqlite3-соединение создано в потоке цикла и из чужого потока
         # бросает ProgrammingError — то есть агент не был бы вызван ни разу, а
         # каждое входящее сгорало бы тремя попытками в эскалацию.
-        record = thread_store.thread(db, thread["thread_id"])
-        seed, stage = record["seed"], record["stage"]
-        history = thread_store.history(db, thread["thread_id"])
-        reply = await asyncio.to_thread(_ask, _seller(), seed, history,
-                                        thread["thread_id"], stage)
+        turn = conversation.reply_turn(db, thread["company_id"])
+        reply = await asyncio.to_thread(_ask, _seller(), turn)
     except Exception:
         # Попытка потрачена, `handled_at` пуст: следующий тик попробует снова,
         # а четвёртый отдаст тред человеку.
         log.exception("агент не справился с входящим %s", row["message_id"])
         return None
 
-    if reply.status is not None:
+    if reply.decision != conversation.Decision.ANSWER:
         return await _verdict(db, thread, row, reply, now)
-    return await _answer(db, transport, thread, row, reply.text, now, config)
+    return await _answer(db, transport, thread, row, reply.text, turn, now, config)
 
 
-async def _answer(db, transport, thread: dict, row: dict, text: str,
+async def _answer(db, transport, thread: dict, row: dict, text: str, turn,
                   now: datetime, config: dict) -> str:
     """Свободный текст агента — через те же гейты, что холодное касание."""
-    if len(text) > config["limits"]["max_reply_chars"] or PRICE.search(text):
+    if conversation.needs_human(text, config["limits"]["max_reply_chars"]):
         return await _escalate(db, thread, row, now,
                                "ответ длиннее лимита или содержит цену")
     # Режим читается один раз: счётчик и постановка обязаны решаться одним
@@ -100,47 +81,48 @@ async def _answer(db, transport, thread: dict, row: dict, text: str,
     automatic = (sender_config.autopilot() in REPLY_MODES
                  and thread["auto_replies"] < config["limits"]["auto_replies_per_thread"])
     with db:
-        conversation.add_draft(db, thread["thread_id"], text, ANGLE)
+        conversation.add_draft(db, thread["company_id"], text, ANGLE, now,
+                               prompt=turn.messages, model=turn.model)
         # Предохранитель стережёт разговор без присмотра. Черновик, который
         # прочтёт оператор, автоответом не является: сочти его — и второе
         # входящее ушло бы в эскалацию без черновика.
         if automatic:
-            conversation.bump_auto_replies(db, thread["thread_id"])
+            conversation.bump_auto_replies(db, thread["company_id"])
         conversation.mark_handled(db, row["message_id"], now)
-    activity.record("sender.tick", "answered", subject=thread["thread_id"],
+    activity.record("sender.tick", "answered", subject=thread["company_id"],
                     detail=text)
     if not automatic:
         log.info("ответ в тред %s остался черновиком: ответы не уходят сами",
-                 thread["thread_id"])
+                 thread["company_id"])
         return "answered"
     try:
-        await queue.enqueue(db, transport, thread["thread_id"], now, config,
+        await queue.enqueue(db, transport, thread["company_id"], now, config,
                             kind="reply")
     except (queue.ClosedThreadError, queue.NothingToQueueError,
             pool.NoNumberAvailableError) as skip:
-        log.info("ответ в %s не встал в очередь: %s", thread["thread_id"], skip)
+        log.info("ответ в %s не встал в очередь: %s", thread["company_id"], skip)
     return "answered"
 
 
 async def _verdict(db, thread: dict, row: dict, reply, now: datetime) -> str:
     """Вердикт агента. Неизвестный статус — тоже вердикт, только человеку."""
-    status = VERDICT_STATUS.get(reply.status)
+    status = conversation.status_after(reply.decision)
     if status is None:
         return await _escalate(db, thread, row, now,
-                               f"агент вернул статус {reply.status!r}")
+                               f"агент вернул решение {reply.decision!r}")
     with db:
-        conversation.set_status(db, thread["thread_id"], status, reply.reason)
+        conversation.set_status(db, thread["company_id"], status, reply.reason)
         conversation.mark_handled(db, row["message_id"], now)
-    log.info("тред %s -> %s: %s", thread["thread_id"], status, reply.reason)
+    log.info("тред %s -> %s: %s", thread["company_id"], status, reply.reason)
     activity.record("sender.tick", "closed" if status != "escalated" else "escalated",
-                    subject=thread["thread_id"],
-                    detail=f"{reply.status}: {reply.reason}")
+                    subject=thread["company_id"],
+                    detail=f"{reply.decision}: {reply.reason}")
     if status == "closed_refused":
         # После коммита: шов ходит в чужую базу, и держать на нём открытую
         # транзакцию state.db значило бы блокировать очередь.
-        refusal.refuse(thread["thread_id"], f"агент: {reply.reason}")
+        refusal.refuse(thread["channel"], f"агент: {reply.reason}")
     if status == "escalated":
-        await notify.send(f"{thread['thread_id']} заинтересован: {reply.reason}")
+        await notify.send(f"{thread['channel']} заинтересован: {reply.reason}")
         return "escalated"
     return "closed"
 
@@ -148,25 +130,23 @@ async def _verdict(db, thread: dict, row: dict, reply, now: datetime) -> str:
 async def _escalate(db, thread: dict, row: dict, now: datetime, why: str) -> str:
     """Тупик для автомата. Из escalated выходит только человек, руками."""
     with db:
-        conversation.set_status(db, thread["thread_id"], "escalated", why)
+        conversation.set_status(db, thread["company_id"], "escalated", why)
         conversation.mark_handled(db, row["message_id"], now)
-    log.warning("тред %s эскалирован: %s", thread["thread_id"], why)
-    activity.record("sender.tick", "escalated", subject=thread["thread_id"],
+    log.warning("тред %s эскалирован: %s", thread["company_id"], why)
+    activity.record("sender.tick", "escalated", subject=thread["company_id"],
                     detail=why)
-    await notify.send(f"{thread['thread_id']} — разбирай руками: {why}")
+    await notify.send(f"{thread['channel']} — разбирай руками: {why}")
     return "escalated"
 
 
 @lru_cache
 def _seller():
-    """Агент собирается один раз на процесс: create_agent компилирует граф."""
-    return seller.build(writer_config.load())
+    """Модель одна на процесс — как клиент любой внешней системы."""
+    return conversation.model()
 
 
-def _ask(agent, seed: dict, history: list[dict], thread_id: str, stage: str):
+def _ask(model, turn):
     """Ровно поход в сеть — его и уносит to_thread. Базы здесь нет и быть не
-    может: соединение принадлежит потоку цикла."""
-    config = writer_config.load()
-    return seller.respond(agent, seed, history,
-                          offers.variant_of(thread_id, config)["text"],
-                          session_id=thread_id, stage=stage)
+    может: соединение принадлежит потоку цикла, поэтому промпт приезжает сюда
+    готовым."""
+    return conversation.sell(model, turn)

@@ -4,8 +4,8 @@
 в routes/ (активность, аналитика, задачи, счётчики, джобы, SSE) до #7.
 
 Живость экрана — тоже часть API: при старте поднимается воркер джобов
-(services/jobs.py, одна операция — «Черновики топ-N»), а /api/events раздаёт
-прогресс и счётчики по SSE.
+(services/jobs.py; операций в реестре после #36 нет, его удаляет #7), а
+/api/events раздаёт прогресс и счётчики по SSE.
 
 Запуск: uv run uvicorn api:app --port 8787 --reload
 """
@@ -32,21 +32,13 @@ from collector.routes import (activity as activity_routes, analytics as analytic
                               pipeline, stats, tasks as tasks_routes)
 from collector.services import events as bus
 from collector.services import jobs as queue
-from collector.services.pipeline import OPERATIONS, PIPELINES
 from companies import api as companies_api, public as companies
+from conversations import api as conversations_api, public as conversations
 from core.pages import ScraplingPages
 from refusals import api as refusals_api, public as refusals
 from research import api as research_api, public as research
 from sender.routes import sender, webhook as sender_webhook
 from sender.services import refusal as sender_refusal
-from writer.db import thread_store
-from writer.routes import threads as writer
-from writer.services import operations as writer_operations
-
-# Единственное место, где collector знает о существовании writer'а — тот же
-# шов, что монтирует его роутер: подключает операцию очереди в общий реестр.
-OPERATIONS["writer.outreach"] = writer_operations.open_new_threads
-PIPELINES["write"] = {"title": "Черновики топ-N", "steps": ("writer.outreach",)}
 
 
 def _write_refusal(handle: str, reason: str) -> bool:
@@ -77,17 +69,16 @@ WEB_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1):\d+$"
 
 
 def prepare_database(path: Path) -> None:
-    """Apply Alembic revisions, then let the thread schema owner extend its tables.
+    """Apply Alembic revisions and reset the work a stopped process left running.
 
-    Both must happen before the first request: system 3 reads and writes
-    threads.stage on its own connection and never creates another owner's
-    columns.
+    Before the first request: system 3 reads and writes the conversation
+    tables on its own connection and creates none of them.
     """
     core_db.migrate(path)
-    thread_store.connect(path).close()
     with closing(core_db.connect(path)) as db:
         companies.forget_interrupted_collection(db)
         research.forget_interrupted(db)
+        conversations.forget_interrupted(db)
 
 
 @asynccontextmanager
@@ -98,7 +89,7 @@ async def lifespan(_app: FastAPI):
     monitor = asyncio.create_task(sender.monitor_numbers())
     warming = asyncio.create_task(sender.warm_numbers())
     # Шина событий приезжает в sender параметром — тот же шов, что монтирует
-    # его роутеры и подключает операцию writer'а в общий реестр.
+    # его роутеры.
     sending = asyncio.create_task(sender.send_queue(bus.publish))
     # A thread, not a task (ADR 0005): copying blocks for seconds. Daemon, so a
     # copy in progress does not hold shutdown; its temp folder is cleaned next run.
@@ -145,7 +136,7 @@ app.include_router(refusals_api.router)
 app.include_router(companies_api.router)
 app.include_router(research_api.router)
 app.include_router(backup_api.router)
-app.include_router(writer.router)
+app.include_router(conversations_api.router)
 app.include_router(sender.router)
 app.include_router(sender_webhook.router)
 

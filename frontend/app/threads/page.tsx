@@ -16,6 +16,7 @@ import {
   fetchPrompt,
   fetchQueue,
   fetchThreads,
+  conversationError,
   requestDraft,
   setThreadOutcome,
   type Conversation,
@@ -81,7 +82,7 @@ function ThreadsPage() {
       const conv = await fetchConversation(selected);
       if (stale) return;
       setConversation(conv);
-      const queued = await fetchQueue(conv.thread_id);
+      const queued = await fetchQueue(conv.company_id);
       if (stale) return;
       setQueue(queued.queue);
       // hasPrompt решает, что покажет композер под <details>: промпт или
@@ -92,7 +93,7 @@ function ThreadsPage() {
       } else {
         setPromptInfo(null);
       }
-    })().catch((error: Error) => !stale && setFailure(error.message));
+    })().catch((error: Error) => !stale && setFailure(conversationError(error)));
     return () => {
       stale = true;
     };
@@ -110,7 +111,7 @@ function ThreadsPage() {
       const next = await action();
       setConversation(next);
     } catch (error) {
-      setFailure((error as Error).message);
+      setFailure(conversationError(error));
     } finally {
       setBusy(false);
     }
@@ -146,14 +147,14 @@ function ThreadsPage() {
         <div className="roster">
           {(threads ?? []).map((thread) => (
             <button
-              key={thread.thread_id}
+              key={thread.company_id}
               className="row inbox-row"
               aria-current={thread.company_id === selected}
               onClick={() => setSelected(thread.company_id)}
             >
               <span className="row-text">
                 <span className="inbox-name">{thread.company_name}</span>
-                <span className="inbox-sub mono">{thread.thread_id}</span>
+                <span className="inbox-sub mono">{thread.channel}</span>
                 <span className="inbox-sub">
                   {thread.last_at ? WHEN.format(new Date(thread.last_at)) : "ещё не отправляли"}
                   {thread.last_message ? ` · ${thread.last_message}` : ""}
@@ -186,11 +187,11 @@ function ThreadsPage() {
                 <b className="row-name">{summary?.company_name ?? selected}</b>
                 <a
                   className="ghost mono"
-                  href={channelLink({ kind: "whatsapp", handle: conversation.thread_id })}
+                  href={channelLink({ kind: "whatsapp", handle: conversation.channel })}
                   target="_blank"
                   rel="noreferrer"
                 >
-                  {conversation.thread_id}
+                  {conversation.channel}
                 </a>
                 <Link href={`/leads/${encodeURIComponent(selected)}`}>карточка лида</Link>
                 {conversation.our_number && (
@@ -251,14 +252,13 @@ function ThreadsPage() {
                 <MessageComposer
                   companyId={selected}
                   messageId={conversation.draft.message_id}
-                  threadId={conversation.thread_id}
                   text={conversation.draft.draft_text}
                   angle={conversation.draft.angle}
                   model={promptInfo?.model ?? null}
                   hasPrompt={promptInfo?.hasPrompt ?? false}
                   draftKind={draftKind}
                   onQueued={() =>
-                    fetchQueue(conversation.thread_id).then((q) => setQueue(q.queue))
+                    fetchQueue(conversation.company_id).then((q) => setQueue(q.queue))
                   }
                   onRegenerate={() =>
                     fetchConversation(selected).then((conv) => setConversation(conv))

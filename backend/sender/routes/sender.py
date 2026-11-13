@@ -17,7 +17,8 @@ from pydantic import BaseModel
 
 import activity
 import paths
-from sender.db import conversation, migrate, numbers, outbox
+from conversations import public as conversation
+from sender.db import migrate, numbers, outbox
 from sender.services import config, health, pool, queue, warmup, worker
 from sender.transport import TransportError, build as build_transport
 
@@ -154,12 +155,13 @@ async def enqueue(body: QueueRequest) -> dict:
     with closing(connect()) as db:
         if body.text is not None and not body.text.strip():
             raise HTTPException(400, "пустой текст отправленным не бывает")
-        thread_id = canonical(body.thread_id)
+        # The thread is the company (#36), not a number: no phone canonisation here.
+        thread_id = body.thread_id.strip()
         try:
             outbox_id = await queue.enqueue(db, build_transport(), thread_id,
                                             now(), settings,
                                             body.text.strip() if body.text else None)
-        except conversation.UnknownThreadError:
+        except conversation.ThreadNotFoundError:
             raise HTTPException(404, f"треда {thread_id} нет") from None
         except queue.NotReachableError:
             raise HTTPException(422, f"у {thread_id} нет WhatsApp — "
@@ -177,12 +179,9 @@ def show_queue(thread_id: str | None = None) -> dict:
     """Отбор сужается в SQL, а не после LIMIT: иначе десяток чужих отправок
     вытеснял бы строку этого треда, и карточка теряла бы «в очереди».
 
-    Тред — это номер лида, поэтому он проходит ту же канонизацию, что номера
-    пула: незакодированный `+` приезжает из query-string пробелом, и без неё
-    очередь треда молча оказывалась бы пустой."""
+    Тред — это компания (#36), его id приезжает как есть."""
     with closing(connect()) as db:
-        rows = outbox.recent(db, RECENT_SENDS,
-                             canonical(thread_id) if thread_id else None)
+        rows = outbox.recent(db, RECENT_SENDS, thread_id.strip() if thread_id else None)
         return {"queue": [row for row in rows if row["status"] in ("pending", "sending")],
                 "recent": rows}
 

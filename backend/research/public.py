@@ -1,6 +1,6 @@
 """Facade of research: batches, dossiers and the leads they make (#12).
 
-writer reads its leads here (#17); the app's assembler resets interrupted work.
+conversations reads its leads here (#17, #36); the app's assembler resets interrupted work.
 """
 
 import sqlite3
@@ -8,7 +8,11 @@ from datetime import datetime
 
 # What company() raises, re-exported for callers to catch without reaching into research.
 from research.exceptions import CompanyNotFoundError as CompanyNotFoundError
-from research.schemas import CompanyResearch, Lead
+from research.schemas import CompanyResearch as CompanyResearch
+from research.schemas import Lead as Lead
+
+# The signal types a lead may carry: conversations picks which of them to write about.
+from research.schemas import SignalType as SignalType
 from research.service import ResearchService
 
 

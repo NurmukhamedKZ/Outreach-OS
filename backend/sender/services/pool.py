@@ -9,7 +9,8 @@ import logging
 import sqlite3
 from datetime import datetime
 
-from sender.db import conversation, numbers
+from conversations import public as conversation
+from sender.db import numbers
 from sender.services import warmup
 
 log = logging.getLogger(__name__)
@@ -85,18 +86,18 @@ def relocate(db: sqlite3.Connection, number: str, now: datetime, config: dict) -
     Свободного номера нет — тред ждёт в blocked_channel, а не пропадает.
     """
     moved = escalated = stranded = 0
-    cold = {row["thread_id"] for row in conversation.cold_threads_of(db, number)}
+    cold = {row["company_id"] for row in conversation.cold_threads_of(db, number)}
     # Бюджет считается один раз и тратится по треду: пересчёт на каждом витке
     # дал бы один и тот же ответ — присвоение номера треду ничего не отправляет.
     spare_room = budget(db, now, config)
-    for thread in _threads_of(db, number):
+    for thread in conversation.threads_on_number(db, number):
         with db:
-            if thread["thread_id"] not in cold:
-                conversation.set_status(db, thread["thread_id"], "escalated",
+            if thread["company_id"] not in cold:
+                conversation.set_status(db, thread["company_id"], "escalated",
                                         f"номер {number} выбыл, а в треде уже шёл диалог")
                 escalated += 1
                 continue
-            conversation.set_status(db, thread["thread_id"], "blocked_channel",
+            conversation.set_status(db, thread["company_id"], "blocked_channel",
                                     f"номер {number} выбыл, ищем замену")
         try:
             spare = take(spare_room)
@@ -104,25 +105,13 @@ def relocate(db: sqlite3.Connection, number: str, now: datetime, config: dict) -
             stranded += 1
             continue
         with db:
-            conversation.assign_number(db, thread["thread_id"], spare)
-            conversation.set_status(db, thread["thread_id"], "queued",
+            conversation.assign_number(db, thread["company_id"], spare)
+            conversation.set_status(db, thread["company_id"], "queued",
                                     f"переехал на номер {spare}")
         moved += 1
     log.warning("номер %s отпустил треды: переехало %s, к человеку %s, ждут %s",
                 number, moved, escalated, stranded)
     return {"moved": moved, "escalated": escalated, "stranded": stranded}
-
-
-def _threads_of(db: sqlite3.Connection, number: str) -> list[dict]:
-    """Только те, кому переезд вообще нужен. Список исключений — весь
-    AUTOMATON_STOPS, а не три статуса из него: выдохшийся тред, отправленный при
-    бане человеку, — это мёртвый лид в инбоксе живого оператора."""
-    stops = ", ".join("?" * len(conversation.AUTOMATON_STOPS))
-    rows = db.execute(
-        f"SELECT {conversation.FIELDS} FROM threads WHERE our_number = ?"
-        f" AND status NOT IN ({stops})",
-        (number, *conversation.AUTOMATON_STOPS)).fetchall()
-    return [dict(row) for row in rows]
 
 
 def rescue_stranded(db: sqlite3.Connection, now: datetime, config: dict) -> int:
@@ -134,23 +123,16 @@ def rescue_stranded(db: sqlite3.Connection, now: datetime, config: dict) -> int:
     """
     rescued = 0
     spare_room = budget(db, now, config)
-    for thread in _stranded(db):
+    for thread in conversation.stranded(db):
         try:
             spare = take(spare_room)
         except NoNumberAvailableError:
             break                     # свободных нет — остальным тем более
         with db:
-            conversation.assign_number(db, thread["thread_id"], spare)
-            conversation.set_status(db, thread["thread_id"], "queued",
+            conversation.assign_number(db, thread["company_id"], spare)
+            conversation.set_status(db, thread["company_id"], "queued",
                                     f"нашёлся свободный номер {spare}")
         rescued += 1
     if rescued:
         log.info("из blocked_channel уведено тредов: %s", rescued)
     return rescued
-
-
-def _stranded(db: sqlite3.Connection) -> list[dict]:
-    rows = db.execute(
-        f"SELECT {conversation.FIELDS} FROM threads WHERE status = 'blocked_channel'"
-        " ORDER BY thread_id").fetchall()
-    return [dict(row) for row in rows]

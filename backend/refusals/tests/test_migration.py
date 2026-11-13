@@ -130,17 +130,22 @@ def test_a_legacy_reason_shorter_than_three_characters_is_marked(tmp_path, reaso
     assert refusals_in(path)[0][1] == kept
 
 
-def test_after_the_move_the_old_name_is_a_view_over_refusals(tmp_path):
+def test_after_the_move_the_old_name_is_a_view_until_its_last_reader_left(tmp_path):
     path = tmp_path / "state.db"
     legacy_database(path, [("+77010000001", "2026-09-02", "стоп-слово")])
 
     core_db.migrate(path)
+    core_db.downgrade(path, "0004")
 
     kinds = {
         name: kind for kind, name, _sql in schema_of(path) if name in ("refusals", "suppression")
     }
     assert kinds == {"refusals": "table", "suppression": "view"}
     assert legacy_rows_in(path) == [("+77010000001", "2026-09-02T00:00:00+00:00", "стоп-слово")]
+
+    # 0005: the send queue's gate reads refusals.public, nobody reads the view.
+    core_db.migrate(path)
+    assert [name for _kind, name, _sql in schema_of(path) if name == "suppression"] == []
 
 
 def test_downgrade_gives_every_refusal_back_to_the_old_table_and_upgrade_takes_it_again(tmp_path):

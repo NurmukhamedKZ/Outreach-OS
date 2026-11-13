@@ -93,9 +93,17 @@ class OpenRouterModel:
     """Model through OpenRouter. `answer` blocks the thread for up to minutes:
     call it from async code via asyncio.to_thread."""
 
-    def __init__(self, api_key: str | None, transport: httpx.BaseTransport | None = None):
+    def __init__(
+        self,
+        api_key: str | None,
+        transport: httpx.BaseTransport | None = None,
+        temperature: float = 0,
+    ):
         self.api_key = api_key
         self.transport = transport
+        # 0 extracts facts from a text; a message to a person needs more, or
+        # every letter comes out the same.
+        self.temperature = temperature
 
     def answer[S: BaseModel](
         self,
@@ -114,7 +122,7 @@ class OpenRouterModel:
             client=openrouter_client(self.api_key, self.transport),
             model=model,
             api_key=self.api_key,
-            temperature=0,
+            temperature=self.temperature,
             reasoning={"enabled": False},
             model_kwargs={"retries": NO_SDK_RETRY},
             openrouter_provider={"require_parameters": True},

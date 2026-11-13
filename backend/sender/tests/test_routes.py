@@ -7,12 +7,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import activity
+from core import db as core_db
 from sender.db import migrate, numbers, outbox
 from sender.routes import sender as routes
 from sender.routes.sender import RECENT_SENDS
 from sender.tests.conftest import FakeTransport
 from sender.tests.test_config import switch  # noqa: F401  — фикстура, а не имя
-from sender.tests.test_conversation import add_draft, open_thread
+from sender.tests.threads import add_draft, open_thread
 
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
 
@@ -20,6 +21,7 @@ NOW = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     path = tmp_path / "state.db"
+    core_db.migrate(path)                    # переписка и отказы — Alembic
     db = migrate.connect(path)
     activity.use(path)                       # статус берёт пульс из журнала
     # Роутер закрывает своё соединение после каждого запроса — как в проде, где
@@ -160,13 +162,8 @@ def test_path_traversal_in_number_is_rejected(client):
 
 def _client_with(monkeypatch, tmp_path, transport):
     """Роутер поверх базы со всеми тремя слоями и транспортом без сети."""
-    from writer.db import thread_store
     path = tmp_path / "state.db"
-    owner = thread_store.connect(path)
-    owner.execute("CREATE TABLE IF NOT EXISTS suppression ("
-                  " handle TEXT PRIMARY KEY, added_at TEXT NOT NULL, reason TEXT)")
-    owner.commit()
-    owner.close()
+    core_db.migrate(path)
     activity.use(path)                      # статус берёт пульс из журнала
     db = migrate.connect(path)
     monkeypatch.setattr(routes, "connect", lambda: migrate.connect(path))
@@ -199,7 +196,7 @@ def test_queue_puts_the_operators_text_into_the_outbox(client_with_thread):
     http, db = client_with_thread
 
     body = http.post("/api/sender/queue", json={
-        "thread_id": "+77010000001", "text": "Правленый оператором текст"}).json()
+        "thread_id": "c1", "text": "Правленый оператором текст"}).json()
 
     assert body["status"] == "pending"
     assert db.execute("SELECT queued_text FROM messages").fetchone()[0] \
@@ -210,9 +207,9 @@ def test_queue_puts_the_operators_text_into_the_outbox(client_with_thread):
 
 def test_queueing_the_same_message_twice_is_a_conflict(client_with_thread):
     http, _ = client_with_thread
-    http.post("/api/sender/queue", json={"thread_id": "+77010000001"})
+    http.post("/api/sender/queue", json={"thread_id": "c1"})
 
-    response = http.post("/api/sender/queue", json={"thread_id": "+77010000001"})
+    response = http.post("/api/sender/queue", json={"thread_id": "c1"})
 
     assert response.status_code == 409
 
@@ -220,7 +217,7 @@ def test_queueing_the_same_message_twice_is_a_conflict(client_with_thread):
 def test_a_number_without_whatsapp_answers_with_words_not_a_traceback(client_no_whatsapp):
     http, _ = client_no_whatsapp
 
-    response = http.post("/api/sender/queue", json={"thread_id": "+77010000001"})
+    response = http.post("/api/sender/queue", json={"thread_id": "c1"})
 
     assert response.status_code == 422
     assert "whatsapp" in response.json()["detail"].lower()
@@ -253,10 +250,10 @@ def test_a_rejected_edit_does_not_reach_the_queued_message(client_with_thread):
     базу, стоящая строка отправит именно его: воркер читает
     coalesce(queued_text, draft_text)."""
     http, db = client_with_thread
-    http.post("/api/sender/queue", json={"thread_id": "+77010000001",
+    http.post("/api/sender/queue", json={"thread_id": "c1",
                                          "text": "Первый вариант"})
 
-    response = http.post("/api/sender/queue", json={"thread_id": "+77010000001",
+    response = http.post("/api/sender/queue", json={"thread_id": "c1",
                                                     "text": "Второй вариант"})
 
     assert response.status_code == 409
@@ -269,15 +266,15 @@ def test_the_queue_of_a_thread_is_not_crowded_out_by_other_threads(client_with_t
     чужих отправок бейдж пропадает, кнопка разблокируется — и нажатие приводит
     к 409."""
     http, db = client_with_thread
-    http.post("/api/sender/queue", json={"thread_id": "+77010000001"})
+    http.post("/api/sender/queue", json={"thread_id": "c1"})
     later = NOW + timedelta(minutes=5)
     with db:
         for index in range(RECENT_SENDS + 5):
-            other = outbox.put(db, 500 + index, f"+7702000{index}", "+77001112233", later)
+            other = outbox.put(db, 500 + index, f"other{index}", "+77001112233", later)
             outbox.claim(db, other, later)
             outbox.mark_sent(db, other, f"id{index}", later)
 
-    # `+` в query-string декодируется пробелом — ручка канонизирует номер сама.
-    body = http.get("/api/sender/queue?thread_id=+77010000001").json()
+    # The thread is the company (#36): its id goes as it is, no phone canonisation.
+    body = http.get("/api/sender/queue?thread_id=c1").json()
 
-    assert [row["thread_id"] for row in body["queue"]] == ["+77010000001"]
+    assert [row["thread_id"] for row in body["queue"]] == ["c1"]

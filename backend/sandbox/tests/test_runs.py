@@ -78,8 +78,8 @@ def test_idle_base_is_not_a_scenario():
 
 
 def test_two_runs_of_one_company_do_not_share_history():
-    """Ради этого прогон и сделан файлом: thread_id — это номер телефона и
-    первичный ключ threads, второй прогон по тому же лиду упёрся бы в него."""
+    """Ради этого прогон и сделан файлом: тред — первичный ключ компании, а
+    номер лида уникален, второй прогон по тому же лиду упёрся бы в них."""
     first = runs.create("c_romashka", warmed=True, moment=MOMENT)
     second = runs.create("c_romashka", warmed=True,
                          moment=MOMENT + timedelta(minutes=1))
@@ -153,14 +153,14 @@ def _number_status(run):
 
 def _open_thread(run, thread_id):
     with sqlite3.connect(run.path) as db:
-        db.execute("INSERT INTO threads (thread_id, company_id, seed, created_at)"
-                   " VALUES (?, 'c_romashka', '{}', '2026-09-03T09:00:00+00:00')",
+        db.execute("INSERT INTO threads (company_id, channel, seed, created_at)"
+                   " VALUES ('c_romashka', ?, '{}', '2026-09-03T09:00:00+00:00')",
                    (thread_id,))
 
 
 def _threads(run):
     with sqlite3.connect(run.path) as db:
-        return [row[0] for row in db.execute("SELECT thread_id FROM threads")]
+        return [row[0] for row in db.execute("SELECT channel FROM threads")]
 
 
 def test_a_company_id_cannot_lead_the_run_file_out_of_its_directory(tmp_path):

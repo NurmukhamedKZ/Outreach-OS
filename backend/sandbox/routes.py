@@ -2,7 +2,7 @@
 тумблеры и «ответить как лид».
 
 Черновик и постановку в очередь пульт не дублирует — их зовут существующие
-ручки writer'а и sender'а. Вторая точка входа в постановку сообщения означала
+ручки conversations и sender'а. Вторая точка входа в постановку сообщения означала
 бы вторые гейты, а проверять надо те же, что в бою.
 """
 
@@ -137,10 +137,10 @@ async def set_faults(body: NewFaults) -> dict:
 
 @router.get("/chat")
 async def read_chat() -> dict:
-    thread_id = thread_of_active_run()
+    company_id, _channel = thread_of_active_run()
     with closing(sqlite3.connect(paths.state_db())) as db:
         try:
-            return chat.view(db, thread_id)
+            return chat.view(db, company_id)
         except chat.UnknownThreadError:
             # Тред исчез между выбором и чтением: прогон переключили в другой
             # вкладке. Это состояние, а не авария, и отвечать на него надо тем
@@ -153,9 +153,9 @@ async def read_chat() -> dict:
 async def incoming(body: NewIncoming) -> dict:
     """Ответ лида уезжает в ту же ручку, что дёргает настоящий Node на
     messages.upsert: стоп-слова, дедуп и гашение расписания — боевые."""
-    thread_id = thread_of_active_run()
+    _company_id, channel = thread_of_active_run()
     payload = {"kind": "incoming", "number": runs.SANDBOX_NUMBER,
-               "from": f"{thread_id.lstrip('+')}{PERSONAL_JID}",
+               "from": f"{channel.lstrip('+')}{PERSONAL_JID}",
                "provider_id": f"SBXIN{uuid4().hex[:10].upper()}",
                "text": body.text}
     try:
@@ -203,15 +203,16 @@ def _require_scenario() -> runs.Run:
     return run
 
 
-def thread_of_active_run() -> str:
-    """Тред прогона — он один: прогон заводится на одного лида."""
+def thread_of_active_run() -> tuple[str, str]:
+    """Тред прогона — он один: прогон заводится на одного лида. Компания и
+    номер лида, на котором тред открыт."""
     _require_scenario()
     with closing(sqlite3.connect(paths.state_db())) as db:
-        row = db.execute("SELECT thread_id FROM threads"
+        row = db.execute("SELECT company_id, channel FROM threads"
                          " ORDER BY created_at LIMIT 1").fetchone()
     if row is None:
         raise HTTPException(409, "треда ещё нет: сначала черновик первого письма")
-    return row[0]
+    return row[0], row[1]
 
 
 def _seconds(body: ClockMove) -> int:

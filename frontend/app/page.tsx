@@ -86,16 +86,16 @@ export default function Overview() {
       <section className="card">
         {tasks?.map((task) => (
           <Link
-            key={`${task.kind}:${task.thread_id}`}
+            key={`${task.kind}:${task.company_id}`}
             href={hrefOf(task)}
             className="row task-row"
           >
             <span className="row-text">
               <span className="inbox-name">{task.company_name}</span>
               <span className="inbox-sub task-why">{task.why}</span>
-              {task.thread_id && (
+              {task.channel && (
                 <span className="inbox-sub mono">
-                  {task.thread_id}
+                  {task.channel}
                   {task.our_number ? ` · пишем с ${task.our_number}` : ""}
                 </span>
               )}
