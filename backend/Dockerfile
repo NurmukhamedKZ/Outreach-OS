@@ -17,7 +17,7 @@ COPY research/ research/
 COPY backup/ backup/
 COPY migrations/ migrations/
 COPY collector/ collector/
-COPY writer/ writer/
+COPY conversations/ conversations/
 COPY sender/ sender/
 # Песочница едет в образ, потому что collector/api.py импортирует её
 # безусловно; ручек без SANDBOX=1 она всё равно не монтирует.

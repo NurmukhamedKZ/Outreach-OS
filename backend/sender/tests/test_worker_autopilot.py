@@ -12,7 +12,7 @@ import activity
 from sender.db import numbers, outbox
 from sender.services import config, worker
 from sender.tests.conftest import FakeTransport
-from sender.tests.test_conversation import add_draft, open_thread
+from sender.tests.threads import add_draft, open_thread
 from sender.tests.test_worker import INSIDE
 
 CONFIG = config.load()
@@ -68,7 +68,7 @@ async def test_manual_sends_what_the_operator_queued(db, drafted, mode):
     оператор поставил кнопкой, уходит на ближайшем тике."""
     from sender.services import queue
     mode("manual")
-    await queue.enqueue(db, FakeTransport(), "+77010000001", INSIDE, CONFIG)
+    await queue.enqueue(db, FakeTransport(), "c1", INSIDE, CONFIG)
     transport = FakeTransport()
 
     assert await worker.tick(db, transport, CONFIG, INSIDE) == "sent"
@@ -82,7 +82,7 @@ async def test_manual_sends_what_the_automaton_queued_before_the_switch(db, draf
     стоп — только off. Автор строки и её удержание в manual — #7."""
     from sender.services import queue
     mode("replies")
-    await queue.enqueue(db, FakeTransport(), "+77010000001", INSIDE, CONFIG, kind="reply")
+    await queue.enqueue(db, FakeTransport(), "c1", INSIDE, CONFIG, kind="reply")
     mode("manual")
     transport = FakeTransport()
 
@@ -94,7 +94,7 @@ async def test_a_broken_switch_file_holds_the_queue(db, drafted):
     """Не подменяя режим: битый файл-переключатель доходит до тика как off."""
     from sender.services import queue
     config.OVERRIDE.write_text("fulll\n", encoding="utf-8")
-    await queue.enqueue(db, FakeTransport(), "+77010000001", INSIDE, CONFIG)
+    await queue.enqueue(db, FakeTransport(), "c1", INSIDE, CONFIG)
     transport = FakeTransport()
 
     assert await worker.tick(db, transport, CONFIG, INSIDE) is None
@@ -117,7 +117,7 @@ async def test_stop_pressed_mid_tick_still_reports_the_queued_touch(db, drafted,
 async def test_full_takes_one_cold_touch_per_tick(db, drafted, mode):
     """Одна строка за тик: автопилот, выгребающий пачку, отличается от живого
     отправителя ровно тем, из-за чего номера и банят."""
-    from sender.tests.test_conversation import add_draft, open_thread
+    from sender.tests.threads import add_draft, open_thread
     mode("full")
     open_thread(db, "+77010000002")
     add_draft(db, "+77010000002")
@@ -135,7 +135,7 @@ async def test_the_operator_button_queues_in_any_mode_but_off_holds_the_send(db,
     from sender.services import queue
     mode("off")
 
-    outbox_id = await queue.enqueue(db, FakeTransport(), "+77010000001", INSIDE, CONFIG)
+    outbox_id = await queue.enqueue(db, FakeTransport(), "c1", INSIDE, CONFIG)
     assert outbox.due(db, INSIDE)["outbox_id"] == outbox_id
 
     transport = FakeTransport()
@@ -150,11 +150,11 @@ async def test_off_holds_a_row_queued_earlier_under_full(db, drafted, mode):
     mode("full")
     assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "sent"
 
-    from sender.tests.test_conversation import add_draft, open_thread
+    from sender.tests.threads import add_draft, open_thread
     open_thread(db, "+77010000002")
     add_draft(db, "+77010000002")
     from sender.services import queue
-    outbox_id = await queue.enqueue(db, FakeTransport(), "+77010000002", INSIDE, CONFIG)
+    outbox_id = await queue.enqueue(db, FakeTransport(), "c2", INSIDE, CONFIG)
 
     mode("off")
     transport = FakeTransport()
@@ -170,8 +170,8 @@ async def test_a_number_without_whatsapp_does_not_stall_the_tick(db, drafted, mo
 
     assert await worker.tick(db, FakeTransport(has_whatsapp=False), CONFIG, INSIDE) is None
 
-    from sender.db import conversation
-    assert conversation.get(db, "+77010000001")["status"] == "unreachable"
+    from conversations import public as conversation
+    assert conversation.thread(db, "c1")["status"] == "unreachable"
 
 
 async def test_the_loop_survives_an_exception_and_keeps_the_heartbeat_moving(db, monkeypatch):
@@ -217,7 +217,7 @@ async def test_autopilot_does_not_queue_past_what_the_pool_can_send_today(db, mo
     from datetime import timedelta
 
     from sender.db import outbox
-    from sender.tests.test_conversation import add_draft, open_thread
+    from sender.tests.threads import add_draft, open_thread
 
     # День 11 прогрева: первый шаг cold_ramp — пять касаний в сутки.
     numbers.register(db, "+77001112233", "sessions/x", INSIDE - timedelta(days=10))

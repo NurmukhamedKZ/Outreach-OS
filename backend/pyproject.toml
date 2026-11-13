@@ -47,7 +47,7 @@ addopts = "--import-mode=importlib"
 line-length = 100
 target-version = "py313"
 include = ["core/**/*.py", "refusals/**/*.py", "companies/**/*.py", "research/**/*.py",
-           "backup/**/*.py", "migrations/**/*.py"]
+           "conversations/**/*.py", "backup/**/*.py", "migrations/**/*.py"]
 
 [tool.ruff.lint]
 extend-select = ["I", "UP", "B", "SIM", "RUF"]
@@ -60,10 +60,10 @@ ignore = ["RUF001", "RUF002", "RUF003", "PLC0414"]
 [tool.mypy]
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["core", "refusals", "companies", "research", "backup", "migrations"]
+files = ["core", "refusals", "companies", "research", "conversations", "backup", "migrations"]
 
 [tool.importlinter]
-root_packages = ["core", "refusals", "companies", "research", "backup"]
+root_packages = ["core", "refusals", "companies", "research", "conversations", "backup"]
 # Старые системы и модули верхнего уровня видны снаружи графа — одним узлом
 # на имя, этого хватает для запретов ниже.
 include_external_packages = true
@@ -71,9 +71,9 @@ include_external_packages = true
 # Тесты собирают данные чужими внутренностями (фикстуры, приложение
 # collector.api) — контракты описывают код модулей, а не их тесты.
 [[tool.importlinter.contracts]]
-name = "Слои: research → companies → refusals | backup → core; refusals и backup зовут все"
+name = "Слои: conversations → research → companies → refusals | backup → core; refusals и backup зовут все"
 type = "layers"
-layers = ["research", "companies", "refusals | backup", "core"]
+layers = ["conversations", "research", "companies", "refusals | backup", "core"]
 ignore_imports = ["*.tests.** -> **"]
 unmatched_ignore_imports_alerting = "none"
 
@@ -81,8 +81,8 @@ unmatched_ignore_imports_alerting = "none"
 name = "Новый код не знает старых систем"
 type = "forbidden"
 allow_indirect_imports = true
-source_modules = ["core", "refusals", "companies", "research", "backup"]
-forbidden_modules = ["collector", "writer", "sender", "sandbox", "tasks", "analytics"]
+source_modules = ["core", "refusals", "companies", "research", "conversations", "backup"]
+forbidden_modules = ["collector", "sender", "sandbox", "tasks", "analytics"]
 ignore_imports = ["*.tests.** -> **"]
 unmatched_ignore_imports_alerting = "none"
 
@@ -90,7 +90,7 @@ unmatched_ignore_imports_alerting = "none"
 name = "Журнал activity пишет только backup"
 type = "forbidden"
 allow_indirect_imports = true
-source_modules = ["core", "refusals", "companies", "research"]
+source_modules = ["core", "refusals", "companies", "research", "conversations"]
 forbidden_modules = ["activity"]
 ignore_imports = ["*.tests.** -> **"]
 unmatched_ignore_imports_alerting = "none"
@@ -127,10 +127,18 @@ allowed_importers = ["research"]
 ignore_imports = ["** -> research.public", "*.tests.** -> **"]
 unmatched_ignore_imports_alerting = "none"
 
+[[tool.importlinter.contracts]]
+name = "conversations: снаружи — только через public"
+type = "protected"
+protected_modules = ["conversations.*"]
+allowed_importers = ["conversations"]
+ignore_imports = ["** -> conversations.public", "*.tests.** -> **"]
+unmatched_ignore_imports_alerting = "none"
+
 # Старые системы и модули верхнего уровня вне охвата: mypy читает их типы,
 # но не сообщает их ошибок. Модуль уходит из списка, когда его переписывают (#13, #7).
 [[tool.mypy.overrides]]
-module = ["collector.*", "writer.*", "sender.*", "sandbox.*", "activity", "analytics",
+module = ["collector.*", "sender.*", "sandbox.*", "activity", "analytics",
           "clock", "config", "logctx", "logging_setup", "llm_schema", "observability",
           "paths", "sqlite_tools", "tasks", "main"]
 ignore_errors = true

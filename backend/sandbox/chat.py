@@ -1,6 +1,6 @@
 """Лента прогона: сообщение плюс его судьба в очереди.
 
-Собирается здесь, а не в writer/routes/threads.py: инбоксу оператора судьба
+Собирается здесь, а не в conversations: инбоксу оператора судьба
 строки очереди не нужна, а песочнице она и есть содержание — «не ушло, попытка
 2 из 3» отличается от «доставлено» ровно тем, ради чего стенд и построен.
 """
@@ -9,7 +9,7 @@ import sqlite3
 
 
 class UnknownThreadError(Exception):
-    """Треда с таким номером в базе прогона нет."""
+    """Треда этой компании в базе прогона нет."""
 
 
 FIELDS = ("message_id, role, draft_text, queued_text, sent_text, created_at,"
@@ -18,15 +18,15 @@ FIELDS = ("message_id, role, draft_text, queued_text, sent_text, created_at,"
 FATE = ("status, attempts, send_after, delivered_at, read_at, error")
 
 
-def view(db: sqlite3.Connection, thread_id: str) -> dict:
+def view(db: sqlite3.Connection, company_id: str) -> dict:
     db.row_factory = sqlite3.Row
     thread = db.execute(
-        "SELECT thread_id, company_id, stage, status, touch_no, next_touch_at"
-        " FROM threads WHERE thread_id = ?", (thread_id,)).fetchone()
+        "SELECT company_id, channel, stage, status, touch_no, next_touch_at"
+        " FROM threads WHERE company_id = ?", (company_id,)).fetchone()
     if thread is None:
-        raise UnknownThreadError(thread_id)
-    rows = db.execute(f"SELECT {FIELDS} FROM messages WHERE thread_id = ?"
-                      " ORDER BY message_id", (thread_id,)).fetchall()
+        raise UnknownThreadError(company_id)
+    rows = db.execute(f"SELECT {FIELDS} FROM messages WHERE company_id = ?"
+                      " ORDER BY message_id", (company_id,)).fetchall()
     return {**dict(thread),
             "bubbles": [_bubble(db, row) for row in rows]}
 

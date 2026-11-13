@@ -1,8 +1,8 @@
 """Общая база тестов системы 3: state.db со всеми тремя слоями.
 
-Таблицы переписки создаёт их владелец — thread_store системы 2, — а sender
-только доливает свои колонки. Так же это происходит и в проде: collector
-применяет schema.sql на старте, sender ALTER'ит уже существующее.
+Таблицы переписки и отказы создаёт Alembic (conversations, refusals), outbox и
+numbers — миграция sender'а. Так же это происходит и в проде: сборщик
+приложения мигрирует базу на старте, sender доливает свои таблицы.
 """
 
 from datetime import datetime, timezone
@@ -11,8 +11,8 @@ import pytest
 
 import activity
 from sender.db import migrate
+from core import db as core_db
 from sender.services import refusal
-from writer.db import thread_store
 
 NOW = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)   # среда, 18:00 в Алматы
 
@@ -34,11 +34,7 @@ def refusal_seam(monkeypatch):
 @pytest.fixture
 def db(tmp_path):
     path = tmp_path / "state.db"
-    owner = thread_store.connect(path)          # threads и messages
-    owner.execute("CREATE TABLE IF NOT EXISTS suppression ("
-                  " handle TEXT PRIMARY KEY, added_at TEXT NOT NULL, reason TEXT)")
-    owner.commit()
-    owner.close()
+    core_db.migrate(path)                       # threads, messages, refusals
     activity.use(path)                          # журнал пишет в ту же state.db
     connection = migrate.connect(path)          # numbers, outbox, колонки состояния
     yield connection

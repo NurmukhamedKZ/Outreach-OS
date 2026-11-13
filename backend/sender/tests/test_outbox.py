@@ -43,7 +43,7 @@ def test_one_queue_row_per_message(db):
 
 def test_due_ignores_rows_whose_time_has_not_come(db):
     with db:
-        outbox_id = outbox.put(db, 1, "+77010000001", "+77001112233", NOW)
+        outbox_id = outbox.put(db, 1, "c1", "+77001112233", NOW)
         outbox.reschedule(db, outbox_id, NOW + timedelta(hours=2), NOW)
     assert outbox.due(db, NOW) is None
     assert outbox.due(db, NOW + timedelta(hours=2))["outbox_id"] == outbox_id
@@ -113,7 +113,7 @@ def test_delivered_marks_the_row_by_provider_id(db):
 
 def test_last_sent_at_looks_only_at_this_number(db):
     with db:
-        first = outbox.put(db, 1, "+77010000001", "+77001112233", NOW)
+        first = outbox.put(db, 1, "c1", "+77001112233", NOW)
         outbox.claim(db, first, NOW)
         outbox.mark_sent(db, first, "3EB0", NOW)
     assert outbox.last_sent_at(db, "+77001112233") == "2026-09-01T12:00:00+00:00"
@@ -125,9 +125,9 @@ def test_counters_separate_the_queue_from_the_overdue(db):
     одинаково видно и вставший воркер, и наглухо закрытые гейты."""
     queued(db, message_id=1)
     with db:
-        later = outbox.put(db, 2, "+77010000002", "+77001112233", NOW)
+        later = outbox.put(db, 2, "c2", "+77001112233", NOW)
         outbox.reschedule(db, later, NOW + timedelta(days=1), NOW)
-        sent = outbox.put(db, 3, "+77010000003", "+77001112233", NOW)
+        sent = outbox.put(db, 3, "c3", "+77001112233", NOW)
         outbox.claim(db, sent, NOW)
         outbox.mark_sent(db, sent, "3EB0", NOW)
 
@@ -173,14 +173,14 @@ def test_a_live_row_still_blocks_a_second_one(db):
 
 
 def test_kind_defaults_to_cold_and_is_readable_back(db):
-    outbox_id = outbox.put(db, 1, "+77010000001", "+77001112233", NOW)
+    outbox_id = outbox.put(db, 1, "c1", "+77001112233", NOW)
     db.commit()
     row = outbox.due(db, NOW)
     assert row["outbox_id"] == outbox_id and row["kind"] == "cold"
 
 
 def test_a_reply_row_carries_its_kind(db):
-    outbox.put(db, 1, "+77010000001", "+77001112233", NOW, kind="reply")
+    outbox.put(db, 1, "c1", "+77001112233", NOW, kind="reply")
     db.commit()
     assert outbox.due(db, NOW)["kind"] == "reply"
 
@@ -189,12 +189,12 @@ def test_cancel_scheduled_kills_the_live_rows_of_one_thread(db):
     """Лид ответил, и «напоминаю о своём сообщении» через три дня станет
     издевательством. Именно эта строка превращает систему в ту, на которую
     жалуются."""
-    ours = outbox.put(db, 1, "+77010000001", "+77001112233", NOW, kind="followup")
-    stranger = outbox.put(db, 2, "+77010000009", "+77001112233", NOW)
+    ours = outbox.put(db, 1, "c1", "+77001112233", NOW, kind="followup")
+    stranger = outbox.put(db, 2, "c9", "+77001112233", NOW)
     db.commit()
 
     with db:
-        killed = outbox.cancel_scheduled(db, "+77010000001", "лид ответил", NOW)
+        killed = outbox.cancel_scheduled(db, "c1", "лид ответил", NOW)
 
     assert killed == 1
     assert status_of(db, ours) == "cancelled"
@@ -203,13 +203,13 @@ def test_cancel_scheduled_kills_the_live_rows_of_one_thread(db):
 
 def test_cancel_scheduled_does_not_touch_what_already_went_out(db):
     """Отправленное отменить нельзя: лид его уже получил."""
-    outbox_id = outbox.put(db, 1, "+77010000001", "+77001112233", NOW)
+    outbox_id = outbox.put(db, 1, "c1", "+77001112233", NOW)
     outbox.claim(db, outbox_id, NOW)
     outbox.mark_sent(db, outbox_id, "3EB0", NOW)
     db.commit()
 
     with db:
-        assert outbox.cancel_scheduled(db, "+77010000001", "лид ответил", NOW) == 0
+        assert outbox.cancel_scheduled(db, "c1", "лид ответил", NOW) == 0
 
     assert status_of(db, outbox_id) == "sent"
 

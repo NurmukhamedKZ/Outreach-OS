@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sender.db import conversation
+from conversations import public as conversation
 
 SEND = "send"
 CANCEL = "cancel"

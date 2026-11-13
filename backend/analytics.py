@@ -82,7 +82,7 @@ def diagnose(funnel: list[dict]) -> str:
 
 
 SENT_THREADS = (
-    " FROM threads t JOIN messages m ON m.thread_id = t.thread_id"
+    " FROM threads t JOIN messages m ON m.company_id = t.company_id"
     " AND m.role = 'outgoing' AND m.sent_text IS NOT NULL AND m.sent_at >= ?"
 )
 
@@ -91,33 +91,33 @@ def _funnel(db: sqlite3.Connection, since: str) -> list[dict]:
     """Шаг, которому нечем считаться, показывает ноль, а не роняет страницу.
 
     Аналитика читает три чужих слоя и не создаёт ни одного: outbox доливает
-    миграция системы 3, stage и outcome — thread_store системы 2. Любой из них
+    миграция системы 3, stage и outcome — ревизия 0005 модуля conversations. Любой из них
     может ещё не пройти по этой базе, и требовать их — значит отдать 500 там,
     где честный ответ «пока нечего показывать».
     """
     delivered = (
-        f"SELECT count(DISTINCT t.thread_id){SENT_THREADS}"
+        f"SELECT count(DISTINCT t.company_id){SENT_THREADS}"
         " JOIN outbox o ON o.message_id = m.message_id AND o.delivered_at IS NOT NULL"
     ) if sqlite_tools.has_column(db, "outbox", "delivered_at") else None
     dialog = (
-        f"SELECT count(DISTINCT t.thread_id){SENT_THREADS}"
+        f"SELECT count(DISTINCT t.company_id){SENT_THREADS}"
         " WHERE t.stage IN ('probing', 'offer', 'closing')"
     ) if sqlite_tools.has_column(db, "threads", "stage") else None
     has_outcome = sqlite_tools.has_column(db, "threads", "outcome")
     counts = {
-        "sent": _scalar(db, f"SELECT count(DISTINCT t.thread_id){SENT_THREADS}", since),
+        "sent": _scalar(db, f"SELECT count(DISTINCT t.company_id){SENT_THREADS}", since),
         "delivered": _scalar(db, delivered, since),
         "replied": _scalar(db, (
-            f"SELECT count(DISTINCT t.thread_id){SENT_THREADS}"
-            " WHERE EXISTS (SELECT 1 FROM messages i WHERE i.thread_id = t.thread_id"
+            f"SELECT count(DISTINCT t.company_id){SENT_THREADS}"
+            " WHERE EXISTS (SELECT 1 FROM messages i WHERE i.company_id = t.company_id"
             "               AND i.role = 'incoming')"), since),
         "dialog": _scalar(db, dialog, since),
         "meeting_agreed": _scalar(db, (
-            f"SELECT count(DISTINCT t.thread_id){SENT_THREADS}"
+            f"SELECT count(DISTINCT t.company_id){SENT_THREADS}"
             " WHERE t.outcome IN ('meeting_agreed', 'meeting_held')"
         ) if has_outcome else None, since),
         "meeting_held": _scalar(db, (
-            f"SELECT count(DISTINCT t.thread_id){SENT_THREADS}"
+            f"SELECT count(DISTINCT t.company_id){SENT_THREADS}"
             f" WHERE {HELD}"
         ) if has_outcome else None, since),
     }
@@ -137,7 +137,7 @@ def _column(db: sqlite3.Connection, table: str, name: str) -> str | None:
 
 BEFORE_AB = "до A/B"
 
-REPLIED = ("EXISTS (SELECT 1 FROM messages i WHERE i.thread_id = t.thread_id"
+REPLIED = ("EXISTS (SELECT 1 FROM messages i WHERE i.company_id = t.company_id"
            "        AND i.role = 'incoming')")
 HELD = "t.outcome = 'meeting_held'"
 
@@ -149,7 +149,7 @@ def _held(db: sqlite3.Connection) -> str:
 
 FIRST_SENT = (
     " AND m.message_id = (SELECT min(f.message_id) FROM messages f"
-    "                     WHERE f.thread_id = t.thread_id AND f.role = 'outgoing'"
+    "                     WHERE f.company_id = t.company_id AND f.role = 'outgoing'"
     "                     AND f.sent_text IS NOT NULL)"
 )
 
@@ -167,9 +167,9 @@ def _breakdown(db: sqlite3.Connection, since: str, column: str | None) -> list[d
         return []
     rows = db.execute(
         f"SELECT coalesce({column}, '') AS key,"
-        "        count(DISTINCT t.thread_id) AS sent,"
-        f"       count(DISTINCT CASE WHEN {REPLIED} THEN t.thread_id END) AS replied,"
-        f"       count(DISTINCT CASE WHEN {_held(db)} THEN t.thread_id END) AS meetings"
+        "        count(DISTINCT t.company_id) AS sent,"
+        f"       count(DISTINCT CASE WHEN {REPLIED} THEN t.company_id END) AS replied,"
+        f"       count(DISTINCT CASE WHEN {_held(db)} THEN t.company_id END) AS meetings"
         + SENT_THREADS + FIRST_SENT +
         " GROUP BY key ORDER BY sent DESC",
         (since,),
@@ -188,7 +188,7 @@ def _segments(db: sqlite3.Connection, since: str) -> list[dict]:
     if _companies is None or not Path(_companies).exists():
         return []
     threads = db.execute(
-        "SELECT DISTINCT t.thread_id, t.company_id,"
+        "SELECT DISTINCT t.company_id,"
         f"      {REPLIED} AS replied, {_held(db)} AS held"
         + SENT_THREADS, (since,)).fetchall()
     with closing(sqlite_tools.connect_readonly(_companies)) as source:

@@ -1,18 +1,10 @@
-"""sender keeps its old path (the suppression view) until #7; writer reads research."""
+"""sender keeps its refusal seam until #7; it writes through the facade."""
 
 from datetime import UTC, datetime
 
 from refusals import public as refusals
-from sender.services import worker
 
 NOW = datetime(2026, 11, 12, 10, 0, tzinfo=UTC)
-
-
-def test_sender_sees_a_refusal_written_through_the_facade(db):
-    refusals.record(db, "8 701 000 00 01", "стоп-слово: отпишитесь", NOW)
-
-    assert worker._suppressed(db, "+77010000001") is True
-    assert worker._suppressed(db, "+77019999999") is False
 
 
 def test_the_sender_seam_writes_through_the_facade(db, monkeypatch):

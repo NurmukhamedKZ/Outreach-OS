@@ -1,23 +1,5 @@
 -- state.db — порождённое: невосстановимо, CREATE TABLE IF NOT EXISTS, DROP запрещён.
-CREATE TABLE IF NOT EXISTS threads (
-  thread_id  TEXT PRIMARY KEY,
-  company_id TEXT NOT NULL,
-  seed       TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS messages (
-  message_id INTEGER PRIMARY KEY,
-  thread_id  TEXT NOT NULL REFERENCES threads (thread_id),
-  role       TEXT NOT NULL CHECK (role IN ('outgoing', 'incoming')),
-  draft_text TEXT,
-  sent_text  TEXT,
-  angle      TEXT,
-  created_at TEXT NOT NULL,
-  sent_at    TEXT
-);
-CREATE INDEX IF NOT EXISTS messages_thread ON messages (thread_id, message_id);
-
+-- Переписка (threads, messages) — у модуля conversations, ревизия Alembic 0005.
 -- Очередь и история запусков операций (state.db). result — json результата операции.
 CREATE TABLE IF NOT EXISTS jobs (
   id         INTEGER PRIMARY KEY,

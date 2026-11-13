@@ -9,10 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from sender.db import conversation, numbers, outbox
+from conversations import public as conversation
+from sender.db import numbers, outbox
 from sender.services import config, worker
 from sender.tests.conftest import FakeTransport
-from sender.tests.test_conversation import add_draft, open_thread
+from refusals import public as refusals
+from sender.tests.threads import add_draft, company, open_thread
 
 CONFIG = config.load()
 # Среда, 07:00 UTC = 12:00 в Алматы: середина рабочего окна.
@@ -36,8 +38,8 @@ def ready(db, thread_id="+77010000001", status="queued", number="+77001112233",
     open_thread(db, thread_id, status=status)
     message_id = add_draft(db, thread_id, text)
     with db:
-        conversation.assign_number(db, thread_id, number)
-        outbox_id = outbox.put(db, message_id, thread_id, number, INSIDE)
+        conversation.assign_number(db, company(thread_id), number)
+        outbox_id = outbox.put(db, message_id, company(thread_id), number, INSIDE)
     return outbox_id, message_id
 
 
@@ -62,7 +64,7 @@ async def test_the_happy_path_sends_and_writes_history(db):
     message = db.execute("SELECT sent_text, provider_id FROM messages").fetchone()
     assert message["sent_text"] == "Правленый оператором текст"
     assert message["provider_id"] == "3EB0"
-    assert conversation.get(db, "+77010000001")["touch_no"] == 1
+    assert conversation.thread(db, "c1")["touch_no"] == 1
 
 
 async def test_without_an_operator_edit_the_draft_goes_as_is(db):
@@ -76,8 +78,7 @@ async def test_suppression_cancels_the_row_before_the_transport(db):
     """Проверяется перед каждой отправкой, а не при постановке: лид мог
     отказаться за те три дня, что follow-up лежал в очереди."""
     outbox_id, _ = ready(db)
-    db.execute("INSERT INTO suppression VALUES ('+77010000001', '2026-09-02', 'просил не писать')")
-    db.commit()
+    refusals.record(db, "+77010000001", "просил не писать", INSIDE)
     transport = FakeTransport()
 
     assert await worker.tick(db, transport, CONFIG, INSIDE) == "cancelled"
@@ -138,7 +139,7 @@ async def test_a_cold_thread_moves_to_a_free_number_instead_of_waiting(db):
             outbox.mark_sent(db, spent, f"id{index}", INSIDE)
 
     assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "rescheduled"
-    assert conversation.get(db, "+77010000001")["our_number"] == "+77009998877"
+    assert conversation.thread(db, "c1")["our_number"] == "+77009998877"
 
     transport = FakeTransport()
     assert await worker.tick(db, transport, CONFIG, INSIDE) == "sent"
@@ -154,7 +155,7 @@ async def test_the_night_is_not_cured_by_another_number(db):
 
     assert await worker.tick(db, FakeTransport(), CONFIG, NIGHT) == "rescheduled"
 
-    assert conversation.get(db, "+77010000001")["our_number"] == "+77001112233"
+    assert conversation.thread(db, "c1")["our_number"] == "+77001112233"
 
 
 async def test_a_row_already_in_flight_is_not_picked_up_again(db):
@@ -172,12 +173,12 @@ async def test_a_row_already_in_flight_is_not_picked_up_again(db):
 async def test_the_last_allowed_touch_exhausts_the_thread(db):
     """Молчит три касания — автомату больше нечего сказать."""
     ready(db, status="active")
-    db.execute("UPDATE threads SET touch_no = 2 WHERE thread_id = '+77010000001'")
+    db.execute("UPDATE threads SET touch_no = 2 WHERE company_id = 'c1'")
     db.commit()
 
     await worker.tick(db, FakeTransport(), CONFIG, INSIDE)
 
-    assert conversation.get(db, "+77010000001")["status"] == "exhausted"
+    assert conversation.thread(db, "c1")["status"] == "exhausted"
 
 
 async def test_the_tick_handles_an_incoming_before_it_sends(db, monkeypatch):

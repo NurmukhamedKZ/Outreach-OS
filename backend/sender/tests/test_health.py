@@ -60,9 +60,10 @@ def record_send(db, number, delivered, days_ago=0, replied=False, thread_id=None
     moment = INSIDE - timedelta(days=days_ago)
     message_id = next(_next_message_id)
     if thread_id is None:
-        thread_id = f"+7701000{message_id}"
-        db.execute("INSERT INTO threads (thread_id, company_id, seed, created_at)"
-                   " VALUES (?, ?, '{}', ?)", (thread_id, thread_id, outbox.stamp(moment)))
+        thread_id = f"c{message_id}"
+        db.execute("INSERT INTO threads (company_id, channel, seed, created_at)"
+                   " VALUES (?, ?, '{}', ?)",
+                   (thread_id, f"+7701000{message_id}", outbox.stamp(moment)))
     with db:
         outbox_id = outbox.put(db, message_id, thread_id, number, moment)
         outbox.claim(db, outbox_id, moment)
@@ -70,7 +71,7 @@ def record_send(db, number, delivered, days_ago=0, replied=False, thread_id=None
         if delivered:
             outbox.delivered(db, f"id{message_id}", moment, read=False)
     if replied:
-        db.execute("INSERT INTO messages (thread_id, role, sent_text, created_at, sent_at)"
+        db.execute("INSERT INTO messages (company_id, role, sent_text, created_at, sent_at)"
                    " VALUES (?, 'incoming', 'ок', ?, ?)",
                    (thread_id, outbox.stamp(moment), outbox.stamp(moment)))
         db.commit()

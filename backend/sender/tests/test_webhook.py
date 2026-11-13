@@ -7,11 +7,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from sender import notify
-from sender.db import conversation, migrate, outbox
+from conversations import public as conversation
+from sender.db import migrate, outbox
 from sender.routes import webhook
 from sender.services import config as sender_config, refusal
 from sender.tests.conftest import NOW
-from sender.tests.test_conversation import add_draft, open_thread
+from sender.tests.threads import add_draft, company, open_thread
 
 
 @pytest.fixture
@@ -30,7 +31,7 @@ def sent_row(db, thread_id="+77010000001"):
     open_thread(db, thread_id)
     message_id = add_draft(db, thread_id)
     with db:
-        outbox_id = outbox.put(db, message_id, thread_id, "+77001112233", NOW)
+        outbox_id = outbox.put(db, message_id, company(thread_id), "+77001112233", NOW)
         outbox.claim(db, outbox_id, NOW)
         outbox.mark_sent(db, outbox_id, "3EB0", NOW)
         conversation.confirm_sent(db, message_id, "3EB0", NOW)
@@ -47,7 +48,7 @@ def test_delivery_marks_the_row_and_wakes_the_thread(db, http):
 
     assert response.status_code == 200
     assert db.execute("SELECT delivered_at FROM outbox").fetchone()[0] is not None
-    assert conversation.get(db, "+77010000001")["status"] == "active"
+    assert conversation.thread(db, "c1")["status"] == "active"
 
 
 def test_read_marks_read_at(db, http):
@@ -76,13 +77,13 @@ def test_delivery_does_not_resurrect_a_thread_the_human_took(db, http):
     """Из escalated автоматического выхода нет — даже по доставке."""
     sent_row(db)
     with db:
-        conversation.set_status(db, "+77010000001", "escalated", "тест: тред у человека")
+        conversation.set_status(db, "c1", "escalated", "тест: тред у человека")
 
     http.post("/api/sender/webhook", json={
         "kind": "status", "number": "+77001112233",
         "provider_id": "3EB0", "status": webhook.DELIVERED})
 
-    assert conversation.get(db, "+77010000001")["status"] == "escalated"
+    assert conversation.thread(db, "c1")["status"] == "escalated"
 
 
 def test_a_status_for_a_message_we_do_not_know_is_still_accepted(db, http):
@@ -118,7 +119,7 @@ def test_a_server_ack_is_not_a_delivery(db, http):
         assert response.status_code == 200, status
 
     assert db.execute("SELECT delivered_at FROM outbox").fetchone()[0] is None
-    assert conversation.get(db, "+77010000001")["status"] == "queued"
+    assert conversation.thread(db, "c1")["status"] == "queued"
 
 
 def test_a_forged_event_is_rejected(db, http, monkeypatch):
@@ -170,9 +171,10 @@ def test_a_reply_lands_in_the_thread(db, http):
 
     assert http.post("/api/sender/webhook", json=incoming()).status_code == 200
 
-    row = db.execute("SELECT thread_id, role, sent_text, provider_id, handled_at"
+    row = db.execute("SELECT company_id, role, sent_text, provider_id, handled_at"
                      " FROM messages").fetchone()
-    assert row["thread_id"] == "+77010000001" and row["role"] == "incoming"
+    # Found by the number it came from, written under the thread's company.
+    assert row["company_id"] == "c1" and row["role"] == "incoming"
     assert row["sent_text"] == "сколько это стоит?" and row["provider_id"] == "IN1"
     assert row["handled_at"] is None, "агента зовёт тик, а не ручка"
 
@@ -194,10 +196,10 @@ def test_an_incoming_cancels_the_scheduled_followups(db, http):
     open_thread(db, "+77010000001", status="active")
     message_id = add_draft(db, "+77010000001")
     with db:
-        outbox_id = outbox.put(db, message_id, "+77010000001", "+77001112233",
+        outbox_id = outbox.put(db, message_id, "c1", "+77001112233",
                                NOW, kind="followup")
-        db.execute("UPDATE threads SET next_touch_at = ? WHERE thread_id = ?",
-                   ("2026-09-05T12:00:00+00:00", "+77010000001"))
+        db.execute("UPDATE threads SET next_touch_at = ? WHERE company_id = ?",
+                   ("2026-09-05T12:00:00+00:00", "c1"))
 
     http.post("/api/sender/webhook", json=incoming())
 
@@ -259,7 +261,7 @@ def test_a_stop_word_refuses_and_closes_the_thread(db, http, refusals):
     http.post("/api/sender/webhook", json=incoming(text="отпишите меня, надоели"))
 
     assert refusals and refusals[0][0] == "+77010000001"
-    assert conversation.get(db, "+77010000001")["status"] == "closed_refused"
+    assert conversation.thread(db, "c1")["status"] == "closed_refused"
 
 
 def test_a_stop_word_never_wakes_the_agent(db, http, refusals):
@@ -297,7 +299,7 @@ def test_a_voice_message_escalates_without_the_model(db, http, sent_to_telegram)
 
     http.post("/api/sender/webhook", json=incoming(text=""))
 
-    assert conversation.get(db, "+77010000001")["status"] == "escalated"
+    assert conversation.thread(db, "c1")["status"] == "escalated"
     row = db.execute("SELECT sent_text, handled_at FROM messages").fetchone()
     assert row["sent_text"] == webhook.MEDIA_MARKER
     assert row["handled_at"] is not None, "тик не должен звать модель на пустоту"
@@ -310,7 +312,7 @@ def test_a_reply_after_three_silent_touches_revives_the_thread(db, http):
 
     http.post("/api/sender/webhook", json=incoming())
 
-    assert conversation.get(db, "+77010000001")["status"] == "active"
+    assert conversation.thread(db, "c1")["status"] == "active"
     assert db.execute("SELECT handled_at FROM messages").fetchone()[0] is None
 
 
@@ -320,7 +322,7 @@ def test_a_reply_in_a_thread_the_human_took_only_notifies(db, http, sent_to_tele
 
     http.post("/api/sender/webhook", json=incoming(text="давайте в четверг"))
 
-    assert conversation.get(db, "+77010000001")["status"] == "escalated"
+    assert conversation.thread(db, "c1")["status"] == "escalated"
     assert db.execute("SELECT handled_at FROM messages").fetchone()[0] is not None
     assert any("давайте в четверг" in text for text in sent_to_telegram), sent_to_telegram
 
@@ -331,7 +333,7 @@ def test_a_stop_word_beats_the_escalated_thread(db, http, refusals):
 
     http.post("/api/sender/webhook", json=incoming(text="удалите мой номер"))
 
-    assert refusals and conversation.get(db, "+77010000001")["status"] == "closed_refused"
+    assert refusals and conversation.thread(db, "c1")["status"] == "closed_refused"
 
 
 @pytest.mark.parametrize("status", ["closed_refused", "closed_junk", "unreachable"])
@@ -343,4 +345,4 @@ def test_a_thread_the_automaton_may_not_write_to_never_wakes_the_agent(db, http,
     http.post("/api/sender/webhook", json=incoming(text="а если подумать?"))
 
     assert db.execute("SELECT handled_at FROM messages").fetchone()[0] is not None
-    assert conversation.get(db, "+77010000001")["status"] == status
+    assert conversation.thread(db, "c1")["status"] == status

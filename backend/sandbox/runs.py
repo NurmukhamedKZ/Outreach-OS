@@ -1,12 +1,12 @@
 """Прогон песочницы — отдельный файл базы невосстановимого слоя.
 
-Почему файл, а не флаг на треде: thread_id — это номер телефона и первичный
-ключ threads, поэтому второй прогон по тому же лиду упёрся бы в занятый ключ, а
+Почему файл, а не флаг на треде: тред — первичный ключ компании в threads, а
+номер лида уникален среди тредов, поэтому второй прогон по тому же лиду упёрся бы в занятый ключ, а
 «чистый контекст» пришлось бы изображать фильтром в каждом запросе агента — и
 воронка с инбоксом учились бы про тестовые треды забывать. Файл делает чистоту
 контекста физической: прошлого сценария нет, потому что его нет в базе.
 
-Схему наполняют её настоящие владельцы (thread_store, migrate, schema.sql), а
+Схему наполняют её настоящие владельцы (Alembic, migrate, schema.sql), а
 не копия DDL: база прогона обязана отличаться от боевой только содержимым.
 """
 
@@ -24,7 +24,6 @@ import tasks
 from collector.services import jobs
 from core import db as core_db
 from sender.db import migrate, numbers
-from writer.db import thread_store
 
 RUNS_DIR = paths.SANDBOX_RUNS
 
@@ -127,6 +126,9 @@ def activate(run_id: str) -> Run:
     """
     global _active
     run = get(run_id)
+    # A run created before a revision (#36 moved threads under the company)
+    # catches up here; a run already at head costs one version check.
+    core_db.migrate(run.path)
     paths.use_run(run.path)
     activity.use(run.path)
     analytics.use(run.path, paths.PRODUCTION_STATE)
@@ -187,11 +189,9 @@ def shift(seconds: int) -> Run:
 
 
 def _apply_schemas(path: Path) -> None:
-    """Миграции Alembic и три старых владельца по очереди. Порядок не случаен:
-    threads и messages создаёт система 2, и колонки состояния системы 3
-    доливаются в уже существующие таблицы — как и при боевом старте процесса."""
+    """Миграции Alembic (в том числе threads и messages) и два старых владельца:
+    как и при боевом старте процесса."""
     core_db.migrate(path)
-    thread_store.connect(path).close()
     with closing(sqlite3.connect(path)) as db:
         db.executescript(jobs.state_schema())
         db.execute(META)

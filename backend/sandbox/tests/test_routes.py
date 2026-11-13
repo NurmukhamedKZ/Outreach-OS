@@ -16,7 +16,7 @@ import clock
 import paths
 from core import db as core_db
 from sandbox import faults, node, routes, runs
-from writer.tests.research_leads import add_lead, migrate
+from conversations.tests.leads import add_lead
 
 MOMENT = datetime(2026, 9, 3, 9, 0, tzinfo=timezone.utc)
 LEADS = ("c_romashka", "c_one", "c_two")
@@ -27,7 +27,7 @@ def sandbox(tmp_path, monkeypatch):
     """Прогоны и боевая база — в tmp_path; в боевой три лида research."""
     monkeypatch.setattr(runs, "RUNS_DIR", tmp_path / "sandbox")
     monkeypatch.setattr(paths, "PRODUCTION_STATE", tmp_path / "state.db")
-    migrate(paths.PRODUCTION_STATE)
+    core_db.migrate(paths.PRODUCTION_STATE)
     with closing(core_db.connect(paths.PRODUCTION_STATE)) as db:
         for n, company_id in enumerate(LEADS, 1):
             add_lead(db, company_id, [("whatsapp", f"+7701000000{n}")])
@@ -47,8 +47,8 @@ def _run_with_thread(thread_id="+77010000001"):
     run = runs.create("c_romashka", warmed=True, moment=MOMENT)
     runs.activate(run.run_id)
     with sqlite3.connect(run.path) as db:
-        db.execute("INSERT INTO threads (thread_id, company_id, seed, created_at)"
-                   " VALUES (?, 'c_romashka', '{}', '2026-09-03T09:00:00+00:00')",
+        db.execute("INSERT INTO threads (company_id, channel, seed, created_at)"
+                   " VALUES ('c_romashka', ?, '{}', '2026-09-03T09:00:00+00:00')",
                    (thread_id,))
     return run
 
@@ -253,21 +253,25 @@ async def test_a_run_is_made_only_for_a_research_lead():
 async def test_the_run_drafts_its_lead_from_research_into_its_own_database(monkeypatch):
     """Лид прогона — настоящая компания: досье читается из боевой базы, а тред
     ложится в базу прогона. Двоеточие в id компании — как у 2GIS."""
-    from writer.routes import threads as writer_routes
-    from writer.services import agent
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from conversations import api, dependencies
+    from core.model import FakeModel
 
     with closing(core_db.connect(paths.PRODUCTION_STATE)) as db:
         add_lead(db, "2gis:7000", [("whatsapp", "+77010000005")])
-    monkeypatch.setattr(writer_routes, "require_api_key", lambda: None)
-    monkeypatch.setattr(writer_routes, "_writer_move", lambda kind, threads, thread, history:
-                        agent.Attempt(draft=agent.Draft(text="Здравствуйте", angle="other",
-                                                        stop=False), prompt=[], model=""))
+    app = FastAPI()
+    app.include_router(api.router)
+    app.dependency_overrides[dependencies.build_model] = lambda: FakeModel(
+        {"text": "Здравствуйте", "angle": "other"})
 
     run = (await routes.create_run(routes.NewRun(company_id="2gis:7000", warmed=True)))["run"]
-    writer_routes.make_draft("2gis:7000", writer_routes.DraftRequest(kind="first"))
+    response = TestClient(app).post("/api/threads/2gis:7000/draft", json={"kind": "first"})
 
+    assert response.status_code == 200
     with closing(sqlite3.connect(runs.get(run["run_id"]).path)) as db:
-        seeds = db.execute("SELECT thread_id, json_extract(seed, '$.name') FROM threads").fetchall()
+        seeds = db.execute("SELECT channel, json_extract(seed, '$.name') FROM threads").fetchall()
     assert seeds == [("+77010000005", "Компания 2gis:7000")]
     with closing(sqlite3.connect(paths.PRODUCTION_STATE)) as db:
         assert db.execute("SELECT count(*) FROM threads").fetchone() == (0,)

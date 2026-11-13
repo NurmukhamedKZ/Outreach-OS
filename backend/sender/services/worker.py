@@ -13,8 +13,10 @@ from datetime import datetime, timedelta
 
 import activity
 import clock
+from conversations import public as conversation
+from refusals import public as refusals
 from sender import notify
-from sender.db import conversation, numbers, outbox
+from sender.db import numbers, outbox
 from sender.services import (config as sender_config, followup, gates, incoming,
                              pool, queue)
 from sender.transport import TransportError
@@ -150,11 +152,11 @@ async def _process(db, transport, row: dict, now: datetime, config: dict) -> str
 def _decide(db, row: dict, now: datetime, config: dict) -> gates.Decision:
     """Всё, что гейтам нужно знать, собирается здесь: сами гейты — чистые
     функции и в базу не ходят."""
-    thread = conversation.get(db, row["thread_id"])
+    thread = conversation.thread(db, row["thread_id"])
     number = numbers.get(db, row["our_number"])
     attempt = gates.Attempt(
         thread_status=thread["status"],
-        suppressed=_suppressed(db, row["thread_id"]),
+        suppressed=refusals.is_refused(db, [thread["channel"]]),
         number_status=number["status"],
         capacity=pool.capacity(db, row["our_number"], now, config),
         last_sent_at=outbox.last_sent_at(db, row["our_number"]),
@@ -163,12 +165,6 @@ def _decide(db, row: dict, now: datetime, config: dict) -> gates.Decision:
         lead_spoke_last=conversation.lead_spoke_last(db, row["thread_id"]),
     )
     return gates.check(attempt, now, config)
-
-
-def _suppressed(db, handle: str) -> bool:
-    """Отказ — юридический контур (F21): единственный источник истины — база."""
-    return db.execute("SELECT 1 FROM suppression WHERE handle = ?",
-                      (handle,)).fetchone() is not None
 
 
 def _postpone(db, row: dict, decision: gates.Decision, now: datetime,
@@ -207,8 +203,10 @@ def _try_another_number(db, row: dict, now: datetime, config: dict) -> bool:
 
 async def _send(db, transport, row: dict, now: datetime, config: dict) -> str:
     text = conversation.outgoing_text(db, row["message_id"])
+    # The thread is the company (#36); the lead's number is its channel.
+    to = conversation.thread(db, row["thread_id"])["channel"]
     try:
-        result = await transport.send(row["our_number"], row["thread_id"], text,
+        result = await transport.send(row["our_number"], to, text,
                                       key=f"outbox-{row['outbox_id']}")
     except TransportError as error:
         # «Мы не знаем, ушло ли». Это случай для человека, а не для повтора:
@@ -216,7 +214,7 @@ async def _send(db, transport, row: dict, now: datetime, config: dict) -> str:
         with db:
             outbox.mark_stuck(db, row["outbox_id"], now)
         log.warning("судьба отправки в тред %s неизвестна: %s", row["thread_id"], error)
-        await notify.send(f"Отправка в {row['thread_id']} оборвалась: {error}. "
+        await notify.send(f"Отправка в {to} оборвалась: {error}. "
                           "Проверь в телефоне, ушло или нет")
         return "stuck"
     if not result.sent:
@@ -246,7 +244,9 @@ async def _retry(db, row: dict, error: str | None, now: datetime, config: dict) 
             outbox.fail(db, row["outbox_id"], error or "транспорт отказал", now)
         log.error("отправка в тред %s не удалась %s раз — сдаёмся",
                   row["thread_id"], len(backoff))
-        await notify.send(f"Не смогли отправить в {row['thread_id']} "
+        # Telegram names the lead's number: the operator checks the chat in the phone.
+        lead = conversation.thread(db, row["thread_id"])["channel"]
+        await notify.send(f"Не смогли отправить в {lead} "
                           f"{len(backoff)} раза подряд: {error}")
         activity.record("sender.tick", "failed", subject=row["thread_id"],
                         detail=error or "транспорт отказал")
@@ -288,11 +288,11 @@ async def _queue_cold_touch(db, transport, config: dict, now: datetime) -> bool:
         return False
     for candidate in conversation.first_touch_candidates(db, COLD_PER_TICK):
         try:
-            await queue.enqueue(db, transport, candidate["thread_id"], now, config)
+            await queue.enqueue(db, transport, candidate["company_id"], now, config)
             return True
         except (queue.NotReachableError, queue.ClosedThreadError,
                 queue.NothingToQueueError, outbox.AlreadyQueuedError) as skip:
-            log.info("не ставим в очередь %s: %s", candidate["thread_id"], skip)
+            log.info("не ставим в очередь %s: %s", candidate["company_id"], skip)
         except pool.NoNumberAvailableError:
             log.info("свободных номеров нет — холодные касания ждут завтра")
             return False
