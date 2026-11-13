@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from delivery.exceptions import AlreadyQueuedError
+from delivery.exceptions import AlreadyQueuedError, NumberExistsError
 from delivery.schemas import Author, Kind, NumberStatus, RowStatus
 
 ROW = (
@@ -142,8 +142,10 @@ class DeliveryRepository:
         )
 
     def mark_stuck(self, outbox_id: int, now: datetime) -> None:
+        """Hand a row in sending to a human; a row that moved on meanwhile is left alone."""
         self._db.execute(
-            "UPDATE outbox SET status = 'stuck', updated_at = ? WHERE outbox_id = ?",
+            "UPDATE outbox SET status = 'stuck', updated_at = ?"
+            " WHERE outbox_id = ? AND status = 'sending'",
             (stamp(now), outbox_id),
         )
 
@@ -269,10 +271,14 @@ class DeliveryRepository:
 
     def register(self, number: str, now: datetime, skip_warmup: bool) -> None:
         status = NumberStatus.ACTIVE if skip_warmup else NumberStatus.NEW
-        self._db.execute(
-            f"INSERT INTO numbers ({NUMBER}) VALUES (?, ?, ?, ?, NULL, ?)",
-            (number, f"sessions/{number}", status, stamp(now), skip_warmup),
-        )
+        try:
+            self._db.execute(
+                f"INSERT INTO numbers ({NUMBER}) VALUES (?, ?, ?, ?, NULL, ?)",
+                (number, f"sessions/{number}", status, stamp(now), skip_warmup),
+            )
+        except sqlite3.IntegrityError as error:
+            # Two requests for one SIM: the primary key decides, not the check before it.
+            raise NumberExistsError() from error
 
     def number(self, number: str) -> dict[str, Any] | None:
         found = self._db.execute(

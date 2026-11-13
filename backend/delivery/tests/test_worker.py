@@ -1,6 +1,7 @@
 """The queue tick as a function: one due row, the gates, the send, the autopilot and its author."""
 
 import random
+import sqlite3
 from datetime import timedelta
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import activity
 from conversations import public as conversation
 from core import operator_settings
 from core.model import FakeModel
-from core.whatsapp import TransportError
+from core.whatsapp import SessionLoggedOutError, TransportError
 from delivery import worker
 from delivery.repository import DeliveryRepository
 from delivery.schemas import Author, DeliverySettings, Kind, Mode
@@ -386,3 +387,109 @@ def test_the_dashboard_has_a_label_for_every_outcome_and_thread_status():
         if f"\n  {value}: {{" not in vocabulary
     ]
     assert missing == []
+
+
+# --- found by the review of #37 ------------------------------------------------------------
+
+
+def test_cold_queueing_stops_at_the_pools_room_even_for_a_thread_with_its_number(db, work):
+    """The room check is the tick's own: `enqueue` alone would not stop a thread that has a number."""
+    with db:
+        operator_settings.save(db, MODULE, DeliverySettings(autopilot=Mode.FULL, daily_ceiling=1))
+    queued(db, "+77010000001")  # one waiting row spends the whole daily room
+    open_thread(db, "+77010000002", our_number=OURS)
+    add_draft(db, "+77010000002")
+
+    assert work.queue_cold(INSIDE, work._service.settings()) is None
+
+    assert [row["thread_id"] for row in DeliveryRepository(db).waiting()] == ["c1"]
+
+
+def test_a_draft_superseded_by_a_queued_one_does_not_plug_cold_queueing(db, work):
+    """The older draft stays a candidate for ever; the next thread must still get its turn."""
+    set_mode(db, Mode.FULL)
+    add_number(db)
+    open_thread(db, "+77010000001", our_number=OURS)
+    add_draft(db, "+77010000001", "старый")
+    newer = add_draft(db, "+77010000001", "новый")
+    with db:
+        DeliveryRepository(db).put(newer, "c1", OURS, INSIDE, Kind.COLD, Author.AUTOMAT)
+    open_thread(db, "+77010000002")
+    add_draft(db, "+77010000002")
+
+    assert work.queue_cold(INSIDE, work._service.settings()) == "queued"
+
+    assert {row["thread_id"] for row in DeliveryRepository(db).waiting()} == {"c1", "c2"}
+
+
+def test_a_row_cancelled_between_the_read_and_the_claim_is_not_sent(db, work, whatsapp):
+    outbox_id, _ = queued(db)
+    row = DeliveryRepository(db).due(INSIDE, ())
+    assert row is not None
+    with db:
+        DeliveryRepository(db).cancel(outbox_id, "отменил оператор", INSIDE)
+
+    assert work._process(row, INSIDE, work._service.settings()) is None
+
+    assert whatsapp.sends == []
+    assert status_of(db, outbox_id) == "cancelled"
+
+
+def test_a_journal_failing_after_the_send_does_not_revive_the_row(db, work, whatsapp, monkeypatch):
+    """The row is already sent: a retry would send the same message again."""
+    outbox_id, _ = queued(db)
+    real = activity.record
+
+    def locked(actor, outcome, subject=None, detail=None):
+        if outcome == "sent":
+            raise sqlite3.OperationalError("database is locked")
+        return real(actor, outcome, subject=subject, detail=detail)
+
+    monkeypatch.setattr(activity, "record", locked)
+
+    assert work.tick(INSIDE) == "taken"
+    assert work.tick(INSIDE + timedelta(hours=1)) is None
+
+    assert status_of(db, outbox_id) == "sent"
+    assert len(whatsapp.sends) == 1
+    assert row_of(db, outbox_id)["attempts"] == 0
+
+
+def test_an_unlinked_session_on_send_is_a_retry_not_an_unknown_fate(db, work, whatsapp, notes):
+    outbox_id, _ = queued(db)
+    whatsapp.error = SessionLoggedOutError()
+
+    assert work.tick(INSIDE) == "retry"
+
+    assert status_of(db, outbox_id) == "pending"
+    assert notes == []
+
+
+def test_a_dialogue_is_not_moved_to_another_number_when_its_own_is_spent(db, work, whatsapp):
+    """A new number is a new chat for the lead: only a cold thread may change it."""
+    outbox_id, _ = queued(db)
+    add_number(db, "+77005556677")
+    with db:
+        conversation.confirm_sent(db, add_draft(db, text="уже писали"), "X", INSIDE)
+        for _ in range(30):
+            DeliveryRepository(db).put_warmup(OURS, "+77009990000", None, INSIDE)
+
+    assert work.tick(INSIDE) == "rescheduled"
+
+    assert row_of(db, outbox_id)["our_number"] == OURS
+    assert thread_of(db)["our_number"] == OURS
+    assert row_of(db, outbox_id)["send_after"] == "2026-09-03T07:00:00+00:00"
+
+
+@pytest.mark.parametrize("mode", [Mode.OFF, Mode.MANUAL, Mode.REPLIES, Mode.FULL])
+@pytest.mark.parametrize("author", list(Author))
+@pytest.mark.parametrize("kind", [Kind.COLD, Kind.FOLLOWUP, Kind.REPLY])
+def test_the_rule_of_the_tick_is_the_rule_of_the_domain(db, work, mode, author, kind):
+    """`due()` filters in SQL, `domain.releases` states the rule: the two must never differ."""
+    set_mode(db, mode)
+    queued(db, author=author, kind=kind)
+    from delivery import domain
+
+    went = work.send_due(INSIDE, work._service.settings()) is not None
+
+    assert went == domain.releases(mode, author, kind)

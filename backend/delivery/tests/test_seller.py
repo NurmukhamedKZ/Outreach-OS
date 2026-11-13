@@ -1,6 +1,7 @@
 """What the tick does with the lead's reply: the seller's move and every guard, each an `if`."""
 
 import random
+import sqlite3
 
 import pytest
 
@@ -80,7 +81,8 @@ def test_in_replies_the_answer_is_drafted_counted_and_queued_in_one_go(replied, 
     assert (thread["auto_replies"], thread["status"]) == (1, "active")
     assert conversation.unhandled_incoming(replied) is None
     event = activity.recent(actor=worker.TICK_ACTOR)[0]
-    assert (event["outcome"], event["detail"]) == ("answered", "Цену назовём после разговора.")
+    # The length, not the words: what was said lives in the thread, not in the journal.
+    assert (event["outcome"], event["detail"]) == ("answered", "29 знаков")
 
 
 @pytest.mark.parametrize("mode", [Mode.OFF, Mode.MANUAL])
@@ -218,3 +220,60 @@ def test_the_tick_answers_the_lead_and_still_sends_a_due_row(replied, whatsapp, 
 
     assert conversation.unhandled_incoming(replied) is None
     assert len(DeliveryRepository(replied).waiting()) == 1
+
+
+# --- found by the review of #37 ------------------------------------------------------------
+
+
+class Mid(FakeModel):
+    """A model that lets something happen to the thread while it is thinking."""
+
+    def __init__(self, db, status, *answers):
+        super().__init__(*answers)
+        self._db, self._status = db, status
+
+    def answer(self, *args, **kwargs):
+        with self._db:
+            conversation.set_status(self._db, "c1", self._status, "пока думала модель")
+        return super().answer(*args, **kwargs)
+
+
+def test_a_thread_taken_by_a_human_while_the_model_thinks_gets_a_draft_but_no_row(
+    replied, whatsapp, notes
+):
+    model = Mid(replied, "escalated", answer("Ответ"))
+    work = worker.Worker(replied, whatsapp, notes.append, lambda: model, random.Random(1))
+
+    assert work.handle_incoming(INSIDE, work._service.settings()) == "answered"
+
+    assert rows(replied) == [] and drafts(replied) == 1
+    assert thread_of(replied)["auto_replies"] == 0
+
+
+def test_a_verdict_does_not_reopen_a_thread_the_lead_closed_while_the_model_thought(
+    replied, whatsapp, notes
+):
+    model = Mid(replied, "closed_refused", verdict("interested", "хочет КП"))
+    work = worker.Worker(replied, whatsapp, notes.append, lambda: model, random.Random(1))
+
+    assert work.handle_incoming(INSIDE, work._service.settings()) == "closed"
+
+    assert thread_of(replied)["status"] == "closed_refused"
+    assert conversation.unhandled_incoming(replied) is None
+    assert notes == []
+
+
+def test_a_failed_refusal_record_is_loud_and_the_thread_stays_closed(
+    replied, whatsapp, notes, monkeypatch
+):
+    def locked(*_args):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr("refusals.public.record", locked)
+    work, _ = seller(replied, whatsapp, notes, verdict("refusal", "не интересно"))
+
+    assert work.handle_incoming(INSIDE, work._service.settings()) == "closed"
+
+    assert thread_of(replied)["status"] == "closed_refused"
+    assert len(notes) == 1 and "не записан" in notes[0]
+    assert "crashed" in {event["outcome"] for event in activity.recent(actor=worker.TICK_ACTOR)}

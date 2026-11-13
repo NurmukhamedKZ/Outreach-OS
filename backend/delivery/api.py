@@ -27,7 +27,7 @@ NO_NUMBER: dict[int | str, dict[str, Any]] = {
     422: {"description": "errors.phoneInvalid: not a phone"},
 }
 NODE: dict[int | str, dict[str, Any]] = {
-    500: {"description": "Node did not answer"},
+    502: {"description": "errors.transportFailed: Node did not answer"},
 }
 NO_ROW: dict[int | str, dict[str, Any]] = {
     404: {"description": "errors.rowNotFound: no such row"},
@@ -130,6 +130,7 @@ def set_number_status(
             " | errors.sessionLoggedOut"
         },
         422: {"description": "errors.notReachable | errors.emptyText"},
+        502: {"description": "errors.transportFailed: Node did not answer"},
         503: {"description": "errors.noNumberAvailable: no number has room today"},
     },
 )
@@ -179,11 +180,8 @@ def webhook(
     _signed: Annotated[None, Depends(signed)],
 ) -> WebhookAnswer:
     # 200 even for what is not handled: Node retries anything else forever.
-    now = clock.now()
-    if event.kind == "incoming":
-        return WebhookAnswer(
-            handled=service.record_incoming(event.sender, event.text, event.provider_id, now)
+    return WebhookAnswer(
+        handled=service.handle_event(
+            event.kind, event.sender, event.text, event.provider_id, event.status, clock.now()
         )
-    if event.kind == "status" and event.provider_id:
-        return WebhookAnswer(handled=service.record_status(event.provider_id, event.status, now))
-    return WebhookAnswer(handled=False)
+    )

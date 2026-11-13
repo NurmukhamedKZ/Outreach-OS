@@ -608,7 +608,15 @@ function Delivery() {
   const save = () => {
     setError(null);
     setSaving(true);
-    saveDeliverySettings(draft)
+    // Режим, которого оператор в форме не трогал, берётся живым: иначе форма, открытая до
+    // аварийного «Стоп» на «Отправке», вернула бы старый режим и снова открыла очередь.
+    fetchDeliverySettings()
+      .then((live) =>
+        saveDeliverySettings({
+          ...draft,
+          autopilot: draft.autopilot === saved.autopilot ? live.autopilot : draft.autopilot,
+        }),
+      )
       .then((next) => {
         setSaved(next);
         setDraft(next);

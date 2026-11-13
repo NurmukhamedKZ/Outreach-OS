@@ -1,10 +1,10 @@
 """The queue and the pool in SQL: claiming, retries, counters, the daily spend."""
 
-from datetime import timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from delivery.exceptions import AlreadyQueuedError
+from delivery.exceptions import AlreadyQueuedError, NumberExistsError
 from delivery.repository import DeliveryRepository, stamp
 from delivery.schemas import Author, Kind, NumberStatus
 from delivery.tests.conftest import (
@@ -217,3 +217,42 @@ def test_a_draft_is_not_a_row(db, repo):
     open_thread(db)
     add_draft(db)
     assert repo.waiting() == []
+
+
+@pytest.mark.parametrize("gone", ["sent", "cancelled", "failed"])
+def test_confirm_takes_only_a_waiting_row(db, repo, gone):
+    outbox_id, _ = queued(db, author=Author.AUTOMAT)
+    with db:
+        db.execute("UPDATE outbox SET status = ? WHERE outbox_id = ?", (gone, outbox_id))
+        assert repo.confirm(outbox_id, INSIDE) is False
+    assert row_of(db, outbox_id)["author"] == "automat"
+
+
+def test_the_daily_spend_is_one_utc_day(db, repo):
+    day = datetime(2026, 9, 2, tzinfo=UTC)
+    with db:
+        for moment in (
+            day - timedelta(seconds=1),  # yesterday's last second
+            day,  # today's first
+            day + timedelta(hours=24) - timedelta(seconds=1),  # today's last
+            day + timedelta(hours=24),  # tomorrow's first
+        ):
+            repo.put_warmup(OURS, "+77009990000", None, moment)
+
+    assert repo.sent_today(OURS, INSIDE) == 2
+
+
+def test_a_row_that_moved_on_is_not_handed_to_a_human_by_the_sweep(db, repo):
+    outbox_id, _ = queued(db)
+    with db:
+        repo.claim(outbox_id, INSIDE)
+        repo.mark_sent(outbox_id, "3EB0", INSIDE)
+        repo.mark_stuck(outbox_id, INSIDE)
+    assert row_of(db, outbox_id)["status"] == "sent"
+
+
+def test_registering_a_number_twice_is_a_domain_error_not_a_500(db, repo):
+    with db:
+        repo.register("+77001110000", INSIDE, skip_warmup=False)
+    with pytest.raises(NumberExistsError), db:
+        repo.register("+77001110000", INSIDE, skip_warmup=False)

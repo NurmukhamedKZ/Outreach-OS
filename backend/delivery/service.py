@@ -61,6 +61,8 @@ DELIVERED = 3
 READ = 4
 # A personal chat's JID; groups (@g.us) and @lid are out of scope.
 PERSONAL_JID = "@s.whatsapp.net"
+# Threads closed for good: media from the lead does not reopen them.
+CLOSED_BY_LEAD = ("closed_refused", "closed_junk", "unreachable")
 # What stays in the history when the lead sent a voice, a photo or a sticker.
 MEDIA_MARKER = "[медиа]"
 
@@ -344,6 +346,8 @@ class DeliveryService:
         """Pick our number for the thread's first touch and check the lead has WhatsApp.
 
         Once per thread: to the lead a message from another number is a new chat.
+        The check and the assignment are two transactions on purpose: Node is asked
+        between them, and the network never sits inside a transaction.
 
         Raises:
             NoNumberAvailableError: no number has room today.
@@ -366,6 +370,11 @@ class DeliveryService:
         return number
 
     def queue_row(self, outbox_id: int) -> QueueRow:
+        """Return a queue row.
+
+        Raises:
+            RowNotFoundError: no such row.
+        """
         row = self._repo.row(outbox_id)
         if row is None:
             raise RowNotFoundError()
@@ -409,6 +418,7 @@ class DeliveryService:
         )
 
     def counters(self, now: datetime) -> QueueCounters:
+        """Return the queue's counters: waiting, sent today, due but not sent."""
         return QueueCounters(**self._repo.counters(now))
 
     def status(self, now: datetime) -> SenderStatus:
@@ -429,6 +439,26 @@ class DeliveryService:
         )
 
     # --- Node's events -----------------------------------------------------------------
+
+    def handle_event(
+        self,
+        kind: str,
+        sender: str | None,
+        text: str | None,
+        provider_id: str | None,
+        status: int | None,
+        now: datetime,
+    ) -> bool:
+        """Route an event of Node; False for what is not ours to handle.
+
+        Node repeats every event that is not answered with 2xx, so an unknown kind
+        is no error: the caller answers 200 either way.
+        """
+        if kind == "incoming":
+            return self.record_incoming(sender, text, provider_id, now)
+        if kind == "status" and provider_id:
+            return self.record_status(provider_id, status, now)
+        return False
 
     def record_status(self, provider_id: str, status: int | None, now: datetime) -> bool:
         """Record a delivery receipt; False when it is no receipt or no row of ours has the id.
@@ -484,11 +514,17 @@ class DeliveryService:
         except conversation.DuplicateIncomingError:
             log.info("incoming %s of company %s is a repeat", provider_id, company_id)
             activity.record_quietly(WEBHOOK_ACTOR, "duplicate", subject=company_id)
+            if refused:
+                # The first delivery may have died between the commit and the refusal's
+                # own write (Node then repeats the event): recording is idempotent, so heal it.
+                refusals.record(self._db, channel, f"стоп-слово: {refused}", now)
             return False
+        if refused:
+            # After the commit, before the journal: the refusal commits on its own and
+            # must not wait for a journal that may fail; a repeat of the event heals it.
+            refusals.record(self._db, channel, f"стоп-слово: {refused}", now)
         activity.record(WEBHOOK_ACTOR, "incoming", subject=company_id)
         if refused:
-            # After the commit: the refusal commits on its own.
-            refusals.record(self._db, channel, f"стоп-слово: {refused}", now)
             log.warning("company %s closed by a stopword", company_id)
             activity.record(WEBHOOK_ACTOR, "refused", subject=company_id, detail=refused)
         elif not body:
@@ -513,9 +549,11 @@ class DeliveryService:
             )
             conversation.mark_handled(self._db, message_id, now)
         elif not has_text:
-            conversation.set_status(
-                self._db, company_id, "escalated", "пришло медиа без текста — автомат не читает"
-            )
+            # A thread a lead closed stays closed: media is no reason to reopen it.
+            if thread["status"] not in CLOSED_BY_LEAD:
+                conversation.set_status(
+                    self._db, company_id, "escalated", "пришло медиа без текста — автомат не читает"
+                )
             conversation.mark_handled(self._db, message_id, now)
         elif thread["status"] == "exhausted":
             # "Nothing more to say" is ours, not the lead's: an answer revives the thread.

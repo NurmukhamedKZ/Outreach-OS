@@ -76,6 +76,8 @@ WARMUP_MINUTES = 10
 WARMUP_JITTER_MINUTES = 4
 MONITOR_SECONDS = 3600
 
+# How many first drafts a tick looks through to queue one.
+COLD_CANDIDATES = 10
 # A pause between two sends from one number, minutes.
 JITTER_MINUTES = (2, 15)
 # Retries of a frame that never left; the fourth failure fails the row.
@@ -85,6 +87,8 @@ STUCK_AFTER_MINUTES = 5
 # A network timeout is no reason to hand a live thread to a human for good.
 MAX_HANDLE_ATTEMPTS = 3
 
+# Threads a lead closed or that never opened: no verdict reopens them.
+CLOSED = ("closed_refused", "closed_junk", "unreachable")
 # Touches that spend the cadence; an answer in a dialogue is not one.
 OUTREACH_KINDS = (Kind.COLD, Kind.FOLLOWUP)
 # Modes in which an answer of the seller goes out by itself.
@@ -173,7 +177,10 @@ class Worker:
         on with the same backoff, and three breaks fail it so it plugs nothing.
         """
         current = self._repo.row(row["outbox_id"])
-        if current is not None and current["status"] == "sending":
+        # Only a row still pending broke on our side. One that went on (sent, cancelled,
+        # sending) must not be revived: the journal failing after the commit would
+        # otherwise send the same message twice.
+        if current is not None and current["status"] != "pending":
             return "taken"
         return self._retry(row, "тик сломался, см. лог", now)
 
@@ -269,6 +276,9 @@ class Worker:
         lead = thread["channel"] if thread else thread_id
         try:
             result = self._whatsapp.send(row["our_number"], lead, text, key=f"outbox-{outbox_id}")
+        except SessionLoggedOutError:
+            # An unlinked session never sent the frame: a retry is safe, unlike an unknown fate.
+            return self._retry(row, "сессия номера отвязана", now)
         except TransportError as error:
             # "We do not know whether it left": a case for a human, never a blind
             # retry, since a duplicate in cold outreach is a reason to press Report.
@@ -391,7 +401,8 @@ class Worker:
                 conversation.bump_auto_replies(self._db, company_id)
                 self._repo.put(message_id, company_id, our_number, now, Kind.REPLY, Author.AUTOMAT)
             conversation.mark_handled(self._db, row["message_id"], now)
-        activity.record(TICK_ACTOR, "answered", subject=company_id, detail=text)
+        # The length, not the text: the journal keeps what happened, the thread keeps what was said.
+        activity.record(TICK_ACTOR, "answered", subject=company_id, detail=f"{len(text)} знаков")
         if not automatic:
             log.info("answer to company %s stays a draft", company_id)
         return "answered"
@@ -404,20 +415,43 @@ class Worker:
         status = conversation.status_after(reply.decision)
         if status is None:
             return self._escalate(thread, row, now, f"агент вернул решение {reply.decision!r}")
+        current = conversation.thread(self._db, company_id)
+        if current is not None and current["status"] in CLOSED:
+            # The lead refused (or was closed) while the model thought: a verdict made
+            # on the old reading must not reopen the thread as "interested".
+            with self._db:
+                conversation.mark_handled(self._db, row["message_id"], now)
+            log.info("company %s closed while the seller thought, verdict dropped", company_id)
+            return "closed"
         with self._db:
             conversation.set_status(self._db, company_id, status, reply.reason)
             conversation.mark_handled(self._db, row["message_id"], now)
         log.info("company %s -> %s by the seller", company_id, status)
         outcome = "escalated" if status == "escalated" else "closed"
+        # The refusal first: the journal may fail, the legal record must not wait for it.
+        if status == "closed_refused":
+            self._record_refusal(thread["channel"], f"агент: {reply.reason}", now)
         activity.record(
             TICK_ACTOR, outcome, subject=company_id, detail=f"{reply.decision}: {reply.reason}"
         )
-        if status == "closed_refused":
-            # After the commit: the refusal commits on its own.
-            refusals.record(self._db, thread["channel"], f"агент: {reply.reason}", now)
         if status == "escalated":
             self._notify(f"{thread['channel']} заинтересован: {reply.reason}")
         return outcome
+
+    def _record_refusal(self, channel: str, reason: str, now: datetime) -> None:
+        """Record the refusal after the thread closed; a failure is loud, never silent (F21).
+
+        The message is already handled, so nothing retries this: the thread stays
+        closed (the gate holds it), and the operator is told to record the refusal by hand.
+        """
+        try:
+            refusals.record(self._db, channel, reason, now)
+        except Exception:
+            log.exception("refusal of a closed thread was not recorded")
+            activity.record_crash(TICK_ACTOR, detail="отказ закрытого треда не записан")
+            self._notify(
+                f"Отказ {channel} не записан в базу: внесите его вручную («Больше не писать»)"
+            )
 
     def _escalate(
         self, thread: conversation.ThreadState, row: dict[str, Any], now: datetime, why: str
@@ -504,7 +538,7 @@ class Worker:
             return None
         if self._service.free_room(now, settings.daily_ceiling) <= 0:
             return None
-        for candidate in conversation.first_touch_candidates(self._db, 1):
+        for candidate in conversation.first_touch_candidates(self._db, COLD_CANDIDATES):
             company_id = candidate["company_id"]
             try:
                 self._service.enqueue(company_id, now, Author.AUTOMAT)
@@ -513,11 +547,12 @@ class Worker:
                 ClosedThreadError,
                 NothingToQueueError,
                 AlreadyQueuedError,
-                NoNumberAvailableError,
-                SessionLoggedOutError,
-                TransportFailedError,
             ) as skip:
+                # This thread cannot go, the next may: one candidate must not plug the rest.
                 log.info("company %s not queued: %s", company_id, type(skip).__name__)
+                continue
+            except (NoNumberAvailableError, SessionLoggedOutError, TransportFailedError) as skip:
+                log.info("cold touches wait: %s", type(skip).__name__)
                 return None
             activity.record(TICK_ACTOR, "queued", subject=company_id)
             return "queued"
@@ -538,9 +573,15 @@ class Worker:
         if recipient is None or sender is None:
             activity.record(WARMUP_ACTOR, "idle")
             return None
-        result = self._whatsapp.send(
-            sender, recipient, self._rng.choice(PHRASES), key=f"warmup-{sender}-{stamp(now)}"
-        )
+        try:
+            result = self._whatsapp.send(
+                sender, recipient, self._rng.choice(PHRASES), key=f"warmup-{sender}-{stamp(now)}"
+            )
+        except TransportError as error:
+            # Node's state, not a crash of ours; a warmup message of unknown fate is not recorded.
+            log.warning("warmup %s -> %s: node failed: %s", tail(sender), tail(recipient), error)
+            activity.record_quietly(WARMUP_ACTOR, "transport_down", detail=str(error))
+            return None
         if not result.sent:
             log.warning("warmup %s -> %s did not leave", tail(sender), tail(recipient))
             activity.record(WARMUP_ACTOR, "not_sent", subject=sender, detail=result.error)

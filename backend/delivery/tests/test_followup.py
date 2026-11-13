@@ -126,3 +126,21 @@ def test_a_hand_typed_reply_disarms_the_schedule_without_the_model(due, whatsapp
 
     assert model.calls == []
     assert thread_of(due, "c1")["next_touch_at"] is None
+
+
+def test_a_thread_taken_by_a_human_while_the_writer_thinks_gets_a_draft_but_no_row(
+    due, whatsapp, notes
+):
+    class Takes(FakeModel):
+        def answer(self, *args, **kwargs):
+            with due:
+                conversation.set_status(due, "c1", "escalated", "человек взял тред")
+            return super().answer(*args, **kwargs)
+
+    model = Takes(draft())
+    work = worker.Worker(due, whatsapp, notes.append, lambda: model, random.Random(1))
+
+    assert touch(work) == "touched"
+
+    assert due.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
+    assert due.execute("SELECT count(*) FROM messages").fetchone()[0] == 1

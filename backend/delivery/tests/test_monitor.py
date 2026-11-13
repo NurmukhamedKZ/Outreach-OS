@@ -24,6 +24,7 @@ from delivery.tests.conftest import (
     open_thread,
     queued,
     row_of,
+    status_of,
     thread_of,
 )
 
@@ -261,3 +262,51 @@ def test_a_stranded_thread_moves_as_soon_as_a_number_frees_up(db, service, work,
 
     thread = thread_of(db, "c1")
     assert (thread["status"], thread["our_number"]) == ("queued", OTHER)
+
+
+# --- found by the review of #37 ------------------------------------------------------------
+
+
+def test_the_monitor_hands_a_row_stuck_in_sending_to_a_human(db, work, notes):
+    outbox_id, _ = queued(db)
+    with db:
+        DeliveryRepository(db).claim(outbox_id, INSIDE - timedelta(minutes=6))
+
+    work.monitor(INSIDE)
+
+    assert status_of(db, outbox_id) == "stuck"
+    assert len(notes) == 1
+
+
+@pytest.mark.parametrize(
+    "age, expected",
+    [(timedelta(minutes=4, seconds=59), "sending"), (timedelta(minutes=5), "stuck")],
+)
+def test_a_row_is_stuck_from_exactly_five_minutes_in_sending(db, work, age, expected):
+    outbox_id, _ = queued(db)
+    with db:
+        DeliveryRepository(db).claim(outbox_id, INSIDE - age)
+
+    work.sweep_stuck(INSIDE)
+
+    assert status_of(db, outbox_id) == expected
+
+
+def test_warmup_sends_do_not_count_in_the_health_rates(db, work, whatsapp):
+    add_number(db)
+    whatsapp.sessions[OURS] = "connected"
+    for _ in range(20):
+        record_send(db, OURS, delivered=True, replied=True)
+    with db:
+        for _ in range(30):
+            DeliveryRepository(db).put_warmup(OURS, OTHER, None, INSIDE)
+
+    assert work.monitor(INSIDE) == []
+
+
+def test_a_row_being_sent_still_holds_room_in_the_pool(db, service):
+    outbox_id, _ = queued(db)
+    with db:
+        DeliveryRepository(db).claim(outbox_id, INSIDE)
+
+    assert service.free_room(INSIDE, 30) == 29

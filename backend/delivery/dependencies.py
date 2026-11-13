@@ -1,3 +1,4 @@
+import hmac
 from typing import Annotated
 
 from fastapi import Depends, Header, Request
@@ -40,7 +41,8 @@ def valid_number(number: str) -> str:
 def signed(x_sender_secret: Annotated[str | None, Header()] = None) -> None:
     """Refuse an event without the shared secret; an empty secret is local development."""
     expected = settings.sender_webhook_secret
-    if expected and x_sender_secret != expected:
+    # Constant time: the secret must not leak by how long a wrong guess takes.
+    if expected and not hmac.compare_digest((x_sender_secret or "").encode(), expected.encode()):
         raise WebhookNotSignedError()
 
 

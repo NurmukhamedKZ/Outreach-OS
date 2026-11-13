@@ -379,3 +379,32 @@ def test_a_number_leaves_quarantine_where_its_calendar_puts_it():
     assert domain.released(domain.plan_for(STARTED, True, day(1), 30)) is NumberStatus.ACTIVE
     assert domain.released(domain.plan_for(STARTED, False, day(11), 30)) is NumberStatus.ACTIVE
     assert domain.released(domain.plan_for(STARTED, False, day(5), 30)) is NumberStatus.WARMING
+
+
+# --- found by the review of #37 ------------------------------------------------------------
+
+
+def test_a_spent_limit_on_friday_waits_for_monday_morning():
+    friday = datetime(2026, 9, 4, 7, 0, tzinfo=UTC)  # 12:00 in Almaty
+
+    decision = domain.check(attempt(capacity=0), friday, SETTINGS)
+
+    # Monday 10:00 in Almaty = 05:00 UTC, not Saturday at the same hour.
+    assert decision.send_after == datetime(2026, 9, 7, 5, 0, tzinfo=UTC)
+
+
+def test_the_jitter_ends_exactly_at_its_moment():
+    held = attempt(last_sent_at=INSIDE - timedelta(minutes=15), jitter_minutes=15.0)
+    assert domain.check(held, INSIDE, SETTINGS).action is Action.SEND
+
+
+def test_the_health_thresholds_are_strict_at_the_edge():
+    steady = {"state": "connected", "reconnects": 0}
+    edge = Rates(sent=20, delivered=16, threads=20, replies=1)  # 80 % delivered, 5 % answered
+    assert verdict("active", steady, edge) is None
+    assert (
+        verdict("active", steady, Rates(sent=20, delivered=15, threads=20, replies=1)) is not None
+    )
+    assert (
+        verdict("active", steady, Rates(sent=20, delivered=20, threads=20, replies=0)) is not None
+    )

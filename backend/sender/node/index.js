@@ -158,11 +158,11 @@ async function notify(payload, attempt = 1) {
   } catch (error) {
     const now = Date.now();
     if (now - lastWebhookLog > WEBHOOK_LOG_INTERVAL_MS) {
-      log.warn({ error: String(error), payload }, "вебхук не доставлен, повтор");
+      log.warn({ error: String(error), kind: payload.kind }, "вебхук не доставлен, повтор");
       lastWebhookLog = now;
     }
     if (attempt >= WEBHOOK_MAX_ATTEMPTS) {
-      log.error({ payload }, "вебхук так и не доставлен, событие потеряно");
+      log.error({ kind: payload.kind }, "вебхук так и не доставлен, событие потеряно");
       return;
     }
     const delay = Math.min(WEBHOOK_RETRY_MS * 2 ** (attempt - 1), RECONNECT_MAX_MS);
@@ -179,7 +179,21 @@ async function socketOf(number) {
 // и QR на мёртвом сокете не придёт никогда. Каталог сессии откладывается, а не
 // удаляется — это невосстановимый слой, — и открывается новый неавторизованный
 // сокет, который и выдаст QR или код привязки.
-async function freshSession(number) {
+// Двойной клик по QR не должен открыть два сокета на один номер: замена сессии
+// идёт под замком номера, второй запрос ждёт первый.
+const replacing = new Map();
+
+function freshSession(number) {
+  if (!replacing.has(number)) {
+    replacing.set(
+      number,
+      replaceSession(number).finally(() => replacing.delete(number)),
+    );
+  }
+  return replacing.get(number);
+}
+
+async function replaceSession(number) {
   if (!loggedOut(number)) return;
   const { sock } = sockets.get(number);
   sockets.delete(number);
@@ -218,7 +232,7 @@ const routes = {
     // а возвращает id первого. Дубликат в холодном аутриче — прямой повод
     // нажать Report, и защита от него не может жить только на стороне Python.
     if (key && sentKeys.has(key)) {
-      log.info({ number, to, key }, "повтор по ключу, второй отправки нет");
+      log.info({ number, key }, "повтор по ключу, второй отправки нет");
       return { ok: true, sent: true, provider_id: sentKeys.get(key) };
     }
     // Отвязанная сессия: фрейм точно не уйдёт — честное sent:false, а не 500.
@@ -233,7 +247,7 @@ const routes = {
     try {
       const sent = await sock.sendMessage(jid(to), content);
       if (key) sentKeys.set(key, sent.key.id);
-      log.info({ number, to, key }, "отправлено");
+      log.info({ number, key }, "отправлено");
       return { ok: true, sent: true, provider_id: sent.key.id };
     } catch (error) {
       // sent:false — обещание «фрейм в сокет не ушёл», на нём Python строит
@@ -286,7 +300,13 @@ http.createServer(async (request, response) => {
   try {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
-    reply(200, await handler(JSON.parse(Buffer.concat(chunks).toString() || "{}")));
+    const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+    // Номер строит путь к каталогу сессии: Python присылает только канонический,
+    // а прямой вызов Node не должен выйти из sessions/.
+    if (body.number !== undefined && !/^\+\d{10,15}$/.test(body.number)) {
+      throw new RouteError(422, "numberInvalid", "номер не в канонической форме");
+    }
+    reply(200, await handler(body));
   } catch (error) {
     log.error({ error: String(error), route }, "ручка упала");
     reply(error.status ?? 500, { code: error.code ?? "nodeError", error: String(error.message ?? error) });

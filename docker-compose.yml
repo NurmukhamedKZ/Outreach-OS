@@ -39,7 +39,7 @@ services:
       context: ./backend/sender/node
       dockerfile: Dockerfile
     ports:
-      - "8788:8788"
+      - "127.0.0.1:8788:8788"
     environment:
       SENDER_PYTHON_URL: http://backend:8787
     env_file:

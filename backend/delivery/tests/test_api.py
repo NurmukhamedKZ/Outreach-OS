@@ -1,5 +1,6 @@
 """HTTP of delivery: the pool, the queue with its author, the settings and Node's webhook."""
 
+import sqlite3
 from datetime import timedelta
 
 import pytest
@@ -15,7 +16,7 @@ from core.whatsapp import TransportError
 from delivery import api, dependencies
 from delivery.repository import DeliveryRepository
 from delivery.schemas import Author, Kind, NumberStatus
-from delivery.service import DELIVERED, READ
+from delivery.service import DELIVERED, READ, DeliveryService
 from delivery.tests.conftest import (
     INSIDE,
     OURS,
@@ -26,6 +27,7 @@ from delivery.tests.conftest import (
     status_of,
     thread_of,
 )
+from refusals import public as refusals
 
 
 @pytest.fixture
@@ -453,7 +455,15 @@ def test_a_repeated_reply_is_written_once(http, db):
 
 
 @pytest.mark.parametrize(
-    "jid", ["77010000009@s.whatsapp.net", "1203630@g.us", "abc@s.whatsapp.net", None]
+    "jid",
+    [
+        "77010000009@s.whatsapp.net",
+        "1203630@g.us",
+        "77010000001@g.us",
+        "77010000001@lid",
+        "abc@s.whatsapp.net",
+        None,
+    ],
 )
 def test_a_reply_without_a_thread_of_ours_is_not_written(http, db, jid):
     sent(db)
@@ -541,3 +551,74 @@ def test_a_dead_node_answers_with_a_code_on_the_buttons(http, db, whatsapp):
         "errors.transportFailed",
     )
     assert thread_of(db)["status"] == "queued"
+
+
+# --- found by the review of #37 ------------------------------------------------------------
+
+
+def test_cancelling_a_row_that_does_not_exist_is_a_404(http):
+    assert code_of(http.post("/api/sender/queue/999/cancel")) == (404, "errors.rowNotFound")
+
+
+@pytest.mark.parametrize("action", ["pair", "release"])
+def test_an_unknown_number_is_a_404_on_every_button(http, action):
+    assert code_of(http.post(f"/api/sender/numbers/+77009999999/{action}")) == (
+        404,
+        "errors.numberNotFound",
+    )
+
+
+def test_an_unknown_number_cannot_get_a_status(http):
+    response = http.post("/api/sender/numbers/+77009999999/status", json={"status": "banned"})
+    assert code_of(response) == (404, "errors.numberNotFound")
+
+
+@pytest.mark.parametrize("action", ["pair", "qr", "release", "warmed"])
+def test_what_is_not_a_phone_in_the_path_is_refused_by_every_button(http, action):
+    assert code_of(http.post(f"/api/sender/numbers/abc/{action}")) == (422, "errors.phoneInvalid")
+
+
+def test_media_from_a_lead_who_refused_does_not_reopen_the_thread(http, db):
+    sent(db)
+    with db:
+        conversation.set_status(db, "c1", "closed_refused", "стоп-слово")
+
+    http.post("/api/sender/webhook", json=incoming(""))
+
+    assert thread_of(db)["status"] == "closed_refused"
+    assert conversation.unhandled_incoming(db) is None
+
+
+def test_a_repeat_of_a_stopword_event_records_the_refusal_the_first_one_lost(http, db, monkeypatch):
+    sent(db)
+    real = refusals.record
+    calls = []
+
+    def flaky(connection, handle, reason, now):
+        calls.append(handle)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real(connection, handle, reason, now)
+
+    monkeypatch.setattr("refusals.public.record", flaky)
+    event = incoming("Отпишите меня, пожалуйста")
+
+    with pytest.raises(sqlite3.OperationalError):
+        http.post("/api/sender/webhook", json=event)
+    assert db.execute("SELECT count(*) FROM refusals").fetchone()[0] == 0
+
+    assert http.post("/api/sender/webhook", json=event).json() == {"handled": False}
+
+    assert [tuple(row) for row in db.execute("SELECT handle FROM refusals")] == [("+77010000001",)]
+
+
+def test_the_operators_text_loses_its_edge_spaces_in_the_service(db, whatsapp, notes):
+    add_number(db)
+    open_thread(db)
+    message_id = add_draft(db)
+
+    DeliveryService(db, whatsapp, notes.append).enqueue(
+        "c1", INSIDE, Author.OPERATOR, text="  Привет  "
+    )
+
+    assert conversation.outgoing_text(db, message_id) == "Привет"

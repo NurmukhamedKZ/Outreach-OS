@@ -7,6 +7,7 @@ import pytest
 
 import activity
 from core.model import FakeModel
+from core.whatsapp import TransportError
 from delivery import worker
 from delivery.repository import DeliveryRepository
 from delivery.schemas import NumberStatus
@@ -117,3 +118,35 @@ def test_a_warming_number_becomes_active_on_the_first_cold_day(db, work):
     assert status(db, FIRST) == "warming"
     work.warm(at(11))
     assert status(db, FIRST) == "active"
+
+
+def test_a_quarantined_number_neither_receives_nor_sends_warmup(db, work, whatsapp):
+    add_number(db, FIRST, NumberStatus.QUARANTINED, started=STARTED)
+    add_number(db, SECOND, NumberStatus.ACTIVE, started=STARTED)
+
+    assert work.warm(at(15)) is None
+
+    assert whatsapp.sends == []
+
+
+def test_a_number_never_writes_to_itself(db, work, whatsapp):
+    """The one with more room left must not be picked to write to itself."""
+    pair(db)
+    with db:
+        for _ in range(3):
+            DeliveryRepository(db).put_warmup(SECOND, "+77009990000", None, at(5))
+
+    work.warm(at(5))
+
+    assert whatsapp.sends[0]["number"] == SECOND
+    assert whatsapp.sends[0]["to"] == FIRST
+
+
+def test_node_down_during_warmup_is_transport_down_not_a_crash(db, work, whatsapp):
+    pair(db)
+    whatsapp.error = TransportError("down")
+
+    assert work.warm(at(5)) is None
+
+    assert activity.recent(actor=worker.WARMUP_ACTOR)[0]["outcome"] == "transport_down"
+    assert DeliveryRepository(db).sent_today(SECOND, at(5)) == 0
