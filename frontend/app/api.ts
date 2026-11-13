@@ -314,7 +314,8 @@ export function cancelJob(id: number) {
 /** Счётчики всех трёх систем одним ответом — живая шапка дашборда. */
 export type DashboardStats = {
   /** «Сбор лидов»: каждое число считает свой модуль (companies, research, refusals). */
-  sourcing: { companies: number; reachable: number; leads: number; refusals: number };
+  /** null — счётчики не посчитались (ошибка в логе бэкенда), остальное снапшота живо. */
+  sourcing: { companies: number; reachable: number; leads: number; refusals: number } | null;
   writer: { threads: number; drafts: number; sent: number; replies: number };
   sender: {
     status: string;

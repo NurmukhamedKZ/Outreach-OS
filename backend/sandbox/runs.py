@@ -20,6 +20,7 @@ import activity
 import analytics
 import clock
 import paths
+import tasks
 from collector.services import jobs
 from core import db as core_db
 from sender.db import migrate, numbers
@@ -129,6 +130,7 @@ def activate(run_id: str) -> Run:
     paths.use_run(run.path)
     activity.use(run.path)
     analytics.use(run.path, paths.PRODUCTION_STATE)
+    tasks.use(run.path, paths.PRODUCTION_STATE)
     clock.use(run.offset)
     _active = run_id
     return run
@@ -168,6 +170,7 @@ def deactivate() -> None:
     paths.use_run(None)
     activity.use(paths.state_db())
     analytics.use(paths.state_db(), paths.PRODUCTION_STATE)
+    tasks.use(paths.state_db(), paths.PRODUCTION_STATE)
     clock.use(None)
 
 

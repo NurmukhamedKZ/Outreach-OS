@@ -23,8 +23,7 @@ def refusal_seam(monkeypatch):
 
     Once collector/api.py is imported (any earlier test in a full run), the seam
     writes into the production state.db: a refusal verdict in a test left a
-    fake refusal there and created collector/data/derived.db. Tests that check
-    the seam replace it themselves.
+    fake refusal there. Tests that check the seam replace it themselves.
     """
     written: list[tuple[str, str]] = []
     monkeypatch.setattr(refusal, "_hook",

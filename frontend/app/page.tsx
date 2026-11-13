@@ -117,19 +117,19 @@ export default function Overview() {
             <div className="metric-head">Сбор лидов</div>
             <div className="metric-row is-total">
               <span>компаний в базе</span>
-              <b>{stats.sourcing.companies}</b>
+              <b>{stats.sourcing?.companies ?? "—"}</b>
             </div>
             <div className="metric-row">
               <span>лидов</span>
-              <b>{stats.sourcing.leads}</b>
+              <b>{stats.sourcing?.leads ?? "—"}</b>
             </div>
             <div className="metric-row">
               <span>с рабочим каналом</span>
-              <b>{stats.sourcing.reachable}</b>
+              <b>{stats.sourcing?.reachable ?? "—"}</b>
             </div>
             <div className="metric-row">
               <span>отказов</span>
-              <b>{stats.sourcing.refusals}</b>
+              <b>{stats.sourcing?.refusals ?? "—"}</b>
             </div>
           </section>
 

@@ -142,5 +142,7 @@ def _names(company_ids: set[str]) -> dict[str, str]:
     if not company_ids or _companies is None or not Path(_companies).exists():
         return {}
     with closing(sqlite_tools.connect_readonly(_companies)) as db:
+        if not sqlite_tools.has_table(db, "companies"):   # база ещё не мигрирована
+            return {}
         return {company_id: company.name
                 for company_id, company in companies.by_id(db, company_ids).items()}

@@ -173,3 +173,14 @@ def test_a_task_names_the_company_the_thread_was_opened_for(tmp_path):
 
     assert names == {"2gis:1": "Компания 2gis:1", "2gis:gone": "2gis:gone"}
     tasks.use(None)
+
+
+@pytest.mark.parametrize("companies_db", ["нет.db", "state.db"])
+def test_without_a_companies_table_the_company_is_named_by_its_id(db, tmp_path, companies_db):
+    """No file, or a file the companies migration has not reached yet."""
+    _thread(db, "+77010000001", "2gis:1")
+    conversation.set_status(db, "+77010000001", "escalated", "назвал бюджет")
+    db.commit()
+    tasks.use(tmp_path / "state.db", tmp_path / companies_db)
+
+    assert tasks.tasks()[0]["company_name"] == "2gis:1"

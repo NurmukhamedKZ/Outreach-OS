@@ -9,8 +9,8 @@ from companies.domain import ListedBranch
 from companies.exceptions import (InvalidCityError, InvalidRubricError, SubstitutedPageError,
                                   UnexpectedPageError)
 from companies.repository import CompanyRepository
-from companies.schemas import (CatalogItem, Company, CompanyCounts, Segment, SegmentSettings, SegmentState,
-                               SegmentStatus, SegmentsView)
+from companies.schemas import (CatalogItem, Company, CompanyCounts, Segment, SegmentSettings,
+                               SegmentState, SegmentStatus, SegmentsView)
 from core import operator_settings
 from core.pages import BotCheckError, FetchError, HttpStatusError, Pages
 
@@ -200,10 +200,13 @@ class CompanyService:
     def segment_labels(self, company_ids: Collection[str]) -> dict[str, str]:
         """Label each company by the rubric and city names of its first segment."""
         wanted = set(company_ids)
-        return {company_id: f"{domain.RUBRICS.get(first.rubric, first.rubric)}"
-                            f" · {domain.CITIES.get(first.city, first.city)}"
-                for company_id, segments in self._repo.company_segments().items()
-                if company_id in wanted and (first := min(segments))}
+        labels = {}
+        for company_id, segments in self._repo.company_segments().items():
+            if company_id in wanted:
+                first = min(segments)
+                labels[company_id] = (f"{domain.RUBRICS.get(first.rubric, first.rubric)}"
+                                      f" · {domain.CITIES.get(first.city, first.city)}")
+        return labels
 
     def prioritized(self, limit: int, exclude: Collection[str]) -> list[Company]:
         """Return reachable companies of the chosen segments in the order of research.

@@ -113,6 +113,7 @@ def test_frontend_contract(stores):
     snapshot = metrics.snapshot()
     assert set(snapshot) == {"sourcing", "writer", "sender", "jobs", "sandbox"}, \
         sorted(snapshot)
+    assert set(snapshot["sourcing"]) == {"companies", "reachable", "leads", "refusals"}
     assert set(snapshot["writer"]) == {"threads", "drafts", "sent", "replies"}
     assert snapshot["sender"]["status"] == "live"
     assert set(snapshot["sender"]) == {"status", "numbers", "queue", "threads", "heartbeat"}

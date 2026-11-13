@@ -31,8 +31,8 @@ import activity
 import logctx
 import paths
 from collector.services import events
-from core import db as core_db
 from collector.services.pipeline import OPERATIONS, PIPELINES
+from core import db as core_db
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 # (log = log || ?), и мерить длину он умеет, а считать переводы строки — нет.
 LOG_LIMIT_CHARS = 2_000_000
 OVERFLOW_NOTE = "\n— лог длиннее потолка, дальше не пишем"
+SCHEMA = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
 
 _current_ctxs = {}    # job_id -> контексты бегущих шагов: дорожек может быть несколько
 _cancelled = set()    # job_id, которым уже пришла отмена
@@ -49,18 +50,19 @@ class _Cancelled(Exception):
     pass
 
 
-SCHEMA = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
+def state_schema() -> str:
+    """Return the DDL of the old state.db tables outside Alembic (jobs, threads, messages).
 
-
-def state_schema():
-    """Старые таблицы state.db вне Alembic (jobs, threads, messages) — для того,
-    кто создаёт свою базу (песочница). Уходит в #7 вместе с очередью."""
+    For whoever creates a database of their own (the sandbox); goes with the queue in #7.
+    """
     return SCHEMA.read_text(encoding="utf-8")
 
 
 def connect():
-    """Соединение для джоб: state.jobs живёт в state.db (боевой или прогона)."""
+    """Open state.db (production or the sandbox run) with the jobs table in place."""
     db = core_db.connect(paths.state_db())
+    # ponytail: DDL on every connect, IF NOT EXISTS makes it a no-op read; the
+    # queue moves to Alembic in #7.
     db.executescript(state_schema())
     return db
 
@@ -85,8 +87,8 @@ def enqueue_operation(name):
     """Поставить одну операцию.
 
     Отдельно от пайплайна, а не общим enqueue с поиском по обоим реестрам:
-    имена пересекаются («rebuild» — и операция, и пайплайн), и общий поиск
-    молча ставил бы пайплайн там, где просили операцию.
+    имена могут совпасть, и общий поиск молча ставил бы пайплайн там, где
+    просили операцию.
     """
     if name not in OPERATIONS:
         raise KeyError(name)
@@ -245,12 +247,13 @@ def _claim():
         ).fetchone()
         if not row:
             return None
-        db.execute(
-            "UPDATE jobs SET status = 'running', started_at = ? WHERE id = ?",
+        claimed = db.execute(
+            "UPDATE jobs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'",
             (now(), row[0]),
-        )
+        ).rowcount
         db.commit()
-        return row[0]
+        # Отмена успела между SELECT и UPDATE: отменённую джобу не воскрешаем.
+        return row[0] if claimed else None
 
 
 def _raw_steps(job_id):

@@ -192,17 +192,18 @@ def _segments(db: sqlite3.Connection, since: str) -> list[dict]:
         f"      {REPLIED} AS replied, {_held(db)} AS held"
         + SENT_THREADS, (since,)).fetchall()
     with closing(sqlite_tools.connect_readonly(_companies)) as source:
+        if not sqlite_tools.has_table(source, "branch_segments"):   # ещё не мигрирована
+            return []
         labels = companies.segment_labels(source, {row["company_id"] for row in threads})
     rows: dict[str, dict] = {}
     for thread in threads:
-        if thread["company_id"] not in labels:
+        label = labels.get(thread["company_id"])
+        if label is None:
             continue
-        row = rows.setdefault(labels[thread["company_id"]],
-                              {"key": labels[thread["company_id"]],
-                               "sent": 0, "replied": 0, "meetings": 0})
+        row = rows.setdefault(label, {"key": label, "sent": 0, "replied": 0, "meetings": 0})
         row["sent"] += 1
-        row["replied"] += bool(thread["replied"])
-        row["meetings"] += bool(thread["held"])
+        row["replied"] += int(bool(thread["replied"]))
+        row["meetings"] += int(bool(thread["held"]))
     return sorted(rows.values(), key=lambda row: -row["sent"])
 
 

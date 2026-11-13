@@ -1,4 +1,4 @@
-"""Блок «Сбор лидов» на «Сегодня» считает по новым модулям, а не по derived.db."""
+"""Блок «Сбор лидов» на «Сегодня» считает по companies, research и refusals (#13)."""
 
 from contextlib import closing
 
@@ -28,3 +28,17 @@ def test_a_fresh_install_counts_zeros(tmp_path, monkeypatch):
 
     assert metrics.sourcing_stats(NOW) == {"companies": 0, "reachable": 0, "leads": 0,
                                            "refusals": 0}
+
+
+def test_a_failing_counter_leaves_the_rest_of_the_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "PRODUCTION_STATE", tmp_path / "state.db")
+
+    def broken(_now):
+        raise KeyError("2gis:gone")
+
+    monkeypatch.setattr(metrics, "sourcing_stats", broken)
+
+    snapshot = metrics.snapshot()
+
+    assert snapshot["sourcing"] is None
+    assert set(snapshot["writer"]) == {"threads", "drafts", "sent", "replies"}
