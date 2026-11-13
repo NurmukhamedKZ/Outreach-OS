@@ -61,6 +61,23 @@ def advance(stage: Stage) -> Stage:
     return STAGES[min(STAGES.index(stage) + 1, len(STAGES) - 1)]
 
 
+# --- the cadence -------------------------------------------------------------------
+
+EXHAUSTED_REASON = "касания кончились, лид не отвечал"
+
+
+def next_touch_in(touch_no: int, follow_up_days: Sequence[int]) -> int | None:
+    """Return in how many days the touch after `touch_no` is due; None when the cadence ended."""
+    return follow_up_days[touch_no - 1] if touch_no <= len(follow_up_days) else None
+
+
+def exhausted(
+    touch_no: int, follow_up_days: Sequence[int], max_touches: int, has_replies: bool
+) -> bool:
+    """Return whether the last touch went without a reply: the automaton has nothing to say."""
+    return touch_no > len(follow_up_days) and touch_no >= max_touches and not has_replies
+
+
 # --- offers ---------------------------------------------------------------------
 
 

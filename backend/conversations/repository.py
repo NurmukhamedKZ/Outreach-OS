@@ -1,3 +1,4 @@
+import itertools
 import json
 import sqlite3
 from datetime import datetime
@@ -6,6 +7,8 @@ from typing import Any
 import sqlite_tools
 from conversations.schemas import RunStatus, Stage, ThreadStatus
 from core.model import Message
+
+STAGES: tuple[Stage, ...] = tuple(Stage)
 
 THREAD = (
     "company_id, channel, seed, created_at, stage, outcome, meeting_at, status, status_reason,"
@@ -50,10 +53,36 @@ class ConversationRepository:
         ).fetchone()
         return _thread(row) if row else None
 
-    def threads_where(
-        self, condition: str, arguments: tuple[Any, ...] = ()
+    def due_touches(self, now: datetime) -> list[dict[str, Any]]:
+        rows = self._db.execute(
+            f"SELECT {THREAD} FROM threads WHERE status IN ('queued', 'active')"
+            " AND next_touch_at IS NOT NULL AND next_touch_at <= ? ORDER BY next_touch_at",
+            (stamp(now),),
+        )
+        return [_thread(row) for row in rows]
+
+    def cold_threads_of(self, our_number: str) -> list[dict[str, Any]]:
+        rows = self._db.execute(
+            f"SELECT {THREAD} FROM threads WHERE our_number = ? AND company_id NOT IN"
+            " (SELECT company_id FROM messages WHERE sent_text IS NOT NULL)",
+            (our_number,),
+        )
+        return [_thread(row) for row in rows]
+
+    def threads_on_number(
+        self, our_number: str, except_statuses: tuple[str, ...]
     ) -> list[dict[str, Any]]:
-        rows = self._db.execute(f"SELECT {THREAD} FROM threads WHERE {condition}", arguments)
+        marks = ", ".join("?" * len(except_statuses))
+        rows = self._db.execute(
+            f"SELECT {THREAD} FROM threads WHERE our_number = ? AND status NOT IN ({marks})",
+            (our_number, *except_statuses),
+        )
+        return [_thread(row) for row in rows]
+
+    def stranded(self) -> list[dict[str, Any]]:
+        rows = self._db.execute(
+            f"SELECT {THREAD} FROM threads WHERE status = 'blocked_channel' ORDER BY company_id"
+        )
         return [_thread(row) for row in rows]
 
     def open_thread(
@@ -78,11 +107,23 @@ class ConversationRepository:
     def set_stage(self, company_id: str, stage: Stage) -> None:
         self._db.execute("UPDATE threads SET stage = ? WHERE company_id = ?", (stage, company_id))
 
-    def set_outcome(self, company_id: str, outcome: str, meeting_at: str | None) -> None:
+    def advance_stage(self, company_id: str) -> None:
+        """Move the thread one stage on in one statement: two replies at once move it twice."""
+        steps = " ".join(
+            f"WHEN '{stage}' THEN '{after}'" for stage, after in itertools.pairwise(STAGES)
+        )
         self._db.execute(
+            f"UPDATE threads SET stage = CASE stage {steps} ELSE stage END WHERE company_id = ?",
+            (company_id,),
+        )
+
+    def set_outcome(self, company_id: str, outcome: str, meeting_at: str | None) -> bool:
+        """Set how the thread ended; False when the company has no thread."""
+        cursor = self._db.execute(
             "UPDATE threads SET outcome = ?, meeting_at = ? WHERE company_id = ?",
             (outcome, meeting_at, company_id),
         )
+        return cursor.rowcount == 1
 
     def set_status(self, company_id: str, status: ThreadStatus, reason: str) -> None:
         self._db.execute(
@@ -403,14 +444,12 @@ class ConversationRepository:
         ).fetchone()
         return int(row[0]) if row else None
 
-    def finish(
-        self, run_id: int, status: RunStatus, error: str | None, now: datetime | None
-    ) -> bool:
+    def finish(self, run_id: int, status: RunStatus, error: str | None, now: datetime) -> bool:
         """End a running run; False when it no longer ran."""
         cursor = self._db.execute(
             "UPDATE outreach_runs SET status = ?, error = ?, finished_at = ?"
             " WHERE run_id = ? AND status = 'running'",
-            (status, error, stamp(now) if now else None, run_id),
+            (status, error, stamp(now), run_id),
         )
         return cursor.rowcount == 1
 

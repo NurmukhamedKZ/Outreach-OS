@@ -161,3 +161,17 @@ def test_the_defaults_are_the_writer_config_of_before():
 def test_two_variants_may_not_share_an_id():
     with pytest.raises(ValidationError):
         ConversationSettings(variants=[VARIANTS[0], VARIANTS[0]])
+
+
+def test_an_answer_of_exactly_the_limit_goes_out_and_one_more_goes_to_a_human():
+    assert not domain.needs_human("а" * 700, max_chars=700)
+    assert domain.needs_human("а" * 701, max_chars=700)
+
+
+def test_the_cadence_schedules_by_its_steps_and_exhausts_only_after_the_last():
+    days = [3, 7]
+
+    assert [domain.next_touch_in(n, days) for n in (1, 2, 3)] == [3, 7, None]
+    assert not domain.exhausted(2, days, max_touches=3, has_replies=False)
+    assert domain.exhausted(3, days, max_touches=3, has_replies=False)
+    assert not domain.exhausted(3, days, max_touches=3, has_replies=True)

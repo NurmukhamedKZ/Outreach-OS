@@ -47,12 +47,20 @@ def get_service(db: Db, leads: Leads) -> ConversationService:
 def run_in_background(
     path: Path, leads_path: Path, model: Model, run_id: int, now: Callable[[], datetime]
 ) -> None:
-    """Run a started «Черновики топ-N» on connections of its own: the request's are closed."""
-    with (
-        closing(core_db.connect(path)) as db,
-        closing(sqlite_tools.connect_readonly(leads_path)) as leads,
-    ):
-        ConversationService(db, leads).run_outreach(run_id, model, now)
+    """Run a started «Черновики топ-N» on connections of its own: the request's are closed.
+
+    Whatever breaks on the way — even opening a connection — the run does not stay
+    running: a fresh connection fails it, or the next start would get 409 until a restart.
+    """
+    try:
+        with (
+            closing(core_db.connect(path)) as db,
+            closing(sqlite_tools.connect_readonly(leads_path)) as leads,
+        ):
+            ConversationService(db, leads).run_outreach(run_id, model, now)
+    finally:
+        with closing(core_db.connect(path)) as db:
+            ConversationService(db, db).fail_if_running(run_id, now())
 
 
 ModelDep = Annotated[Model, Depends(build_model)]

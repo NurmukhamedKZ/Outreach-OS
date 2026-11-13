@@ -30,16 +30,15 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["core/tests", "refusals/tests", "companies/tests", "research/tests",
-             "backup/tests", "collector/tests",
-             "writer/tests", "sender/tests", "sandbox/tests"]
+             "conversations/tests", "backup/tests", "collector/tests",
+             "sender/tests", "sandbox/tests"]
 asyncio_mode = "auto"
-# Тесты в collector/tests и writer/tests совпадают по базовым именам
-# (test_schema, test_leads, test_operations) и не являются пакетами — без
-# importlib-режима pytest считает их одним модулем и падает на сборке.
+# Тесты разных модулей совпадают по базовым именам (test_api, test_migration,
+# test_routes) — без importlib-режима pytest считает их одним модулем.
 addopts = "--import-mode=importlib"
 
 # Охват линтеров — новый код (#5): core и модули предметной области с миграциями.
-# collector, writer, sender, sandbox и модули верхнего уровня backend/*.py
+# collector, sender, sandbox и модули верхнего уровня backend/*.py
 # не проверяются: их переписывают #13 и #7, и правка их находок — работа,
 # которую выбросят. #7 включает свои новые модули в охват сам.
 

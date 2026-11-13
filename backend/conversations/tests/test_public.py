@@ -393,3 +393,20 @@ def test_an_unknown_status_is_refused(db):
 def test_a_message_with_nothing_to_send_is_an_error(db):
     with pytest.raises(conversation.MessageNotFoundError):
         conversation.outgoing_text(db, 404)
+
+
+def test_a_touch_due_exactly_now_is_due(db):
+    open_thread(db, status="active")
+    with db:
+        db.execute("UPDATE threads SET next_touch_at = ?", (NOW.isoformat(timespec="seconds"),))
+
+    assert [t["company_id"] for t in conversation.due_touches(db, NOW)] == ["c1"]
+
+
+def test_two_replies_move_the_stage_two_steps(db):
+    open_thread(db)
+    with db:
+        conversation.note_incoming(db, "c1")
+        conversation.note_incoming(db, "c1")
+
+    assert get(db, "c1")["stage"] == "offer"

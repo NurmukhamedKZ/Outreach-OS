@@ -329,3 +329,32 @@ async def test_three_broken_ticks_still_stop_the_traffic_jam(db, monkeypatch):
 
     assert db.execute("SELECT status FROM outbox WHERE outbox_id = ?",
                       (outbox_id,)).fetchone()[0] == "failed"
+
+
+async def test_a_refusal_on_another_contact_of_the_company_cancels_the_row(db):
+    """Тред — компания (#36): отказ по любому её контакту закрывает её целиком,
+    а не только номер, на котором открыт тред (F21)."""
+    from conversations.tests.leads import add_lead
+
+    add_lead(db, "c1", [("whatsapp", "+77010000001"), ("email", "info@romashka.kz")])
+    outbox_id, _ = ready(db)
+    refusals.record(db, "info@romashka.kz", "просил не писать", INSIDE)
+    transport = FakeTransport()
+
+    assert await worker.tick(db, transport, CONFIG, INSIDE) == "cancelled"
+
+    assert transport.sent_calls == []
+    assert db.execute("SELECT status FROM outbox WHERE outbox_id = ?",
+                      (outbox_id,)).fetchone()[0] == "cancelled"
+
+
+async def test_a_row_whose_thread_is_gone_is_cancelled_not_a_broken_tick(db):
+    numbers.register(db, "+77001112233", "sessions/+77001112233", INSIDE - timedelta(days=20))
+    numbers.set_status(db, "+77001112233", "active")
+    with db:
+        outbox_id = outbox.put(db, 1, "+77010000001", "+77001112233", INSIDE)
+
+    assert await worker.tick(db, FakeTransport(), CONFIG, INSIDE) == "cancelled"
+
+    assert db.execute("SELECT status FROM outbox WHERE outbox_id = ?",
+                      (outbox_id,)).fetchone()[0] == "cancelled"

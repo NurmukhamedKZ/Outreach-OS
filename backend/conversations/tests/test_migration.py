@@ -25,7 +25,7 @@ CREATE TABLE messages (
   queued_text TEXT, handle_attempts INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE outbox (
   outbox_id INTEGER PRIMARY KEY, message_id INTEGER REFERENCES messages (message_id),
-  thread_id TEXT, our_number TEXT NOT NULL);
+  thread_id TEXT, our_number TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'sent', error TEXT);
 """
 
 
@@ -93,8 +93,10 @@ def test_the_threads_of_the_old_owners_move_under_their_company(old):
             " 'IN1', ?)",
             (NOW, NOW),
         )
-        db.execute("INSERT INTO outbox VALUES (1, 7, '+77010000001', '+77001112233')")
-        db.execute("INSERT INTO outbox VALUES (2, NULL, NULL, '+77001112233')")
+        db.execute(
+            "INSERT INTO outbox (outbox_id, message_id, thread_id, our_number)"
+            " VALUES (1, 7, '+77010000001', '+77001112233'), (2, NULL, NULL, '+77001112233')"
+        )
         db.commit()
 
     core_db.migrate(old)
@@ -144,12 +146,26 @@ def test_a_company_with_two_old_threads_keeps_the_first_and_every_message(old):
         )
         db.commit()
 
+        # A draft queued on the second number: after the move it would go to the first one.
+        db.execute(
+            "INSERT INTO outbox (message_id, thread_id, our_number, status) VALUES"
+            " (1, '+77010000001', '+77001112233', 'pending'),"
+            " (2, '+77010000002', '+77001112233', 'pending'),"
+            " (2, '+77010000002', '+77001112233', 'sent')"
+        )
+        db.commit()
+
     core_db.migrate(old)
 
     assert rows(old, "SELECT company_id, channel FROM threads") == [("c1", "+77010000001")]
     assert rows(old, "SELECT company_id, draft_text FROM messages ORDER BY message_id") == [
         ("c1", "первое"),
         ("c1", "второе"),
+    ]
+    assert rows(old, "SELECT thread_id, status FROM outbox ORDER BY outbox_id") == [
+        ("c1", "pending"),
+        ("c1", "cancelled"),
+        ("c1", "sent"),
     ]
 
 
@@ -253,3 +269,31 @@ def test_only_one_outreach_run_goes_at_a_time(tmp_path):
         db.execute(insert, ("running", NOW))
         with pytest.raises(sqlite3.IntegrityError):
             db.execute(insert, ("running", NOW))
+
+
+def test_a_queued_row_without_a_thread_is_cancelled_and_the_rest_survives_a_round_trip(old):
+    with closing(sqlite3.connect(old)) as db:
+        db.execute(
+            "INSERT INTO threads (thread_id, company_id, seed, created_at, status)"
+            " VALUES ('+77010000001', 'c1', '{}', ?, 'active')",
+            (NOW,),
+        )
+        db.execute(
+            "INSERT INTO messages (message_id, thread_id, role, sent_text, created_at,"
+            " provider_id, handled_at) VALUES (8, '+77010000001', 'incoming', 'да', ?, 'IN1', ?)",
+            (NOW, NOW),
+        )
+        db.execute(
+            "INSERT INTO outbox (message_id, thread_id, our_number, status)"
+            " VALUES (9, '+77019999999', '+77001112233', 'pending')"
+        )
+        db.commit()
+
+    core_db.migrate(old)
+    assert rows(old, "SELECT thread_id, status FROM outbox") == [("+77019999999", "cancelled")]
+    migrated = rows(old, "SELECT * FROM messages"), rows(old, "SELECT * FROM threads")
+
+    core_db.downgrade(old, "0004")
+    core_db.migrate(old)
+
+    assert (rows(old, "SELECT * FROM messages"), rows(old, "SELECT * FROM threads")) == migrated

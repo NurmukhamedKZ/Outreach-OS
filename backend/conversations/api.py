@@ -120,8 +120,10 @@ def thread(company_id: str, service: ConversationServiceDep) -> ThreadView:
     | {
         409: {
             "description": "errors.companyRefused, errors.noChannel, errors.notALead,"
-            " errors.channelTaken: no move; errors.agentClosed: the seller handed it on"
-        }
+            " errors.channelTaken, errors.noThread: no move;"
+            " errors.agentClosed: the seller handed it on"
+        },
+        502: {"description": "errors.modelFailed: the model gave no valid answer"},
     },
 )
 def draft(

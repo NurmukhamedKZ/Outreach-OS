@@ -24,7 +24,8 @@ export default function OutreachPanel({ onProgress }: { onProgress: () => void }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const progress = useRef(onProgress);
-  const seen = useRef<string | null>(null);
+  // undefined — состояния ещё не видели; null — прогонов ещё не было.
+  const seen = useRef<string | null | undefined>(undefined);
   // Ответ опроса, ушедшего до запуска или остановки, затёр бы новое состояние.
   const latest = useRef(0);
   useEffect(() => {
@@ -35,31 +36,44 @@ export default function OutreachPanel({ onProgress }: { onProgress: () => void }
     setRun(next);
     setFailure(null);
     const mark = next && `${next.run_id}:${next.drafted}:${next.skipped}:${next.status}`;
-    if (seen.current !== null && mark !== seen.current) progress.current();
+    if (seen.current !== undefined && mark !== seen.current) progress.current();
     seen.current = mark;
   };
 
   const running = run?.status === "running";
+  // Ответ опроса, ушедшего до нажатия, затёр бы ответ кнопки: пока кнопка ждёт,
+  // опрос молчит, а его опоздавший ответ отбрасывается.
+  const acting = useRef(false);
+  const load = useRef(() => {});
   useEffect(() => {
-    const load = () => {
+    load.current = () => {
+      if (acting.current) return;
       const request = ++latest.current;
       fetchOutreach()
-        .then((next) => request === latest.current && adopt(next))
+        .then((next) => request === latest.current && !acting.current && adopt(next))
         .catch((failure) => setFailure(conversationError(failure)));
     };
-    load();
-    const timer = setInterval(load, running ? RUNNING_MS : IDLE_MS);
+  });
+  useEffect(() => {
+    load.current();
+    const timer = setInterval(() => load.current(), running ? RUNNING_MS : IDLE_MS);
     return () => clearInterval(timer);
   }, [running]);
 
   const act = (call: () => Promise<OutreachRun>) => {
-    const request = ++latest.current;
+    acting.current = true;
+    ++latest.current;
     setBusy(true);
     setError(null);
     call()
-      .then((next) => request === latest.current && adopt(next))
+      .then(adopt)
+      // 409 значит, что состояние уже другое (прогон идёт или закончился): перечитать.
       .catch((failure) => setError(conversationError(failure)))
-      .finally(() => setBusy(false));
+      .finally(() => {
+        acting.current = false;
+        setBusy(false);
+        load.current();
+      });
   };
 
   if (run === undefined) {

@@ -180,6 +180,16 @@ def upgrade() -> None:
                 f" {_pick('messages', OLD_MESSAGE_COLUMNS)} FROM messages m"
             )
         if _has_table("outbox"):
+            if {"status", "error"} <= _columns("outbox"):
+                # A row waiting to go on a number whose thread did not stay (the
+                # company's second thread, or none at all) would go to the kept
+                # thread's number, or break the tick: it is cancelled instead.
+                op.execute(
+                    "UPDATE outbox SET status = 'cancelled',"
+                    " error = 'миграция 0005: тред на этом номере слит с первым тредом компании'"
+                    " WHERE status = 'pending' AND thread_id IS NOT NULL"
+                    " AND thread_id NOT IN (SELECT channel FROM threads_v5)"
+                )
             op.execute(
                 "UPDATE outbox SET thread_id = (SELECT company_id FROM threads"
                 "  WHERE threads.thread_id = outbox.thread_id)"

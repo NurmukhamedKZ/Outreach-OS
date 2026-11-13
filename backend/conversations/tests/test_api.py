@@ -1,4 +1,6 @@
 import json
+import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -6,7 +8,7 @@ from config import settings
 from conversations import dependencies
 from conversations.repository import ConversationRepository
 from conversations.tests.leads import HOOK, NOW, add_lead, days_ago
-from core.model import ModelError
+from core.model import FakeModel, ModelError
 from refusals import public as refusals
 
 DRAFT = {"text": "Здравствуйте, увидели жалобы на недозвон", "angle": "reviews_missed_lead"}
@@ -465,19 +467,232 @@ def test_one_run_at_a_time_and_stop_only_a_running_one(db, client):
     assert (response.status_code, response.json()["code"]) == (409, "errors.outreachNotRunning")
 
 
-def test_a_stop_is_checked_before_each_next_lead(db, client, model, three_leads, monkeypatch):
-    from conversations.repository import ConversationRepository as Repo
+class Meanwhile(FakeModel):
+    """The model, and something that happens in the database while it thinks."""
 
-    asked = Repo.stop_requested
-    monkeypatch.setattr(
-        Repo, "stop_requested", lambda self, run_id: asked(self, run_id) or bool(model.calls)
+    def __init__(self, state, sql, *answers):
+        super().__init__(*answers)
+        self.state, self.sql = state, sql
+
+    def answer(self, *args, **kwargs):
+        if self.sql:
+            with closing(sqlite3.connect(self.state)) as other:
+                other.execute(self.sql)
+                other.commit()
+            self.sql = None
+        return super().answer(*args, **kwargs)
+
+
+def test_a_stop_is_checked_before_each_next_lead(db, state, client, three_leads):
+    """The operator presses «Остановить» while the model writes to the first lead."""
+    stop = "UPDATE outreach_runs SET stop_requested = 1 WHERE status = 'running'"
+    client.app.dependency_overrides[dependencies.build_model] = lambda: Meanwhile(
+        state, stop, DRAFT, DRAFT
     )
-    model.answers += [DRAFT, DRAFT]
 
     client.post("/api/threads/outreach")
 
     run = client.get("/api/threads/outreach/current").json()
     assert (run["status"], run["drafted"]) == ("stopped", 1)
+
+
+def test_a_channel_taken_while_the_model_writes_is_a_conflict_not_a_crash(db, state, client):
+    add_lead(db, "a", [("whatsapp", "+77010000001")])
+    taken = (
+        "INSERT INTO threads (company_id, channel, seed, created_at)"
+        f" VALUES ('other', '+77010000001', '{{}}', '{NOW.isoformat()}')"
+    )
+    client.app.dependency_overrides[dependencies.build_model] = lambda: Meanwhile(
+        state, taken, DRAFT
+    )
+
+    response = client.post("/api/threads/a/draft", json={"kind": "first"})
+
+    assert (response.status_code, response.json()["code"]) == (409, "errors.channelTaken")
+    assert threads(db) == [("other", "+77010000001")]
+
+
+def test_a_run_skips_a_lead_whose_channel_was_taken_meanwhile(db, state, client):
+    add_lead(db, "a", [("whatsapp", "+77010000001")])
+    taken = (
+        "INSERT INTO threads (company_id, channel, seed, created_at)"
+        f" VALUES ('other', '+77010000001', '{{}}', '{NOW.isoformat()}')"
+    )
+    client.app.dependency_overrides[dependencies.build_model] = lambda: Meanwhile(
+        state, taken, DRAFT
+    )
+
+    client.post("/api/threads/outreach")
+
+    run = client.get("/api/threads/outreach/current").json()
+    assert (run["status"], run["drafted"]) == ("done", 0)
+    assert threads(db) == [("other", "+77010000001")]
+
+
+def test_a_run_that_breaks_ends_failed_and_frees_the_next_start(db, client, three_leads):
+    client.app.dependency_overrides[dependencies.build_model] = lambda: FakeModel(
+        RuntimeError("a bug")
+    )
+
+    client.post("/api/threads/outreach")
+
+    run = client.get("/api/threads/outreach/current").json()
+    assert (run["status"], run["error"]) == (
+        "failed",
+        "Внутренняя ошибка прогона, подробности в логе",
+    )
+    client.app.dependency_overrides[dependencies.build_model] = lambda: FakeModel(DRAFT, DRAFT)
+    assert client.post("/api/threads/outreach").status_code == 202
+
+
+def test_a_run_whose_connection_cannot_open_does_not_stay_running(db, state, tmp_path):
+    from conversations.service import ConversationService
+
+    with db:
+        run_id = ConversationService(db, db).start_outreach(NOW)
+
+    with pytest.raises(sqlite3.OperationalError):
+        dependencies.run_in_background(
+            state, tmp_path / "missing.db", FakeModel(), run_id, lambda: NOW
+        )
+
+    assert db.execute("SELECT status FROM outreach_runs").fetchone()[0] == "failed"
+
+
+def test_a_run_takes_exactly_top_n(db, client, model, three_leads):
+    settings_now = client.get("/api/threads/settings").json()
+    client.put("/api/threads/settings", json={**settings_now, "top_n": 1})
+    model.answers += [DRAFT, DRAFT]
+
+    client.post("/api/threads/outreach")
+
+    assert client.get("/api/threads/outreach/current").json()["taken"] == 1
+    assert threads(db) == [("top", "+77010000001")]
+
+
+def test_a_run_skips_a_company_with_a_thread_on_its_old_number(db, client, model):
+    add_lead(db, "a", [("whatsapp", "+77010000002")], signals=[("reviews_missed_lead", NOW, HOOK)])
+    open_thread(db, "a", "+77010000001")
+    model.answers.append(DRAFT)
+
+    client.post("/api/threads/outreach")
+
+    assert client.get("/api/threads/outreach/current").json()["taken"] == 0
+    assert model.calls == []
+
+
+def test_a_lead_with_a_fresh_signal_and_no_hook_is_taken(db, client, model):
+    add_lead(
+        db,
+        "signal-only",
+        [("whatsapp", "+77010000001")],
+        hooks=[(HOOK, days_ago(90))],
+        signals=[("site_no_pricing", NOW, "цены по запросу"), ("crm_widget", NOW, "Bitrix24")],
+    )
+    model.answers.append(DRAFT)
+
+    client.post("/api/threads/outreach")
+
+    seed = json.loads(db.execute("SELECT seed FROM threads").fetchone()[0])
+    # crm_widget weighs in research's score but is no reason to write.
+    assert ([s["type"] for s in seed["signals"]], seed["dossier"]["hooks"]) == (
+        ["site_no_pricing"],
+        [],
+    )
+
+
+def test_a_move_writes_from_the_seed_frozen_when_the_thread_opened(db, client, model):
+    add_lead(db, "a", [("whatsapp", "+77010000001")])
+    open_thread(db, "a", "+77010000001", {"name": "Ромашка-тогда", "signals": []})
+    model.answers.append(DRAFT)
+
+    client.post("/api/threads/a/draft", json={"kind": "followup"})
+
+    human = model.calls[0].messages[1][1]
+    assert "Ромашка-тогда" in human and "Компания a" not in human
+
+
+def test_a_refusal_on_another_contact_of_the_company_stops_a_move(db, client, model):
+    add_lead(db, "a", [("whatsapp", "+77010000001"), ("email", "info@romashka.kz")])
+    refusals.record(db, "info@romashka.kz", "просил не писать", NOW)
+
+    response = client.post("/api/threads/a/draft", json={"kind": "first"})
+
+    assert (response.status_code, response.json()["code"]) == (409, "errors.companyRefused")
+    assert model.calls == []
+
+
+def test_a_refused_company_without_a_thread_has_nowhere_to_write(db, client):
+    add_lead(db, "a", [("whatsapp", "+77010000001")])
+    refusals.record(db, "+77010000001", "просил не писать", NOW)
+
+    response = client.get("/api/threads/a")
+
+    assert (response.status_code, response.json()["code"]) == (409, "errors.noChannel")
+
+
+def test_a_followup_or_a_reply_before_the_first_draft_is_refused(db, client, model):
+    add_lead(db, "a", [("whatsapp", "+77010000001")])
+
+    for kind in ("followup", "reply"):
+        response = client.post("/api/threads/a/draft", json={"kind": kind})
+        assert (response.status_code, response.json()["code"]) == (409, "errors.noThread")
+    assert model.calls == [] and threads(db) == []
+
+
+def test_a_thread_research_forgot_still_takes_a_move(db, client, model):
+    open_thread(db, "gone", "+77010000009")
+    model.answers.append(DRAFT)
+
+    assert client.post("/api/threads/gone/draft", json={"kind": "followup"}).status_code == 200
+
+
+def test_without_a_key_a_run_is_refused_before_it_starts(db, client, monkeypatch):
+    client.app.dependency_overrides.pop(dependencies.build_model)
+    monkeypatch.setattr(settings, "openrouter_api_key", None)
+
+    response = client.post("/api/threads/outreach")
+
+    assert (response.status_code, response.json()["code"]) == (503, "errors.modelKeyMissing")
+    assert client.get("/api/threads/outreach/current").json() is None
+
+
+def test_a_stop_after_the_run_ended_is_a_conflict_and_changes_nothing(db, client, model):
+    client.post("/api/threads/outreach")
+    finished = client.get("/api/threads/outreach/current").json()
+
+    response = client.post("/api/threads/outreach/current/stop")
+
+    assert (response.status_code, response.json()["code"]) == (409, "errors.outreachNotRunning")
+    assert client.get("/api/threads/outreach/current").json() == finished
+
+
+def test_a_restart_fails_only_the_running_run(db):
+    from conversations import public
+
+    with db:
+        db.execute(
+            "INSERT INTO outreach_runs (status, size, started_at) VALUES ('done', 10, ?)",
+            (NOW.isoformat(),),
+        )
+
+    public.forget_interrupted(db)
+
+    assert db.execute("SELECT status, error FROM outreach_runs").fetchone()[:] == ("done", None)
+
+
+def test_variant_ids_must_differ(client):
+    defaults = client.get("/api/threads/settings").json()
+    twice = [{"id": "same", "text": "раз"}, {"id": "same", "text": "два"}]
+
+    assert client.put(
+        "/api/threads/settings", json={**defaults, "variants": twice}
+    ).status_code == (422)
+
+
+def test_an_empty_base_has_an_empty_inbox_and_no_drafts(client):
+    assert client.get("/api/threads").json() == {"threads": []}
+    assert client.get("/api/threads/drafts").json() == {"drafts": []}
 
 
 def test_there_is_no_run_before_the_first(client):

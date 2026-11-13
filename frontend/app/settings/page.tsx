@@ -421,7 +421,8 @@ function Conversations() {
         const invalid = failure instanceof ApiError && failure.status === 422;
         setError(
           invalid
-            ? "Значение вне допустимых границ: id варианта — латиница, цифры и «_», без повторов."
+            ? "Значение вне допустимых границ — поправьте поле. У вариантов id — латиница," +
+                " цифры и «_», без повторов."
             : messageOf(failure),
         );
       })

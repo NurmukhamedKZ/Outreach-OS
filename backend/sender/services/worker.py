@@ -14,7 +14,6 @@ from datetime import datetime, timedelta
 import activity
 import clock
 from conversations import public as conversation
-from refusals import public as refusals
 from sender import notify
 from sender.db import numbers, outbox
 from sender.services import (config as sender_config, followup, gates, incoming,
@@ -153,10 +152,13 @@ def _decide(db, row: dict, now: datetime, config: dict) -> gates.Decision:
     """Всё, что гейтам нужно знать, собирается здесь: сами гейты — чистые
     функции и в базу не ходят."""
     thread = conversation.thread(db, row["thread_id"])
+    if thread is None:
+        # A row with no thread to send to: retrying it three times would only page a human.
+        return gates.Decision(gates.CANCEL, "треда нет", blame=gates.THREAD)
     number = numbers.get(db, row["our_number"])
     attempt = gates.Attempt(
         thread_status=thread["status"],
-        suppressed=refusals.is_refused(db, [thread["channel"]]),
+        suppressed=conversation.refused(db, row["thread_id"]),
         number_status=number["status"],
         capacity=pool.capacity(db, row["our_number"], now, config),
         last_sent_at=outbox.last_sent_at(db, row["our_number"]),

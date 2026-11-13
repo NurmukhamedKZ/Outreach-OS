@@ -56,6 +56,7 @@ MODEL_DOWN = (
 )
 INTERRUPTED = "Прогон прервал перезапуск бэкенда — запустите заново, он возьмёт оставшихся"
 UNEXPECTED = "Внутренняя ошибка прогона, подробности в логе"
+TAKEN = "Этот номер уже в переписке с другой компанией"
 
 
 @dataclass(frozen=True)
@@ -131,17 +132,13 @@ class ConversationService:
         """Return every thread, the most urgent first, named by research where it knows them."""
         rows = self._repo.inbox()
         cards = self._cards([r["company_id"] for r in rows], now)
-        return Inbox(
-            threads=[
-                InboxRow(
-                    company_name=cards[r["company_id"]].name
-                    if r["company_id"] in cards
-                    else r["company_id"],
-                    **dict(r),
-                )
-                for r in rows
-            ]
-        )
+        threads = []
+        for row in rows:
+            card = cards.get(row["company_id"])
+            threads.append(
+                InboxRow(company_name=card.name if card else row["company_id"], **dict(row))
+            )
+        return Inbox(threads=threads)
 
     def cold_drafts(self, now: datetime) -> ColdDrafts:
         """Return the first touches waiting for review, the strongest lead first.
@@ -150,22 +147,23 @@ class ConversationService:
         """
         rows = self._repo.cold_drafts()
         cards = self._cards([r["company_id"] for r in rows], now)
-        drafts = [
-            ColdDraft(
-                company_id=r["company_id"],
-                company_name=card.name if card else r["company_id"],
-                city=card.city if card else None,
-                score=card.score if card else 0.0,
-                channel=r["channel"],
-                message_id=r["message_id"],
-                draft_text=r["draft_text"],
-                angle=r["angle"],
-                model=r["model"],
-                has_prompt=bool(r["has_prompt"]),
+        drafts = []
+        for row in rows:
+            card = cards.get(row["company_id"])
+            drafts.append(
+                ColdDraft(
+                    company_id=row["company_id"],
+                    company_name=card.name if card else row["company_id"],
+                    city=card.city if card else None,
+                    score=card.score if card else 0.0,
+                    channel=row["channel"],
+                    message_id=row["message_id"],
+                    draft_text=row["draft_text"],
+                    angle=row["angle"],
+                    model=row["model"],
+                    has_prompt=bool(row["has_prompt"]),
+                )
             )
-            for r in rows
-            for card in [cards.get(r["company_id"])]
-        ]
         return ColdDrafts(drafts=sorted(drafts, key=lambda d: d.score, reverse=True))
 
     def view(self, company_id: str, now: datetime) -> ThreadView:
@@ -213,37 +211,44 @@ class ConversationService:
         stays open: asking again would pay for the same answer.
 
         Raises:
-            research.CompanyNotFoundError: research does not know the company.
+            research.CompanyNotFoundError: no thread and research does not know the company.
             CompanyRefusedError: the company is refused (F21), checked before every move.
+            NoThreadYetError: a follow-up or a reply before the thread was opened.
             NoChannelError, NotALeadError, ChannelTakenError: no thread can be opened.
             AgentClosedError: the seller handed the thread on instead of answering.
             ModelFailedError: no valid answer from the model; nothing is written.
         """
-        card = research.company(self._leads, company_id, now)
         thread = self._repo.thread(company_id)
         settings = self.settings()
         if thread is None:
+            if kind != MoveKind.FIRST:
+                raise NoThreadYetError("Переписки ещё не было — сначала первое сообщение")
+            card = research.company(self._leads, company_id, now)
             if card.channel is None:
                 raise NoChannelError("Писать некуда: у компании нет номера WhatsApp")
-            channel, stage, history = card.channel.handle, Stage.CONTACT, []
-        else:
-            channel, stage = thread["channel"], Stage(thread["stage"])
-            history = self._repo.history(company_id)
-        if card.refused or refusals.is_refused(self._leads, [channel]):
-            raise CompanyRefusedError("Компания в отказах — ей больше не пишем")
-        if thread is None:
+            channel = card.channel.handle
+            self._refuse_refused(card.refused, channel)
             if not card.lead:
                 raise NotALeadError(
                     "Компания не лид: нет досье с подтверждённой зацепкой — исследуйте её заново"
                 )
-            self._channel_free(channel)
+            if self._repo.thread_on_channel(channel) is not None:
+                raise ChannelTakenError(TAKEN)
             seed = domain.seed(card, domain.pitch_rules(settings, now.date()))
+            stage, history = Stage.CONTACT, []
         else:
-            seed = thread["seed"]
-        variant, _offer = domain.offer_for(channel, settings)
+            channel, seed = thread["channel"], thread["seed"]
+            stage, history = Stage(thread["stage"]), self._repo.history(company_id)
+            # The thread outlives its research: without a card the channel still counts.
+            try:
+                refused = research.company(self._leads, company_id, now).refused
+            except research.CompanyNotFoundError:
+                refused = False
+            self._refuse_refused(refused, channel)
+        variant, offer = domain.offer_for(channel, settings)
         try:
             turn, text, angle, stop = self._ask(
-                kind, model, company_id, seed, history, stage, channel, settings, now
+                kind, model, company_id, seed, history, stage, offer, settings, now
             )
         except ModelError:
             raise ModelFailedError(
@@ -263,8 +268,10 @@ class ConversationService:
                         model=turn.model,
                         offer_variant=variant,
                     )
-        except sqlite3.IntegrityError:
-            raise ChannelTakenError(_TAKEN) from None
+        except sqlite3.IntegrityError as error:
+            if not _channel_taken(error):
+                raise
+            raise ChannelTakenError(TAKEN) from None
         return self._view(company_id).model_copy(update={"stop": stop})
 
     def add_incoming(self, company_id: str, text: str, now: datetime) -> ThreadView:
@@ -273,12 +280,11 @@ class ConversationService:
         Raises:
             NoThreadYetError: nothing was drafted to this company yet.
         """
-        thread = self._repo.thread(company_id)
-        if thread is None:
+        if self._repo.thread(company_id) is None:
             raise NoThreadYetError("Переписки ещё не было — сначала черновик")
         with self._db:
             self._repo.add_incoming(company_id, text, None, now)
-            self._repo.set_stage(company_id, domain.advance(Stage(thread["stage"])))
+            self._repo.advance_stage(company_id)
         return self._view(company_id)
 
     def set_outcome(self, company_id: str, outcome: Outcome, now: datetime) -> OutcomeView:
@@ -287,12 +293,47 @@ class ConversationService:
         Raises:
             ThreadNotFoundError: the company has no thread.
         """
-        if self._repo.thread(company_id) is None:
-            raise ThreadNotFoundError("Треда нет")
         meeting = outcome in (Outcome.MEETING_AGREED, Outcome.MEETING_HELD)
         with self._db:
-            self._repo.set_outcome(company_id, outcome, stamp(now) if meeting else None)
+            found = self._repo.set_outcome(company_id, outcome, stamp(now) if meeting else None)
+        if not found:
+            raise ThreadNotFoundError("Треда нет")
         return OutcomeView(outcome=outcome)
+
+    # --- turns for the send queue ---------------------------------------------------
+
+    def followup_turn(self, company_id: str, now: datetime) -> Turn:
+        """Prepare the touch to a silent lead: the same task the operator's button gets.
+
+        Raises:
+            ThreadNotFoundError: the company has no thread.
+        """
+        thread = self._thread(company_id)
+        settings = self.settings()
+        _variant, offer = domain.offer_for(thread["channel"], settings)
+        task = self._followup_task(company_id, thread["seed"], now.date())
+        messages = domain.writer_messages(
+            thread["seed"],
+            self._repo.history(company_id),
+            task,
+            offer,
+            Stage(thread["stage"]),
+        )
+        return _turn("conversations.followup", messages, company_id, settings)
+
+    def reply_turn(self, company_id: str) -> Turn:
+        """Prepare the seller's move on the lead's last reply.
+
+        Raises:
+            ThreadNotFoundError: the company has no thread.
+        """
+        thread = self._thread(company_id)
+        settings = self.settings()
+        _variant, offer = domain.offer_for(thread["channel"], settings)
+        messages = domain.seller_messages(
+            thread["seed"], self._repo.history(company_id), offer, Stage(thread["stage"])
+        )
+        return _turn("conversations.reply", messages, company_id, settings)
 
     # --- «Черновики топ-N» -----------------------------------------------------------
 
@@ -318,7 +359,7 @@ class ConversationService:
             settings = self.settings()
             moment = now()
             channels, companies = self._repo.threaded()
-            fresh = self.candidates(
+            fresh = self._candidates(
                 domain.pitch_rules(settings, moment.date()),
                 moment,
                 self._repo.run(run_id)["size"],
@@ -343,6 +384,16 @@ class ConversationService:
             log.exception("outreach run %d broke off", run_id)
             self._end(run_id, RunStatus.FAILED, UNEXPECTED, now())
 
+    def fail_if_running(self, run_id: int, now: datetime) -> None:
+        """Fail the run if it still runs; a no-op after its own end.
+
+        The last word of the background task: a run left running would refuse
+        every next start until a restart.
+        """
+        with self._db:
+            if self._repo.finish(run_id, RunStatus.FAILED, UNEXPECTED, now):
+                log.error("outreach run %d ended without closing itself", run_id)
+
     def stop_outreach(self) -> OutreachRun:
         """Ask the running run to stop; the lead in progress is finished.
 
@@ -356,6 +407,7 @@ class ConversationService:
         return self.outreach(run_id)
 
     def outreach(self, run_id: int) -> OutreachRun:
+        """Return the run with its counts; the id comes from start_outreach or stop_outreach."""
         return OutreachRun.model_validate(dict(self._repo.run(run_id)))
 
     def current_outreach(self) -> OutreachRun | None:
@@ -368,7 +420,9 @@ class ConversationService:
         with self._db:
             self._repo.interrupt_running(INTERRUPTED)
 
-    def candidates(
+    # --- inner --------------------------------------------------------------------------
+
+    def _candidates(
         self,
         rules: domain.PitchRules,
         now: datetime,
@@ -398,8 +452,6 @@ class ConversationService:
             found.append(Candidate(lead.company_id, lead.channel.handle, lead_seed))
         return found
 
-    # --- inner --------------------------------------------------------------------------
-
     def _ask(
         self,
         kind: MoveKind,
@@ -408,13 +460,14 @@ class ConversationService:
         seed: dict[str, Any],
         history: list[dict[str, Any]],
         stage: Stage,
-        channel: str,
+        offer: str,
         settings: ConversationSettings,
         now: datetime,
     ) -> tuple[Turn, str, str, bool]:
         """Ask the model for the move: the request, the text, its angle, and whether to stop."""
         if kind == MoveKind.REPLY:
-            turn = _reply_turn(company_id, seed, history, stage, settings, channel)
+            messages = domain.seller_messages(seed, history, offer, stage)
+            turn = _turn("conversations.reply", messages, company_id, settings)
             answer = sell(model, turn)
             if answer.decision != Decision.ANSWER:
                 raise AgentClosedError(f"Агент передал тред дальше: {answer.reason}")
@@ -422,16 +475,10 @@ class ConversationService:
         task = (
             domain.FIRST_TASK
             if kind == MoveKind.FIRST
-            else _followup_task(self._repo, company_id, seed, now.date())
+            else self._followup_task(company_id, seed, now.date())
         )
-        _variant, offer = domain.offer_for(channel, settings)
-        turn = Turn(
-            messages=domain.writer_messages(seed, history, task, offer, stage),
-            model=settings.model,
-            session_id=company_id,
-            name=f"conversations.{kind}",
-            pitchable=frozenset(settings.pitchable),
-        )
+        messages = domain.writer_messages(seed, history, task, offer, stage)
+        turn = _turn(f"conversations.{kind}", messages, company_id, settings)
         draft = write(model, turn)
         return turn, draft.text, draft.angle, draft.stop
 
@@ -444,13 +491,8 @@ class ConversationService:
         now: datetime,
     ) -> None:
         variant, offer = domain.offer_for(lead.channel, settings)
-        turn = Turn(
-            messages=domain.writer_messages(lead.seed, [], domain.FIRST_TASK, offer, Stage.CONTACT),
-            model=settings.model,
-            session_id=lead.company_id,
-            name="conversations.first",
-            pitchable=frozenset(settings.pitchable),
-        )
+        messages = domain.writer_messages(lead.seed, [], domain.FIRST_TASK, offer, Stage.CONTACT)
+        turn = _turn("conversations.first", messages, lead.company_id, settings)
         draft = write(model, turn)
         try:
             with self._db:
@@ -468,7 +510,9 @@ class ConversationService:
                     offer_variant=variant,
                 )
                 self._repo.count_drafted(run_id)
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as error:
+            if not _channel_taken(error):
+                raise
             # The operator opened another company's thread on this number meanwhile.
             log.info("outreach run %d: channel of %s taken meanwhile", run_id, lead.company_id)
 
@@ -477,10 +521,18 @@ class ConversationService:
             if not self._repo.finish(run_id, status, error, now):
                 log.warning("outreach run %d was no longer running at its end", run_id)
 
-    def _view(self, company_id: str) -> ThreadView:
+    def _refuse_refused(self, refused: bool, channel: str) -> None:
+        if refused or refusals.is_refused(self._leads, [channel]):
+            raise CompanyRefusedError("Компания в отказах — ей больше не пишем")
+
+    def _thread(self, company_id: str) -> dict[str, Any]:
         thread = self._repo.thread(company_id)
         if thread is None:
             raise ThreadNotFoundError("Треда нет")
+        return thread
+
+    def _view(self, company_id: str) -> ThreadView:
+        thread = self._thread(company_id)
         pending = self._repo.pending_draft(company_id)
         return ThreadView(
             company_id=company_id,
@@ -492,9 +544,12 @@ class ConversationService:
             draft=PendingDraft(**dict(pending)) if pending else None,
         )
 
-    def _channel_free(self, channel: str) -> None:
-        if self._repo.thread_on_channel(channel) is not None:
-            raise ChannelTakenError(_TAKEN)
+    def _followup_task(self, company_id: str, seed: dict[str, Any], today: date) -> str:
+        """Return the follow-up task: how long the lead is silent and which angle is left."""
+        last = self._repo.last_sent_at(company_id)
+        days = (today - date.fromisoformat(last[:10])).days if last else 0
+        used = self._repo.used_angles(company_id)
+        return domain.followup_task(days, domain.unused_angles(seed, used))
 
     def _cards(self, company_ids: list[str], now: datetime) -> dict[str, research.CompanyResearch]:
         # ponytail: one research.company per thread (a few queries each) — fine
@@ -508,79 +563,20 @@ class ConversationService:
         return found
 
 
-_TAKEN = "Этот номер уже в переписке с другой компанией"
-
-
-def followup_turn(db: sqlite3.Connection, company_id: str, now: datetime) -> Turn:
-    """Prepare the touch to a silent lead: the same task the operator's button gets.
-
-    Raises:
-        ThreadNotFoundError: the company has no thread.
-    """
-    repo = ConversationRepository(db)
-    thread = repo.thread(company_id)
-    if thread is None:
-        raise ThreadNotFoundError("Треда нет")
-    settings = operator_settings.load(db, MODULE, ConversationSettings)
-    task = _followup_task(repo, company_id, thread["seed"], now.date())
-    _variant, offer = domain.offer_for(thread["channel"], settings)
-    return Turn(
-        messages=domain.writer_messages(
-            thread["seed"], repo.history(company_id), task, offer, Stage(thread["stage"])
-        ),
-        model=settings.model,
-        session_id=company_id,
-        name="conversations.followup",
-        pitchable=frozenset(settings.pitchable),
-    )
-
-
-def reply_turn(db: sqlite3.Connection, company_id: str) -> Turn:
-    """Prepare the seller's move on the lead's last reply.
-
-    Raises:
-        ThreadNotFoundError: the company has no thread.
-    """
-    repo = ConversationRepository(db)
-    thread = repo.thread(company_id)
-    if thread is None:
-        raise ThreadNotFoundError("Треда нет")
-    settings = operator_settings.load(db, MODULE, ConversationSettings)
-    return _reply_turn(
-        company_id,
-        thread["seed"],
-        repo.history(company_id),
-        Stage(thread["stage"]),
-        settings,
-        thread["channel"],
-    )
-
-
-def _followup_task(
-    repo: ConversationRepository, company_id: str, seed: dict[str, Any], today: date
-) -> str:
-    """Return the follow-up task: how long the lead is silent and which angle is left."""
-    last = repo.last_sent_at(company_id)
-    days = (today - date.fromisoformat(last[:10])).days if last else 0
-    return domain.followup_task(days, domain.unused_angles(seed, repo.used_angles(company_id)))
-
-
-def _reply_turn(
-    company_id: str,
-    seed: dict[str, Any],
-    history: list[dict[str, Any]],
-    stage: Stage,
-    settings: ConversationSettings,
-    channel: str,
+def _turn(
+    name: str, messages: list[Message], company_id: str, settings: ConversationSettings
 ) -> Turn:
-    _variant, offer = domain.offer_for(channel, settings)
     return Turn(
-        messages=domain.seller_messages(seed, history, offer, stage),
+        messages=messages,
         model=settings.model,
         session_id=company_id,
-        name="conversations.reply",
+        name=name,
         pitchable=frozenset(settings.pitchable),
     )
+
+
+def _channel_taken(error: sqlite3.IntegrityError) -> bool:
+    return "threads.channel" in str(error)
 
 
 @contextmanager

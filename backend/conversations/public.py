@@ -12,6 +12,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Any, TypedDict
 
+from companies import public as companies
 from conversations import domain
 from conversations.dependencies import build_model
 from conversations.exceptions import DuplicateIncomingError as DuplicateIncomingError
@@ -21,17 +22,20 @@ from conversations.repository import ConversationRepository
 from conversations.schemas import Decision as Decision
 from conversations.schemas import Draft as Draft
 from conversations.schemas import SellerAnswer as SellerAnswer
-from conversations.schemas import Stage, ThreadStatus
-from conversations.service import ConversationService
-from conversations.service import Turn as Turn
-from conversations.service import followup_turn as followup_turn
-from conversations.service import reply_turn as reply_turn
+from conversations.schemas import ThreadStatus
+from conversations.service import ConversationService, Turn
 from conversations.service import sell as sell
 from conversations.service import write as write
-from core.model import Message, Model
+from core.model import Message
+from refusals import public as refusals
+
+# The model conversations writes with, for the send queue outside a request;
+# raises ModelKeyMissingError without a key.
+model = build_model
 
 # States the automaton does not write from; only a human leaves escalated.
 AUTOMATON_STOPS: tuple[str, ...] = tuple(domain.AUTOMATON_STOPS)
+# Every status a thread may have: the dashboard keeps a label for each.
 STATUSES: tuple[str, ...] = tuple(ThreadStatus)
 # The angle of an answer in a dialogue, as opposed to a signal type.
 ANSWER_ANGLE = domain.ANSWER_ANGLE
@@ -66,15 +70,6 @@ def _states(rows: list[dict[str, Any]]) -> list[ThreadState]:
 # --- assembly -------------------------------------------------------------------
 
 
-def model() -> Model:
-    """Return the model conversations writes with, for callers outside a request.
-
-    Raises:
-        ModelKeyMissingError: OPENROUTER_API_KEY is empty.
-    """
-    return build_model()
-
-
 def forget_interrupted(db: sqlite3.Connection) -> None:
     """Fail the «Черновики топ-N» run a stopped process left going; call once at startup."""
     ConversationService(db, db).forget_interrupted()
@@ -93,9 +88,18 @@ def thread_on_channel(db: sqlite3.Connection, channel: str) -> ThreadState | Non
     return _state(ConversationRepository(db).thread_on_channel(channel))
 
 
-def history(db: sqlite3.Connection, company_id: str) -> list[dict[str, Any]]:
-    """Return what went out and what came in, oldest first; drafts are not history."""
-    return ConversationRepository(db).history(company_id)
+def refused(db: sqlite3.Connection, company_id: str) -> bool:
+    """Return whether the thread's company is refused (F21): on any of its contacts or the channel.
+
+    The thread is the company, so a refusal by mail closes its WhatsApp too;
+    the channel counts even when the company has moved off it. A company
+    `db` does not know (a sandbox run) is judged by the channel alone.
+    """
+    found = thread(db, company_id)
+    company = companies.by_id(db, [company_id]).get(company_id)
+    handles = [found["channel"]] if found else []
+    handles += [contact.handle for contact in company.contacts] if company else []
+    return refusals.is_refused(db, handles)
 
 
 def pending_message(db: sqlite3.Connection, company_id: str) -> int | None:
@@ -121,13 +125,7 @@ def due_touches(db: sqlite3.Connection, now: datetime) -> list[ThreadState]:
     queued as well as active: only a delivery receipt makes a thread active,
     and a silent transport would otherwise stop the whole cadence unseen.
     """
-    return _states(
-        ConversationRepository(db).threads_where(
-            "status IN ('queued', 'active') AND next_touch_at IS NOT NULL"
-            " AND next_touch_at <= ? ORDER BY next_touch_at",
-            (now.isoformat(timespec="seconds"),),
-        )
-    )
+    return _states(ConversationRepository(db).due_touches(now))
 
 
 def lead_spoke_last(db: sqlite3.Connection, company_id: str) -> bool:
@@ -152,30 +150,17 @@ def first_touch_candidates(db: sqlite3.Connection, limit: int) -> list[dict[str,
 
 def cold_threads_of(db: sqlite3.Connection, our_number: str) -> list[ThreadState]:
     """Return the threads on our number where nothing went out yet."""
-    return _states(
-        ConversationRepository(db).threads_where(
-            "our_number = ? AND company_id NOT IN"
-            " (SELECT company_id FROM messages WHERE sent_text IS NOT NULL)",
-            (our_number,),
-        )
-    )
+    return _states(ConversationRepository(db).cold_threads_of(our_number))
 
 
 def threads_on_number(db: sqlite3.Connection, our_number: str) -> list[ThreadState]:
     """Return the threads on our number the automaton still writes to."""
-    stops = ", ".join("?" * len(AUTOMATON_STOPS))
-    return _states(
-        ConversationRepository(db).threads_where(
-            f"our_number = ? AND status NOT IN ({stops})", (our_number, *AUTOMATON_STOPS)
-        )
-    )
+    return _states(ConversationRepository(db).threads_on_number(our_number, AUTOMATON_STOPS))
 
 
 def stranded(db: sqlite3.Connection) -> list[ThreadState]:
     """Return the threads waiting in blocked_channel for a free number."""
-    return _states(
-        ConversationRepository(db).threads_where("status = 'blocked_channel' ORDER BY company_id")
-    )
+    return _states(ConversationRepository(db).stranded())
 
 
 def unhandled_incoming(db: sqlite3.Connection) -> dict[str, Any] | None:
@@ -237,13 +222,12 @@ def bump_touch(
     """
     repo = ConversationRepository(db)
     touch_no = repo.bump_touch_no(company_id)
-    days = cadence["follow_up_days"]
-    if touch_no > len(days):
-        repo.schedule(company_id, None)
-        if touch_no >= cadence["max_touches"] and not repo.has_replies(company_id):
-            repo.set_status(company_id, ThreadStatus.EXHAUSTED, "касания кончились, лид не отвечал")
-        return
-    repo.schedule(company_id, now + timedelta(days=days[touch_no - 1]))
+    days = domain.next_touch_in(touch_no, cadence["follow_up_days"])
+    repo.schedule(company_id, now + timedelta(days=days) if days is not None else None)
+    if domain.exhausted(
+        touch_no, cadence["follow_up_days"], cadence["max_touches"], repo.has_replies(company_id)
+    ):
+        repo.set_status(company_id, ThreadStatus.EXHAUSTED, domain.EXHAUSTED_REASON)
 
 
 def clear_schedule(db: sqlite3.Connection, company_id: str) -> None:
@@ -267,10 +251,27 @@ def add_incoming(
 
 def note_incoming(db: sqlite3.Connection, company_id: str) -> None:
     """Move the thread one stage on: every reply of the lead does, whoever wrote it down."""
-    repo = ConversationRepository(db)
-    found = repo.thread(company_id)
-    if found is not None:
-        repo.set_stage(company_id, domain.advance(Stage(found["stage"])))
+    ConversationRepository(db).advance_stage(company_id)
+
+
+def followup_turn(db: sqlite3.Connection, company_id: str, now: datetime) -> Turn:
+    """Prepare the touch to a silent lead: the same task the operator's button gets.
+
+    Reads the database, so call it in the connection's thread; `write` takes it from there.
+
+    Raises:
+        ThreadNotFoundError: the company has no thread.
+    """
+    return ConversationService(db, db).followup_turn(company_id, now)
+
+
+def reply_turn(db: sqlite3.Connection, company_id: str) -> Turn:
+    """Prepare the seller's move on the lead's last reply; `sell` takes it from there.
+
+    Raises:
+        ThreadNotFoundError: the company has no thread.
+    """
+    return ConversationService(db, db).reply_turn(company_id)
 
 
 def add_draft(
