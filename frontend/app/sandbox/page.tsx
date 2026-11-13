@@ -18,9 +18,9 @@ import {
   activateSandboxRun,
   createSandboxRun,
   fetchActivity,
-  fetchResearchLeads,
   fetchSandboxChat,
   fetchSandboxFaults,
+  fetchSandboxLeads,
   fetchSandboxRuns,
   fetchSender,
   moveSandboxClock,
@@ -39,7 +39,6 @@ import {
   type SenderStatus,
 } from "../api";
 import { useLive } from "@/components/live";
-import Link from "next/link";
 
 const WHEN = new Intl.DateTimeFormat("ru", {
   day: "2-digit",
@@ -211,7 +210,7 @@ export default function SandboxPage() {
 
   // Выдача читается один раз: пока идёт прогон, она не меняется.
   useEffect(() => {
-    fetchResearchLeads()
+    fetchSandboxLeads()
       .then((found) => setLeads(found.slice(0, LEADS_IN_PICKER)))
       .catch(report);
   }, []);
@@ -328,15 +327,6 @@ export default function SandboxPage() {
           <header className="cold-head">
             <b className="row-name">Чат с лидом</b>
             {chat && <span className="ghost mono">{chat.thread_id}</span>}
-            {active && (
-              <Link
-                className="ghost"
-                href={`/leads/${encodeURIComponent(active.company_id)}`}
-                target="_blank"
-              >
-                карточка лида
-              </Link>
-            )}
           </header>
 
           <ol className="thread-log">

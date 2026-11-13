@@ -75,6 +75,17 @@ async def list_runs() -> dict:
             "now": clock.now().isoformat(timespec="seconds")}
 
 
+@router.get("/leads")
+async def list_leads() -> list[dict]:
+    """Leads to make a run for: research of the production database, not the run's empty one."""
+    return await asyncio.to_thread(_leads)
+
+
+def _leads() -> list[dict]:
+    with closing(sqlite_tools.connect_readonly(paths.PRODUCTION_STATE, None)) as db:
+        return [lead.model_dump(mode="json") for lead in research.leads(db, clock.now())]
+
+
 @router.post("/runs", status_code=201)
 async def create_run(body: NewRun) -> dict:
     await asyncio.to_thread(_require_lead, body.company_id)

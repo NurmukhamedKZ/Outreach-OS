@@ -271,3 +271,13 @@ async def test_the_run_drafts_its_lead_from_research_into_its_own_database(monke
     assert seeds == [("+77010000005", "Компания 2gis:7000")]
     with closing(sqlite3.connect(paths.PRODUCTION_STATE)) as db:
         assert db.execute("SELECT count(*) FROM threads").fetchone() == (0,)
+
+
+async def test_the_picker_lists_research_leads_of_the_production_database():
+    """База прогона пуста: research живёт в боевой, и выбор лида читается оттуда."""
+    runs.activate(runs.create("c_romashka", warmed=True, moment=MOMENT).run_id)
+
+    leads = await routes.list_leads()
+
+    assert [(lead["company_id"], lead["channel"]["handle"]) for lead in leads] == [
+        ("c_one", "+77010000002"), ("c_romashka", "+77010000001"), ("c_two", "+77010000003")]

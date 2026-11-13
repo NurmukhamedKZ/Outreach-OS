@@ -748,6 +748,11 @@ export function fetchSandboxRuns() {
   return json<{ runs: SandboxRun[]; now: string }>("/api/sandbox/runs");
 }
 
+/** Лиды research боевой базы: в базе прогона research пуст, а лид прогона — настоящая компания. */
+export function fetchSandboxLeads() {
+  return json<ResearchLead[]>("/api/sandbox/leads");
+}
+
 export function createSandboxRun(companyId: string, warmed: boolean) {
   return post<{ run: SandboxRun }>("/api/sandbox/runs", {
     company_id: companyId,
