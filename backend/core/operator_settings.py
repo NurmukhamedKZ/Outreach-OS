@@ -8,6 +8,7 @@ the next batch or tick without a restart.
 import json
 import logging
 import sqlite3
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
@@ -23,8 +24,7 @@ def load[S: BaseModel](db: sqlite3.Connection, module: str, schema: type[S]) -> 
     model validator) falls back to all defaults, both with a warning: a schema
     change must not lock the operator out of the module.
     """
-    row = db.execute("SELECT data FROM operator_settings WHERE module = ?", (module,)).fetchone()
-    saved = json.loads(row[0]) if row else {}
+    saved = saved_section(db, module)
     try:
         return schema.model_validate(saved)
     except ValidationError as error:
@@ -38,6 +38,17 @@ def load[S: BaseModel](db: sqlite3.Connection, module: str, schema: type[S]) -> 
             return schema.model_validate({k: v for k, v in saved.items() if k not in stale})
         except ValidationError:
             return schema()
+
+
+def saved_section(db: sqlite3.Connection, module: str) -> dict[str, Any]:
+    """Return the module's section as stored, unvalidated; {} before the first save.
+
+    For a rule `load` cannot express: a value the schema refuses must read as
+    something other than its default (delivery's autopilot fails closed).
+    """
+    row = db.execute("SELECT data FROM operator_settings WHERE module = ?", (module,)).fetchone()
+    section: dict[str, Any] = json.loads(row[0]) if row else {}
+    return section
 
 
 def save(db: sqlite3.Connection, module: str, values: BaseModel) -> None:

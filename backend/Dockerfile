@@ -6,7 +6,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Корневые модули (config.py и т.д.) — общая точка входа для всех трёх систем,
-# collector, conversations и sender импортируют их напрямую (`from config import settings`).
+# collector и модули предметной области импортируют их напрямую (`from config import settings`).
 COPY config.py llm_schema.py logctx.py logging_setup.py observability.py \
      activity.py analytics.py clock.py paths.py tasks.py sqlite_tools.py main.py ./
 COPY alembic.ini ./
@@ -18,7 +18,7 @@ COPY backup/ backup/
 COPY migrations/ migrations/
 COPY collector/ collector/
 COPY conversations/ conversations/
-COPY sender/ sender/
+COPY delivery/ delivery/
 # Песочница едет в образ, потому что collector/api.py импортирует её
 # безусловно; ручек без SANDBOX=1 она всё равно не монтирует.
 COPY sandbox/ sandbox/

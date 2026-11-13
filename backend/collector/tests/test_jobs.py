@@ -121,12 +121,12 @@ def test_frontend_contract(stores):
     assert paths.state_db().name == "state.db", \
         "путь к невосстановимому слою разошёлся с paths.PRODUCTION_STATE"
 
-    from sender.routes import sender
+    from delivery import api as delivery_api
 
-    assert sender.router.prefix == "/api/sender"
-    mounted = {route.path for route in sender.router.routes}
+    assert delivery_api.router.prefix == "/api/sender"
+    mounted = {route.path for route in delivery_api.router.routes}
     assert {"/api/sender", "/api/sender/numbers", "/api/sender/queue",
-            "/api/sender/autopilot"} <= mounted, mounted
+            "/api/sender/settings"} <= mounted, mounted
 
 def test_publish_from_worker_thread_reaches_subscriber():
     """Событие из рабочего потока доходит до ждущего подписчика сразу.

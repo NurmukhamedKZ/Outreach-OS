@@ -33,7 +33,7 @@ def sandbox(tmp_path, monkeypatch):
             add_lead(db, company_id, [("whatsapp", f"+7701000000{n}")])
     sent = []
 
-    async def deliver(payload: dict) -> bool:
+    def deliver(payload: dict) -> bool:
         sent.append(payload)
         return True
 
@@ -53,81 +53,81 @@ def _run_with_thread(thread_id="+77010000001"):
     return run
 
 
-async def test_create_run_returns_it_active():
-    body = await routes.create_run(routes.NewRun(company_id="c_romashka", warmed=True))
+def test_create_run_returns_it_active():
+    body = routes.create_run(routes.NewRun(company_id="c_romashka", warmed=True))
     assert body["run"]["company_id"] == "c_romashka"
     assert runs.active().run_id == body["run"]["run_id"]
 
 
-async def test_list_runs_marks_the_active_one():
-    first = await routes.create_run(routes.NewRun(company_id="c_one", warmed=True))
-    await routes.create_run(routes.NewRun(company_id="c_two", warmed=True))
-    await routes.activate_run(first["run"]["run_id"])
-    listed = (await routes.list_runs())["runs"]
+def test_list_runs_marks_the_active_one():
+    first = routes.create_run(routes.NewRun(company_id="c_one", warmed=True))
+    routes.create_run(routes.NewRun(company_id="c_two", warmed=True))
+    routes.activate_run(first["run"]["run_id"])
+    listed = (routes.list_runs())["runs"]
     assert [run["active"] for run in listed].count(True) == 1
     assert next(run for run in listed if run["active"])["company_id"] == "c_one"
 
 
-async def test_clock_preset_moves_the_clock():
-    await routes.create_run(routes.NewRun(company_id="c_romashka", warmed=True))
-    body = await routes.move_clock(routes.ClockMove(preset="day"))
+def test_clock_preset_moves_the_clock():
+    routes.create_run(routes.NewRun(company_id="c_romashka", warmed=True))
+    body = routes.move_clock(routes.ClockMove(preset="day"))
     assert clock.offset() == timedelta(days=1)
     assert body["offset_seconds"] == 86400
 
 
-async def test_clock_accepts_raw_seconds():
-    await routes.create_run(routes.NewRun(company_id="c_romashka", warmed=True))
-    await routes.move_clock(routes.ClockMove(seconds=900))
+def test_clock_accepts_raw_seconds():
+    routes.create_run(routes.NewRun(company_id="c_romashka", warmed=True))
+    routes.move_clock(routes.ClockMove(seconds=900))
     assert clock.offset() == timedelta(minutes=15)
 
 
-async def test_clock_to_the_window_lands_inside_it():
+def test_clock_to_the_window_lands_inside_it():
     """«К открытию окна» обязано попадать внутрь окна отправки, иначе кнопка
     врёт: гейт снова скажет «не время»."""
-    await routes.create_run(routes.NewRun(company_id="c_romashka", warmed=True))
-    await routes.move_clock(routes.ClockMove(preset="window"))
+    routes.create_run(routes.NewRun(company_id="c_romashka", warmed=True))
+    routes.move_clock(routes.ClockMove(preset="window"))
     almaty = clock.now() + timedelta(hours=5)      # Asia/Almaty = UTC+5
     assert 10 <= almaty.hour < 18
     assert almaty.isoweekday() <= 5
 
 
-async def test_faults_round_trip():
-    await routes.set_faults(routes.NewFaults(send="not_sent"))
-    assert (await routes.get_faults())["send"] == "not_sent"
-    assert (await routes.get_faults())["delivery"] == "delivered", "частичное обновление"
+def test_faults_round_trip():
+    routes.set_faults(routes.NewFaults(send="not_sent"))
+    assert (routes.get_faults())["send"] == "not_sent"
+    assert (routes.get_faults())["delivery"] == "delivered", "частичное обновление"
 
 
-async def test_unknown_fault_value_is_a_422():
+def test_unknown_fault_value_is_a_422():
     with pytest.raises(HTTPException) as failure:
-        await routes.set_faults(routes.NewFaults(send="куда-то"))
+        routes.set_faults(routes.NewFaults(send="куда-то"))
     assert failure.value.status_code == 422
 
 
-async def test_incoming_goes_through_the_real_webhook(sandbox):
+def test_incoming_goes_through_the_real_webhook(sandbox):
     _run_with_thread()
-    await routes.incoming(routes.NewIncoming(text="сколько стоит?"))
+    routes.incoming(routes.NewIncoming(text="сколько стоит?"))
     assert sandbox[-1]["kind"] == "incoming"
     assert sandbox[-1]["from"] == "77010000001@s.whatsapp.net"
     assert sandbox[-1]["text"] == "сколько стоит?"
     assert sandbox[-1]["provider_id"]
 
 
-async def test_incoming_without_a_thread_is_a_409():
+def test_incoming_without_a_thread_is_a_409():
     runs.activate(runs.create("c_romashka", warmed=True, moment=MOMENT).run_id)
     with pytest.raises(HTTPException) as failure:
-        await routes.incoming(routes.NewIncoming(text="привет"))
+        routes.incoming(routes.NewIncoming(text="привет"))
     assert failure.value.status_code == 409
 
 
-async def test_everything_needs_an_active_run():
-    for call in (routes.move_clock(routes.ClockMove(preset="day")),
-                 routes.incoming(routes.NewIncoming(text="привет"))):
+def test_everything_needs_an_active_run():
+    for call in (lambda: routes.move_clock(routes.ClockMove(preset="day")),
+                 lambda: routes.incoming(routes.NewIncoming(text="привет"))):
         with pytest.raises(HTTPException) as failure:
-            await call
+            call()
         assert failure.value.status_code == 409
 
 
-async def test_creating_over_an_existing_run_answers_409(monkeypatch):
+def test_creating_over_an_existing_run_answers_409(monkeypatch):
     """Секунда в id разводит прогоны одной компании, но два запроса в одну
     секунду всё равно возможны. Оператор обязан увидеть «уже есть», а не 500
     из-за PRIMARY KEY на номере пула."""
@@ -136,15 +136,15 @@ async def test_creating_over_an_existing_run_answers_409(monkeypatch):
 
     monkeypatch.setattr(runs, "create", occupied)
     with pytest.raises(HTTPException) as failure:
-        await routes.create_run(routes.NewRun(company_id="c_romashka", warmed=True))
+        routes.create_run(routes.NewRun(company_id="c_romashka", warmed=True))
     assert failure.value.status_code == 409
 
 
-async def test_clock_without_a_run_blames_the_run_not_the_preset():
+def test_clock_without_a_run_blames_the_run_not_the_preset():
     """Без прогона «непонятный сдвиг» — не та причина отказа, которую надо
     показать оператору."""
     with pytest.raises(HTTPException) as failure:
-        await routes.move_clock(routes.ClockMove(preset="чепуха"))
+        routes.move_clock(routes.ClockMove(preset="чепуха"))
     assert failure.value.status_code == 409
 
 
@@ -165,20 +165,19 @@ def test_window_preset_lands_inside_the_window_from_outside(monkeypatch):
     assert 10 <= landed.hour < 18
 
 
-def test_window_preset_does_not_hang_on_a_broken_config(monkeypatch):
-    """Пустой weekdays вешал бы не запрос, а весь цикл событий: ручка
-    асинхронная, а цикл поиска был безграничным."""
-    from sender.services import config as sender_config
+def test_window_preset_does_not_hang_on_a_window_that_never_opens(monkeypatch):
+    """Схема не пропускает пустой weekdays, но поиск окна всё равно ограничен."""
+    from delivery.schemas import DeliverySettings, Window
 
-    broken = dict(sender_config.load())
-    broken["window"] = {**broken["window"], "weekdays": []}
-    monkeypatch.setattr(sender_config, "load", lambda: broken)
+    never = DeliverySettings.model_construct(
+        window=Window.model_construct(hours=(10, 18), weekdays=[]))
+    monkeypatch.setattr(routes.delivery, "settings", lambda db: never)
     with pytest.raises(HTTPException) as failure:
         routes._to_window()
     assert failure.value.status_code == 500
 
 
-async def test_clock_refuses_to_move_the_idle_run():
+def test_clock_refuses_to_move_the_idle_run():
     """`_idle` — не сценарий, а место, куда песочница смотрит, пока сценария
     нет. activate_latest() делает active() всегда непустым, и проверка «нет
     активного прогона» стала мёртвой: часы двигались на свежей установке,
@@ -189,13 +188,13 @@ async def test_clock_refuses_to_move_the_idle_run():
     assert runs.active().run_id == runs.IDLE_RUN
 
     with pytest.raises(HTTPException) as failure:
-        await routes.move_clock(routes.ClockMove(preset="hour"))
+        routes.move_clock(routes.ClockMove(preset="hour"))
 
     assert failure.value.status_code == 409
     assert clock.offset() == timedelta(), "часы процесса уехали на холостом прогоне"
 
 
-async def test_chat_of_the_idle_run_blames_the_run(monkeypatch):
+def test_chat_of_the_idle_run_blames_the_run(monkeypatch):
     """Та же мёртвая проверка в thread_of_active_run: на свежей установке
     оператор получал «треда ещё нет» вместо «прогона ещё нет»."""
     runs.activate_latest()
@@ -221,17 +220,17 @@ def test_window_preset_crosses_the_closing_edge(monkeypatch):
     assert 10 <= landed.hour < 18
 
 
-async def test_runs_listing_carries_the_stand_clock():
+def test_runs_listing_carries_the_stand_clock():
     """Время стенда приезжает с бэкендом, а не хранится во фронте.
 
     Фронт держал его в состоянии, писал только кнопками сдвига и не сбрасывал
     ни при перезагрузке, ни при смене прогона: подвинув часы прогона A и
     переключившись на B, оператор видел время A рядом с «сдвиг нет» — два
     противоречащих числа на одной карточке."""
-    run = await routes.create_run(routes.NewRun(company_id="c_romashka", warmed=True))
-    await routes.move_clock(routes.ClockMove(preset="day"))
+    run = routes.create_run(routes.NewRun(company_id="c_romashka", warmed=True))
+    routes.move_clock(routes.ClockMove(preset="day"))
 
-    listing = await routes.list_runs()
+    listing = routes.list_runs()
 
     assert "now" in listing, "во фронте нечем показать время стенда, кроме памяти"
     moved = datetime.fromisoformat(listing["now"])
@@ -239,18 +238,18 @@ async def test_runs_listing_carries_the_stand_clock():
     assert listing["runs"][0]["run_id"] == run["run"]["run_id"]
 
 
-async def test_a_run_is_made_only_for_a_research_lead():
+def test_a_run_is_made_only_for_a_research_lead():
     with closing(core_db.connect(paths.PRODUCTION_STATE)) as db:
         add_lead(db, "c_no_hook", [("whatsapp", "+77010000009")], hooks=[])
 
     for company_id, status in (("c_nobody", 404), ("c_no_hook", 409), ("../../evil", 404)):
         with pytest.raises(HTTPException) as failure:
-            await routes.create_run(routes.NewRun(company_id=company_id, warmed=True))
+            routes.create_run(routes.NewRun(company_id=company_id, warmed=True))
         assert failure.value.status_code == status, company_id
     assert runs.all() == []
 
 
-async def test_the_run_drafts_its_lead_from_research_into_its_own_database(monkeypatch):
+def test_the_run_drafts_its_lead_from_research_into_its_own_database(monkeypatch):
     """Лид прогона — настоящая компания: досье читается из боевой базы, а тред
     ложится в базу прогона. Двоеточие в id компании — как у 2GIS."""
     from fastapi import FastAPI
@@ -266,7 +265,7 @@ async def test_the_run_drafts_its_lead_from_research_into_its_own_database(monke
     app.dependency_overrides[dependencies.build_model] = lambda: FakeModel(
         {"text": "Здравствуйте", "angle": "other"})
 
-    run = (await routes.create_run(routes.NewRun(company_id="2gis:7000", warmed=True)))["run"]
+    run = (routes.create_run(routes.NewRun(company_id="2gis:7000", warmed=True)))["run"]
     response = TestClient(app).post("/api/threads/2gis:7000/draft", json={"kind": "first"})
 
     assert response.status_code == 200
@@ -277,11 +276,11 @@ async def test_the_run_drafts_its_lead_from_research_into_its_own_database(monke
         assert db.execute("SELECT count(*) FROM threads").fetchone() == (0,)
 
 
-async def test_the_picker_lists_research_leads_of_the_production_database():
+def test_the_picker_lists_research_leads_of_the_production_database():
     """База прогона пуста: research живёт в боевой, и выбор лида читается оттуда."""
     runs.activate(runs.create("c_romashka", warmed=True, moment=MOMENT).run_id)
 
-    leads = await routes.list_leads()
+    leads = routes.list_leads()
 
     assert [(lead["company_id"], lead["channel"]["handle"]) for lead in leads] == [
         ("c_one", "+77010000002"), ("c_romashka", "+77010000001"), ("c_two", "+77010000003")]

@@ -387,7 +387,7 @@ export type ActivityWorker = {
   actor: string;
   last_at: string | null;
   events: number;
-  /** Порог молчания приезжает с бэкенда: интервалы тиков живут в sender/config.toml. */
+  /** Порог молчания приезжает с бэкенда: интервалы тиков — константы доставки. */
   silent_after_seconds: number;
 };
 
@@ -627,7 +627,7 @@ export function fetchAnalytics(days = 30) {
   return json<AnalyticsReport>(`/api/analytics?days=${days}`);
 }
 
-// ---- Система 3: пул номеров ----
+// ---- Доставка (delivery): пул номеров и очередь ----
 
 export type SenderNumber = {
   number: string;
@@ -639,7 +639,9 @@ export type SenderNumber = {
   sent_today: number;
   capacity: number;
   note: string | null;
-  skip_warmup: number;
+  skip_warmup: boolean;
+  /** Сокет по живому /health Node: connected, loggedOut, … ; null — Node молчит. */
+  session: string | null;
 };
 
 export type WarmupCalendarRow = {
@@ -651,7 +653,7 @@ export type WarmupCalendarRow = {
 export type WarmupLogRow = {
   outbox_id: number;
   our_number: string;
-  recipient: string;
+  recipient: string | null;
   status: string;
   updated_at: string;
 };
@@ -689,12 +691,15 @@ export type QueueRow = {
   our_number: string;
   send_after: string;
   status: string;
+  /** cold | followup | reply | warmup */
+  kind: string;
+  /** Кто поставил: в «Ручном» строка автомата ждёт «Отправить». */
+  author: "operator" | "automat";
   attempts: number;
   error: string | null;
-  kind: string;
 };
 
-/** Кнопка оператора. Постановка в очередь живёт в системе 3: отправляет она же.
+/** Кнопка оператора. Постановка в очередь живёт в доставке: отправляет она же.
  *  Тред — компания (#36): в `thread_id` уходит её id, а не номер. */
 export function queueMessage(companyId: string, text: string) {
   return post<QueueRow>("/api/sender/queue", { thread_id: companyId, text });
@@ -705,18 +710,55 @@ export function fetchQueue(companyId?: string) {
   return json<{ queue: QueueRow[]; recent: QueueRow[] }>(`/api/sender/queue${query}`);
 }
 
-export function setAutopilot(mode: AutopilotMode) {
-  return post<{ autopilot: string }>("/api/sender/autopilot", { mode });
+/** Строка автомата уходит как строка оператора: так «Ручной» её отпускает. */
+export function confirmRow(outboxId: number) {
+  return post<QueueRow>(`/api/sender/queue/${outboxId}/confirm`, {});
+}
+
+export function cancelRow(outboxId: number) {
+  return post<QueueRow>(`/api/sender/queue/${outboxId}/cancel`, {});
+}
+
+/** Окно — часы [открытие, закрытие) по Алматы и дни недели ISO (1 — понедельник). */
+export type SendWindow = { hours: [number, number]; weekdays: number[] };
+
+/** Раздел «Отправка» модуля delivery; `touches` считает бэкенд. */
+export type DeliverySettings = {
+  autopilot: AutopilotMode;
+  window: SendWindow;
+  reply_window: SendWindow;
+  daily_ceiling: number;
+  follow_up_days: number[];
+  readonly touches?: number;
+  stopwords: string[];
+  auto_replies_per_thread: number;
+  max_reply_chars: number;
+};
+
+export function fetchDeliverySettings() {
+  return json<DeliverySettings>("/api/sender/settings");
+}
+
+export function saveDeliverySettings(settings: DeliverySettings) {
+  return json<DeliverySettings>("/api/sender/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+}
+
+/** Режим — та же настройка «Отправки»: раздел сохраняется целиком. */
+export async function setAutopilot(mode: AutopilotMode) {
+  return saveDeliverySettings({ ...(await fetchDeliverySettings()), autopilot: mode });
 }
 
 export async function registerNumber(number: string, skipWarmup = false): Promise<SenderNumber> {
   return post("/api/sender/numbers", { number, skip_warmup: skipWarmup });
 }
 
-/** Снятие карантина — оператор подтверждает, что причина (см. `note` номера)
- * больше не действует; сам монитор здоровья статус назад не откатывает. */
+/** Снятие карантина: статус ставит бэкенд по календарю прогрева — active или warming. */
 export async function liftQuarantine(number: string): Promise<SenderNumber> {
-  return post(`/api/sender/numbers/${encodeURIComponent(number)}/status`, { status: "warming" });
+  return post(`/api/sender/numbers/${encodeURIComponent(number)}/release`, {});
 }
 
 /** Постфактум для уже существующего номера — та же отметка, что чекбокс
@@ -725,8 +767,13 @@ export async function markWarmed(number: string): Promise<SenderNumber> {
   return post(`/api/sender/numbers/${encodeURIComponent(number)}/warmed`, {});
 }
 
+/** Отвязанную сессию Node сначала откладывает, затем выдаёт QR. */
 export async function qrNumber(number: string): Promise<{ qr: string }> {
   return post(`/api/sender/numbers/${encodeURIComponent(number)}/qr`, {});
+}
+
+export async function pairNumber(number: string): Promise<{ code: string }> {
+  return post(`/api/sender/numbers/${encodeURIComponent(number)}/pair`, {});
 }
 
 function post<T>(url: string, body: unknown) {

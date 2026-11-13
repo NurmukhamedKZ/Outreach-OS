@@ -168,6 +168,12 @@ def unhandled_incoming(db: sqlite3.Connection) -> dict[str, Any] | None:
     return ConversationRepository(db).unhandled_incoming()
 
 
+def replied(db: sqlite3.Connection, company_ids: set[str]) -> int:
+    """Return how many of these threads ever got an answer from the lead: a number's reply rate."""
+    repo = ConversationRepository(db)
+    return sum(repo.has_replies(company_id) for company_id in company_ids)
+
+
 def counters(db: sqlite3.Connection) -> dict[str, int]:
     """Return what waits for a human: threads with an unhandled reply, escalated threads."""
     return ConversationRepository(db).counters()

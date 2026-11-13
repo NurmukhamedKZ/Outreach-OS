@@ -50,6 +50,8 @@ def configure():
         for logger_name in ("", "uvicorn", "uvicorn.access"):
             logging.getLogger(logger_name).addHandler(app_handler)
     root.setLevel(logging.INFO)
+    # httpx logs every request URL at INFO, and Telegram's carries the bot token.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
     scrapling_logger = logging.getLogger("scrapling")
     if not _has_file_handler(scrapling_logger, _NETWORK_FILE):

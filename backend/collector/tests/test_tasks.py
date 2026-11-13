@@ -1,7 +1,5 @@
 """Что требуется от человека — по образцу test_analytics.py: свой каталог у
-backend/*.py тестов нет, а фикстура базы собрана так же, как в
-sender/tests/conftest.py — таблицы переписки создаёт Alembic (conversations),
-sender доливает свои (migrate).
+backend/*.py тестов нет, а базу целиком создаёт Alembic: переписку и очередь.
 """
 
 from datetime import datetime, timezone
@@ -12,7 +10,6 @@ import tasks
 from conversations import public as conversation
 from conversations.repository import ConversationRepository
 from core import db as core_db
-from sender.db import migrate
 
 MOMENT = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
 NOW = MOMENT.isoformat(timespec="seconds")
@@ -21,8 +18,8 @@ NOW = MOMENT.isoformat(timespec="seconds")
 @pytest.fixture
 def db(tmp_path):
     path = tmp_path / "state.db"
-    core_db.migrate(path)                # threads и messages
-    connection = migrate.connect(path)   # numbers, outbox
+    core_db.migrate(path)                # threads, messages, outbox, numbers
+    connection = core_db.connect(path)
     tasks.use(path)                      # без базы компаний: имя компании = company_id
     yield connection
     connection.close()
@@ -41,9 +38,9 @@ def _draft(db, company_id, text, angle):
 
 def _stuck_row(db, thread_id, our_number="+77010000000"):
     db.execute(
-        "INSERT INTO outbox (thread_id, our_number, send_after, status,"
+        "INSERT INTO outbox (thread_id, our_number, send_after, status, kind, author,"
         "                    created_at, updated_at)"
-        " VALUES (?, ?, ?, 'stuck', ?, ?)",
+        " VALUES (?, ?, ?, 'stuck', 'cold', 'operator', ?, ?)",
         (thread_id, our_number, NOW, NOW, NOW),
     )
     db.commit()
@@ -105,9 +102,8 @@ def test_no_state_database_means_no_tasks_and_no_exception(tmp_path):
     tasks.use(None)
 
 
-def test_a_database_where_sender_never_started_still_lists_threads(tmp_path):
-    """outbox создаёт sender, и порядок старта не гарантирован: без неё нет
-    только застрявших отправок, а не страницы."""
+def test_a_database_without_queue_rows_still_lists_threads(tmp_path):
+    """Пустая очередь — это нет застрявших отправок, а не страницы."""
     path = tmp_path / "state.db"
     core_db.migrate(path)
     with core_db.connect(path) as owner:

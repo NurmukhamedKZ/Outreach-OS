@@ -122,18 +122,14 @@ def test_a_thread_with_replies_is_never_exhausted(db):
 
 
 def test_first_touch_candidates_are_threads_with_a_draft_and_no_queue_row(db):
-    db.execute(
-        "CREATE TABLE outbox (outbox_id INTEGER PRIMARY KEY, message_id INTEGER, thread_id TEXT,"
-        " our_number TEXT, send_after TEXT, status TEXT, created_at TEXT, updated_at TEXT)"
-    )
     open_thread(db, "c1")
     ready = add_draft(db, "c1")
     open_thread(db, "c2")
     already = add_draft(db, "c2")
     db.execute(
         "INSERT INTO outbox (message_id, thread_id, our_number, send_after,"
-        " status, created_at, updated_at) VALUES (?, 'c2', '+7700',"
-        " ?, 'pending', ?, ?)",
+        " status, kind, author, created_at, updated_at) VALUES (?, 'c2', '+7700',"
+        " ?, 'pending', 'cold', 'operator', ?, ?)",
         (already, *[NOW.isoformat(timespec="seconds")] * 3),
     )
     open_thread(db, "c3", status="escalated")
@@ -322,6 +318,18 @@ def test_counters_show_what_waits_for_a_human(db):
         conversation.mark_handled(db, handled, NOW)
 
     assert conversation.counters(db) == {"waiting": 1, "escalated": 1}
+
+
+def test_replied_counts_threads_where_the_lead_ever_answered(db):
+    for company_id in ("c1", "c2", "c3"):
+        open_thread(db, company_id, status="active")
+    with db:
+        conversation.add_incoming(db, "c1", "ок", "IN1", NOW)
+        conversation.add_incoming(db, "c1", "и ещё", "IN2", NOW)
+        conversation.add_incoming(db, "c3", "нет", "IN3", NOW)
+
+    assert conversation.replied(db, {"c1", "c2", "c3"}) == 2
+    assert conversation.replied(db, set()) == 0
 
 
 def test_a_queued_thread_is_due_too(db):
