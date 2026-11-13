@@ -114,7 +114,8 @@ export default function MessageComposer({
         {model ? ` · ${model}` : ""}
       </p>
 
-      <details className="prompt-details" onToggle={openPrompt}>
+      {/* key: a new draft remounts <details> closed, so opening it asks for the new prompt. */}
+      <details key={messageId} className="prompt-details" onToggle={openPrompt}>
         <summary>Полный запрос в модель</summary>
         {!hasPrompt ? (
           <p className="note">
