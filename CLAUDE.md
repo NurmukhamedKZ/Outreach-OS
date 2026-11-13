@@ -230,7 +230,8 @@ ADR 0001–0005; устройство и причины — `docs/ARCHITECTURE_v
 RunContext, операция проверяет его в `check_cancelled`. Счётчики трёх систем —
 `GET /api/stats` (`services/metrics.py`; «Сбор лидов» — компании и с каналом из
 `companies.public.counts`, лиды из `research.public.leads`, отказы из
-`refusals.public.count`), журнал фоновой работы и пульс
+`refusals.public.count` — по боевой базе на чтение, и в песочнице тоже; упавший
+счётчик отдаёт `sourcing: null`, не гася снапшот SSE), журнал фоновой работы и пульс
 демонов — `GET /api/activity` (`collector/routes/activity.py`: порог молчания
 считает бэкенд, потому что интервалы тиков живут в `sender/config.toml`), воронка
 холодной переписки — `GET /api/analytics` (`backend/analytics.py`: читает базу в ro, считает тредами, отдаёт diagnosis и
