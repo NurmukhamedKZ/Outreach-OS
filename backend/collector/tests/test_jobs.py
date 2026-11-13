@@ -13,7 +13,17 @@ from pathlib import Path
 
 import paths
 
+import pytest
+
 from collector.services import events, jobs, metrics
+
+
+@pytest.fixture(autouse=True)
+def noop_operation():
+    """Операция-заглушка: реестр боевых операций у очереди теперь из одной."""
+    jobs.OPERATIONS["_noop"] = lambda ctx: {"ok": True}
+    yield
+    jobs.OPERATIONS.pop("_noop", None)
 
 
 def test_pipelines_catalogue_consistent(stores):
@@ -21,20 +31,18 @@ def test_pipelines_catalogue_consistent(stores):
 
 
 def test_context_carries_job_id(stores):
-    job_id = jobs.enqueue_steps("custom", "Тест job_id", ["export"])
+    job_id = jobs.enqueue_steps("custom", "Тест job_id", ["_noop"])
     ctx, _state = jobs.make_context(job_id, 0)
     assert ctx.job_id == job_id
 
 
 def test_job_lifecycle(stores, tmp_path, monkeypatch):
     """Джоба доходит до done; результат операции попадает в state.jobs."""
-    from collector.services.pipeline import export as export_op
-    monkeypatch.setattr(export_op, "OUT", tmp_path / "leads.csv")   # не трогать боевой CSV
-    job_id = jobs.enqueue_steps("custom", "Тест", ["export"])
+    job_id = jobs.enqueue_steps("custom", "Тест", ["_noop"])
     asyncio.run(jobs.run_pending())
     record = jobs.job(job_id)
     assert record["status"] == "done"
-    assert record["result"] is not None      # json результата export.run
+    assert json.loads(record["result"]) == {"ok": True}
 
 
 def test_job_failure_is_typed(stores):
@@ -81,7 +89,7 @@ def test_job_cancel(stores):
 
 
 def test_job_orphans_fail_on_restart(stores):
-    job_id = jobs.enqueue_steps("custom", "Сирота", ["export"])
+    job_id = jobs.enqueue_steps("custom", "Сирота", ["_noop"])
     jobs._update(job_id, status="running")
     jobs.fail_orphans()
     assert jobs.job(job_id)["status"] == "failed", "перезапуск оставил бы джобу «бегущей»"
@@ -105,6 +113,7 @@ def test_frontend_contract(stores):
     snapshot = metrics.snapshot()
     assert set(snapshot) == {"sourcing", "writer", "sender", "jobs", "sandbox"}, \
         sorted(snapshot)
+    assert set(snapshot["sourcing"]) == {"companies", "reachable", "leads", "refusals"}
     assert set(snapshot["writer"]) == {"threads", "drafts", "sent", "replies"}
     assert snapshot["sender"]["status"] == "live"
     assert set(snapshot["sender"]) == {"status", "numbers", "queue", "threads", "heartbeat"}
@@ -146,7 +155,7 @@ def test_publish_from_worker_thread_reaches_subscriber():
 
 def test_log_append_does_not_rewrite_whole_log(stores):
     """Строки дописываются в конец, а не переписывают лог целиком."""
-    job_id = jobs.enqueue_steps("custom", "Лог", ["export"])
+    job_id = jobs.enqueue_steps("custom", "Лог", ["_noop"])
     jobs._append_log(job_id, ["первая"])
     jobs._append_log(job_id, ["вторая", "третья"])
     assert jobs.log_of(job_id) == "первая\nвторая\nтретья"
@@ -156,7 +165,7 @@ def test_log_append_does_not_rewrite_whole_log(stores):
 def test_log_stops_at_limit_with_a_notice(stores, monkeypatch):
     """За потолком лог не растёт, но оператор видит, что его обрезали."""
     monkeypatch.setattr(jobs, "LOG_LIMIT_CHARS", 20)
-    job_id = jobs.enqueue_steps("custom", "Лог", ["export"])
+    job_id = jobs.enqueue_steps("custom", "Лог", ["_noop"])
     for _ in range(5):
         jobs._append_log(job_id, ["строка подлиннее потолка"])
     log = jobs.log_of(job_id)
@@ -164,20 +173,20 @@ def test_log_stops_at_limit_with_a_notice(stores, monkeypatch):
     assert log.endswith(jobs.OVERFLOW_NOTE), log
 
 
-def test_operation_and_pipeline_names_do_not_collide(stores):
-    """«rebuild» — и операция, и пайплайн: каждая точка входа ставит своё.
+def test_operation_and_pipeline_names_do_not_collide(stores, monkeypatch):
+    """Одно имя — и операция, и пайплайн: каждая точка входа ставит своё.
 
-    Общий enqueue искал имя сначала среди пайплайнов, поэтому
-    POST /api/operations/rebuild молча ставил пайплайн из двух шагов —
-    операцию rebuild было не вызвать вовсе.
+    Общий enqueue искал имя сначала среди пайплайнов и молча ставил пайплайн
+    там, где просили операцию.
     """
-    assert "rebuild" in jobs.OPERATIONS and "rebuild" in jobs.PIPELINES
+    monkeypatch.setitem(jobs.PIPELINES, "_noop", {"title": "Два шага",
+                                                  "steps": ("_noop", "_noop")})
 
-    one = jobs.job(jobs.enqueue_operation("rebuild"))
-    assert [s["name"] for s in one["steps"]] == ["rebuild"], one["steps"]
+    one = jobs.job(jobs.enqueue_operation("_noop"))
+    assert [s["name"] for s in one["steps"]] == ["_noop"], one["steps"]
 
-    whole = jobs.job(jobs.enqueue_pipeline("rebuild"))
-    assert [s["name"] for s in whole["steps"]] == ["rebuild", "export"], whole["steps"]
+    whole = jobs.job(jobs.enqueue_pipeline("_noop"))
+    assert [s["name"] for s in whole["steps"]] == ["_noop", "_noop"], whole["steps"]
 
 
 def test_job_step_exception_logs_full_traceback(stores, caplog):
@@ -370,10 +379,10 @@ def test_next_step_of_a_lane_does_not_start_after_a_sibling_failed(stores):
 def test_old_jobs_with_plain_string_steps_still_render(stores):
     """В истории лежат джобы, чьи steps — массив строк. Показать их надо, а не
     уронить страницу «Процессы» на первой же старой записи."""
-    job_id = jobs.enqueue_steps("custom", "Старая", ["export"])
-    jobs._update(job_id, steps=json.dumps(["export", "rebuild"], ensure_ascii=False))
+    job_id = jobs.enqueue_steps("custom", "Старая", ["_noop"])
+    jobs._update(job_id, steps=json.dumps(["_noop", "старый_шаг"], ensure_ascii=False))
     record = jobs.job(job_id)
-    assert [s["name"] for s in record["steps"]] == ["export", "rebuild"]
+    assert [s["name"] for s in record["steps"]] == ["_noop", "старый_шаг"]
     assert {s["status"] for s in record["steps"]} == {"done"}
     assert record["step_count"] == 2
 
@@ -397,22 +406,6 @@ def test_step_progress_lands_in_its_own_step(stores):
         OPERATIONS.pop("_progress_test", None)
 
 
-def test_discover_runs_instagram_beside_the_rest():
-    """Объявление discover: Instagram идёт своей дорожкой рядом с 2GIS и
-    сайтами, а rebuild — отдельной стадией после всего сбора."""
-    steps = jobs.plan_steps(jobs.PIPELINES["discover"]["steps"])
-    by_name = {s["name"]: s for s in steps}
-
-    assert by_name["collect.instagram"]["stage"] == by_name["collect.sites"]["stage"]
-    assert by_name["collect.instagram"]["lane"] != by_name["collect.sites"]["lane"]
-    assert by_name["collect.ig_comments"]["lane"] == by_name["collect.instagram"]["lane"]
-    assert by_name["collect.site_pages"]["lane"] == by_name["collect.sites"]["lane"]
-
-    collecting = max(s["stage"] for s in steps if s["name"].startswith("collect."))
-    assert by_name["rebuild"]["stage"] > collecting, \
-        "rebuild обязан идти один и после всего сбора — он пересобирает derived прогоном"
-
-
 def test_job_queued_before_stages_still_runs(stores, tmp_path, monkeypatch):
     """Джоба, поставленная прошлой версией, пережила перезапуск в очереди.
 
@@ -423,17 +416,14 @@ def test_job_queued_before_stages_still_runs(stores, tmp_path, monkeypatch):
     умирала, очередь вставала до перезапуска, а джоба навсегда оставалась
     running.
     """
-    from collector.services.pipeline import export as export_op
-    monkeypatch.setattr(export_op, "OUT", tmp_path / "leads.csv")
-
-    job_id = jobs.enqueue_steps("custom", "Поставлена до стадий", ["export"])
-    jobs._update(job_id, steps=json.dumps(["export"], ensure_ascii=False))
+    job_id = jobs.enqueue_steps("custom", "Поставлена до стадий", ["_noop"])
+    jobs._update(job_id, steps=json.dumps(["_noop"], ensure_ascii=False))
 
     asyncio.run(jobs.run_pending())
 
     record = jobs.job(job_id)
     assert record["status"] == "done", record["error"]
-    assert [s["name"] for s in record["steps"]] == ["export"]
+    assert [s["name"] for s in record["steps"]] == ["_noop"]
     assert record["steps"][0]["status"] == "done"
 
 

@@ -18,10 +18,8 @@ def has_column(db: sqlite3.Connection, table: str, column: str) -> bool:
     return any(row[1] == column for row in db.execute(f"PRAGMA table_info({table})"))
 
 
-def connect_readonly(state_db: Path, leads_db: Path | None) -> sqlite3.Connection:
-    """state.db на чтение, derived.db — ATTACH как leads, если она уже есть."""
-    db = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
+def connect_readonly(path: Path) -> sqlite3.Connection:
+    """База на чтение: модуль, который только показывает, писать в неё не может."""
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     db.row_factory = sqlite3.Row
-    if leads_db is not None and Path(leads_db).exists():
-        db.execute(f"ATTACH DATABASE 'file:{leads_db}?mode=ro' AS leads")
     return db

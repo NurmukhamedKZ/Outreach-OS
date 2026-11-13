@@ -16,6 +16,7 @@ from companies.repository import CompanyRepository
 from companies.schemas import (
     CatalogItem,
     Company,
+    CompanyCounts,
     Segment,
     SegmentSettings,
     SegmentState,
@@ -210,6 +211,30 @@ class CompanyService:
     def by_id(self, company_ids: Collection[str]) -> dict[str, Company]:
         """Return the companies with these ids, whatever segment they came from."""
         return {c.company_id: c for c in self._repo.companies(set(company_ids))}
+
+    def counts(self) -> CompanyCounts:
+        """Count every company found and those with a channel to write to in WhatsApp."""
+        found = self._repo.companies()
+        return CompanyCounts(
+            companies=len(found),
+            reachable=sum(
+                domain.channel((c.kind, c.handle) for c in company.contacts) is not None
+                for company in found
+            ),
+        )
+
+    def segment_labels(self, company_ids: Collection[str]) -> dict[str, str]:
+        """Label each company by the rubric and city names of its first segment."""
+        wanted = set(company_ids)
+        labels = {}
+        for company_id, segments in self._repo.company_segments().items():
+            if company_id in wanted:
+                first = min(segments)
+                labels[company_id] = (
+                    f"{domain.RUBRICS.get(first.rubric, first.rubric)}"
+                    f" · {domain.CITIES.get(first.city, first.city)}"
+                )
+        return labels
 
     def prioritized(self, limit: int, exclude: Collection[str]) -> list[Company]:
         """Return reachable companies of the chosen segments in the order of research.

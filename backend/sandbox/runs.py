@@ -20,7 +20,8 @@ import activity
 import analytics
 import clock
 import paths
-from collector.services import store
+import tasks
+from collector.services import jobs
 from core import db as core_db
 from sender.db import migrate, numbers
 from writer.db import thread_store
@@ -128,7 +129,8 @@ def activate(run_id: str) -> Run:
     run = get(run_id)
     paths.use_run(run.path)
     activity.use(run.path)
-    analytics.use(run.path, store.DERIVED)
+    analytics.use(run.path, paths.PRODUCTION_STATE)
+    tasks.use(run.path, paths.PRODUCTION_STATE)
     clock.use(run.offset)
     _active = run_id
     return run
@@ -167,7 +169,8 @@ def deactivate() -> None:
     _active = None
     paths.use_run(None)
     activity.use(paths.state_db())
-    analytics.use(paths.state_db(), store.DERIVED)
+    analytics.use(paths.state_db(), paths.PRODUCTION_STATE)
+    tasks.use(paths.state_db(), paths.PRODUCTION_STATE)
     clock.use(None)
 
 
@@ -190,7 +193,7 @@ def _apply_schemas(path: Path) -> None:
     core_db.migrate(path)
     thread_store.connect(path).close()
     with closing(sqlite3.connect(path)) as db:
-        db.executescript(store.state_schema())
+        db.executescript(jobs.state_schema())
         db.execute(META)
         db.commit()
     migrate.connect(path).close()

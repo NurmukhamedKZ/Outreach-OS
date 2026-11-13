@@ -2,30 +2,6 @@
 
 export type Channel = { kind: string; handle: string; suppressed?: boolean };
 
-export type Lead = {
-  company_id: string;
-  name: string;
-  city: string;
-  domain: string | null;
-  channel: Channel | null;
-  why_now: string;
-  quote: string | null;
-  industry: string | null;
-  from_model: boolean;
-  intent_score: number;
-  fit_score: number;
-  sources: string[];
-};
-
-export type Stats = {
-  companies: number;
-  with_intent: number;
-  /** Потолок выдачи: компании с сигналом и рабочим каналом. Просить больше нечего. */
-  available: number;
-  suppressed: number;
-  cities: string[];
-};
-
 /** Ошибка запроса вместе с кодом состояния: словами объясняет отказ `detail`,
  *  а отличить «состояние» (409) от «авария» (500) можно только по коду. */
 export class ApiError extends Error {
@@ -51,12 +27,6 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
     );
   }
   return response.json();
-}
-
-export function fetchLeads(limit: number, city: string) {
-  const query = new URLSearchParams({ limit: String(limit) });
-  if (city) query.set("city", city);
-  return json<{ leads: Lead[]; stats: Stats }>(`/api/leads?${query}`);
 }
 
 /** Отказ в той форме, в какой его хранит бэкенд: контакт уже приведён к
@@ -294,9 +264,6 @@ export function saveSegments(settings: SegmentSettings) {
 
 export type Pipeline = { kind: string; title: string; steps: string[] };
 
-export type Run = { run_id: number; started_at: string; finished_at: string | null;
-  code_version: string | null; config_hash: string | null; note: string | null };
-
 export type PipelineCatalogue = {
   pipelines: Pipeline[];
   operations: string[];
@@ -304,18 +271,6 @@ export type PipelineCatalogue = {
 
 export function fetchCatalogue() {
   return json<PipelineCatalogue>("/api/pipeline");
-}
-
-export function startOperation(name: string) {
-  return json<{ job: Job }>(`/api/operations/${encodeURIComponent(name)}`, { method: "POST" });
-}
-
-export function fetchRuns() {
-  return json<{ runs: Run[] }>("/api/runs");
-}
-
-export function activateRun(runId: number) {
-  return json<{ run_id: number }>(`/api/runs/${runId}/activate`, { method: "POST" });
 }
 
 export type JobStep = {
@@ -358,7 +313,9 @@ export function cancelJob(id: number) {
 
 /** Счётчики всех трёх систем одним ответом — живая шапка дашборда. */
 export type DashboardStats = {
-  sourcing: Stats & { available: number };
+  /** «Сбор лидов»: каждое число считает свой модуль (companies, research, refusals). */
+  /** null — счётчики не посчитались (ошибка в логе бэкенда), остальное снапшота живо. */
+  sourcing: { companies: number; reachable: number; leads: number; refusals: number } | null;
   writer: { threads: number; drafts: number; sent: number; replies: number };
   sender: {
     status: string;

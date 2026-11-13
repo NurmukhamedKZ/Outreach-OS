@@ -12,16 +12,13 @@
 from pathlib import Path
 
 # One data directory for the product (#9): the database, downloaded pages and
-# sandbox run databases. The old pipeline reads its raw/ and derived.db in
-# collector/data until #13.
+# sandbox run databases.
 DATA = Path(__file__).resolve().parent / "data"
 PRODUCTION_STATE = DATA / "state.db"
 PAGES = DATA / "pages"
 SANDBOX_RUNS = DATA / "sandbox"
 # WhatsApp session keys: Node keeps them next to itself (sender/node/index.js).
 SESSIONS = Path(__file__).resolve().parent / "sender" / "node" / "sessions"
-# Where the database lived before #9; startup refuses while it is there (#13 drops this).
-LEGACY_STATE = Path(__file__).resolve().parent / "collector" / "data" / "state.db"
 
 _run: Path | None = None
 

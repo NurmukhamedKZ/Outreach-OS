@@ -30,6 +30,11 @@ def is_refused(db: sqlite3.Connection, handles: Iterable[str]) -> bool:
     return RefusalService(db).is_refused(handles)
 
 
+def count(db: sqlite3.Connection) -> int:
+    """Return how many handles are refused; for the counters on «Сегодня»."""
+    return RefusalService(db).count()
+
+
 def canonical(handle: str) -> str:
     """Return the form in which `handle` is compared with refusals; never raises.
 

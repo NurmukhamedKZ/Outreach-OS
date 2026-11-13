@@ -13,8 +13,7 @@ def test_production_database_by_default():
 
 
 def test_data_layer_lives_in_backend_data():
-    """#9: единая база, страницы и прогоны песочницы — в одном каталоге данных;
-    старый конвейер читает свои raw/ и derived.db в collector/data до #13."""
+    """#9: единая база, страницы и прогоны песочницы — в одном каталоге данных."""
     backend = paths.DATA.parent
     assert paths.DATA == backend / "data"
     assert (backend / "main.py").exists()

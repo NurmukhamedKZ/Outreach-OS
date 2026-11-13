@@ -32,6 +32,10 @@ class RefusalRepository:
         ).fetchall()
         return [Refusal.model_validate(dict(row)) for row in rows]
 
+    def count(self) -> int:
+        count: int = self._db.execute("SELECT count(*) FROM refusals").fetchone()[0]
+        return count
+
     def any_of(self, handles: list[str]) -> bool:
         if not handles:
             return False

@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from collector.services import store
+from collector.services import jobs
 from core import db as core_db
 
 LEGACY = "CREATE TABLE suppression ( handle TEXT PRIMARY KEY, added_at TEXT NOT NULL, reason TEXT)"
@@ -194,7 +194,7 @@ def test_the_old_state_schema_before_or_after_the_migration_changes_nothing(
 
     def old_schema():
         with closing(sqlite3.connect(path)) as db:
-            db.executescript(store.state_schema())
+            db.executescript(jobs.state_schema())
 
     if old_schema_first:
         old_schema()

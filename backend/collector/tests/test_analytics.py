@@ -132,7 +132,7 @@ def test_report_survives_a_database_without_foreign_layers(tmp_path):
     db = sqlite3.connect(path)
     schema = (pathlib.Path(__file__).resolve().parent.parent / "db" / "schema.sql"
               ).read_text(encoding="utf-8")
-    db.executescript(schema[schema.index("-- STATE --"):schema.index("-- DERIVED --")])
+    db.executescript(schema)
     db.execute("INSERT INTO threads (thread_id, company_id, seed, created_at)"
                " VALUES ('+77010000001', 'c_ok', '{}', '2026-01-01')")
     db.commit()
@@ -165,3 +165,56 @@ def test_a_thread_lands_in_one_row_per_breakdown(state):
     assert sum(row["sent"] for row in report["by_angle"]) == sent
     assert [row["key"] for row in report["by_angle"]] == ["site_no_pricing"], \
         "разрез считает не первое письмо треда"
+
+
+def _sent_thread(db, thread_id, company_id, *, replied=False, held=False):
+    thread_store.open_thread(db, thread_id, company_id, {"name": "Компания"})
+    message_id = thread_store.add_draft(db, thread_id, "текст", "reviews_missed_lead")
+    db.execute("UPDATE messages SET sent_text = 'текст', sent_at = ? WHERE message_id = ?",
+               (thread_store.now(), message_id))
+    if replied:
+        thread_store.add_incoming(db, thread_id, "интересно")
+    if held:
+        thread_store.set_outcome(db, thread_id, "meeting_held")
+    db.commit()
+
+
+def test_the_segment_breakdown_names_the_rubric_and_city_of_the_company(tmp_path):
+    """#17: threads point at companies (2gis:…), and the segment comes from them."""
+    from contextlib import closing
+
+    from companies.repository import CompanyRepository
+    from companies.schemas import Segment
+    from core import db as core_db
+    from writer.tests.research_leads import NOW, add_lead, migrate
+
+    path = tmp_path / "state.db"
+    migrate(path)
+    with closing(core_db.connect(path)) as db:
+        add_lead(db, "2gis:1", [("whatsapp", "+77010000001")])
+        add_lead(db, "2gis:2", [("whatsapp", "+77010000002")])
+        add_lead(db, "2gis:3", [("whatsapp", "+77010000003")])
+        repo = CompanyRepository(db)
+        repo.claim(Segment("astana", "339"), NOW)
+        # 2gis:3 moves to a later segment only: drop its default one.
+        db.execute("DELETE FROM branch_segments WHERE branch_id = '2gis:3-0'")
+        repo.link_segment("2gis:3-0", Segment("astana", "339"))
+        _sent_thread(db, "+77010000001", "2gis:1", replied=True, held=True)
+        _sent_thread(db, "+77010000002", "2gis:2")
+        _sent_thread(db, "+77010000003", "2gis:3", replied=True)
+        _sent_thread(db, "+77010000009", "2gis:gone")
+    analytics.use(path, path)
+
+    assert analytics.report()["by_segment"] == [
+        {"key": "Бухгалтерские услуги · Алматы", "sent": 2, "replied": 1, "meetings": 1},
+        {"key": "Аудиторские услуги · Астана", "sent": 1, "replied": 1, "meetings": 0}]
+
+
+@pytest.mark.parametrize("companies_db", ["нет.db", "state.db"])
+def test_without_a_companies_table_there_is_no_segment_breakdown(state, tmp_path, companies_db):
+    """No file, or a file the companies migration has not reached yet."""
+    db, path = state
+    _thread(db, "+77010000001")
+    analytics.use(path, tmp_path / companies_db)
+
+    assert analytics.report()["by_segment"] == []

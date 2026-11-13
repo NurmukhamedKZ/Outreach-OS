@@ -14,7 +14,7 @@ def clean_logging(tmp_path, monkeypatch):
     хендлеры после теста — иначе логгеры остаются глобально грязными между
     тестами и утекают в боевой backend/logs/."""
     monkeypatch.setattr(logging_setup, "LOG_DIR", tmp_path)
-    touched = ("", "uvicorn", "uvicorn.access", "scrapling", "collector.fetch")
+    touched = ("", "uvicorn", "uvicorn.access", "scrapling")
     before = {name: list(logging.getLogger(name).handlers) for name in touched}
     yield tmp_path
     for name in touched:

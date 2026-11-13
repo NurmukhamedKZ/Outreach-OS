@@ -72,6 +72,10 @@ class RefusalService:
         """Return every refusal, the freshest first."""
         return self._refusals.newest_first()
 
+    def count(self) -> int:
+        """Return how many handles are refused."""
+        return self._refusals.count()
+
     def is_refused(self, handles: Iterable[str]) -> bool:
         """Return True when any of the company's handles is refused."""
         return self._refusals.any_of(sorted({comparable_handle(handle) for handle in handles}))

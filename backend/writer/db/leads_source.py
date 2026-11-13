@@ -21,7 +21,7 @@ def connect() -> sqlite3.Connection:
     A sandbox run is a database of its own with no research in it: its lead is
     a real company, read from the production database, and nothing is written.
     """
-    return sqlite_tools.connect_readonly(paths.PRODUCTION_STATE, None)
+    return sqlite_tools.connect_readonly(paths.PRODUCTION_STATE)
 
 
 @dataclass(frozen=True)

@@ -70,6 +70,11 @@ class Branch(Schema):
     confidence: float
 
 
+class CompanyCounts(Schema):
+    companies: int
+    reachable: int
+
+
 class Company(Schema):
     company_id: str
     name: str

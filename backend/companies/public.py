@@ -11,6 +11,7 @@ from companies import domain
 
 # Re-exported: callers annotate with them without reaching into companies.
 from companies.schemas import Company as Company
+from companies.schemas import CompanyCounts as CompanyCounts
 from companies.schemas import Contact as Contact
 from companies.service import CompanyService
 from core.pages import Pages
@@ -33,6 +34,20 @@ def by_id(db: sqlite3.Connection, company_ids: Collection[str]) -> dict[str, Com
     Any segment, chosen or not: a dossier outlives the operator's choice.
     """
     return CompanyService(db).by_id(company_ids)
+
+
+def counts(db: sqlite3.Connection) -> CompanyCounts:
+    """Count every company in the base, whatever the segment, and those with a channel."""
+    return CompanyService(db).counts()
+
+
+def segment_labels(db: sqlite3.Connection, company_ids: Collection[str]) -> dict[str, str]:
+    """Return «rubric · city» in names for each company; an unknown id is left out.
+
+    A company found in several segments is labelled by the first (by city, then
+    rubric id), so a breakdown by segment counts it once.
+    """
+    return CompanyService(db).segment_labels(company_ids)
 
 
 def channel(company: Company) -> Contact | None:

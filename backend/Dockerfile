@@ -24,7 +24,7 @@ COPY sender/ sender/
 COPY sandbox/ sandbox/
 
 # scrapling[fetchers] качает свой Chromium отдельно от pip-пакета — без этого
-# шага collect.* и probe.* падают при первом обращении к сети.
+# шага сбор сегментов и исследование падают при первом обращении к сети.
 RUN uv run scrapling install
 
 EXPOSE 8787
