@@ -14,6 +14,14 @@
 - **Как ловили:** тест, повтор, QA.
 ```
 
+## Партия висит: компания в «исследуется» больше 11 минут, живое соединение только к OpenRouter (#27)
+
+- **Симптом:** ручной QA #16, партия на 5 компаний: одна компания висела в «исследуется» больше 11 минут; у бэкенда единственное живое соединение — к OpenRouter. Ни закончить партию, ни запустить новую до перезапуска.
+- **Корень:** `REQUEST_TIMEOUT_MS` уходит в httpx таймаутом каждого ожидания (пауза между байтами), а не всего запроса; OpenRouter, пока ждёт провайдера, шлёт пробелы в тело обычного ответа, и таймер чтения не срабатывает. Воспроизведение: локальный сервер шлёт пробел раз в 0,2 с, `httpx.Client(timeout=0.5).post` висит дольше 5 с.
+- **Исправление:** `core/model.py` — `openrouter_client()` отдаёт SDK-клиент с `DeadlineTransport`: на каждом куске тела сверяет `CALL_DEADLINE_S` (180 с от начала запроса) и по сроку бросает `httpx.ReadTimeout` — ретрай, как обрыв, после `TRANSPORT_RETRIES` — `ModelError`. Без потоков: проверка в вызывающем потоке. Через него же — `writer/services/agent.py::client` (продавец). Старый `collector/services/pipeline/llm.py` не тронут — уходит в #13.
+- **Класс:** таймаут чтения принят за общий срок запроса.
+- **Как ловили:** QA #16; тесты `core/tests/test_model.py` с подменным транспортом httpx, отдающим бесконечный поток пробелов.
+
 ## `npm run dev` в worktree отдаёт 500 на всех страницах: next/font под Turbopack (#24)
 
 - **Симптом:** в worktree кодера #8 `npm run dev` (Turbopack, Next 16.3.1) отвечал 500 на каждой странице: «Module not found: Can't resolve '@vercel/turbopack-next/internal/font/google/font' … next/font/google queries have exactly one entry». `npx next dev --webpack` и `npm run build` работали.
