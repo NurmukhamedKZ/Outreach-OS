@@ -43,7 +43,7 @@
 ## 2. Модули и границы
 
 ```
-core  ←  companies  ←  research  ←  conversations (#36)  ←  sender (#7: delivery)
+core  ←  companies  ←  research  ←  conversations (#36)  ←  delivery (#37)
                  ↖────────── refusals (зовут все) ──────────↗
 ```
 

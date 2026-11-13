@@ -5,8 +5,8 @@
 
 Все три системы лежат в `backend/` под одним venv и одним `backend/main.py`:
 система 1 — модули `companies/`, `research/`, `refusals/` поверх `core/`;
-система 2 — `conversations/`; система 3 — `sender/`. `collector/` — сборщик приложения
-и старые ручки дашборда (до #7).
+система 2 — `conversations/`; система 3 — `delivery/` (Node-сервис WhatsApp —
+`sender/node/`). `collector/` — сборщик приложения и старые ручки дашборда (до #7).
 
 ## Путь лида
 
@@ -79,11 +79,12 @@ rm -f data/state.db-wal data/state.db-shm
 cp "$SNAP/state.db" data/state.db
 rm -rf sender/node/sessions && cp -R "$SNAP/sessions" sender/node/sessions
 rsync -a --ignore-existing "$SNAP/../pages/" data/pages/
-echo off > sender/autopilot
+sqlite3 data/state.db "INSERT INTO operator_settings (module, data) VALUES ('delivery', '{\"autopilot\": \"off\"}')
+  ON CONFLICT (module) DO UPDATE SET data = json_set(data, '\$.autopilot', 'off')"
 ```
 
 Снимок отстаёт от базы до суток, и **отказы за это время пропали** (F21).
-Поэтому `autopilot` — `off` до сверки: перед тем как включать отправку,
+Поэтому автопилот — «Стоп» (`off`) до сверки: перед тем как включать отправку,
 внесите заново отказы из переписки с момента снимка (`POST /api/refusals` или
 «Больше не писать» в карточке лида).
 

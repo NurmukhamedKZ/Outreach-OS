@@ -69,7 +69,7 @@ hh.kz, Serper, прогоны `derived.db`) — в истории git и `docs/l
 | `conversations/` | тред компании, сообщения, черновики модели, входящие, follow-up, «Черновики топ-N» (#36) | `thread`, `thread_on_channel`, `add_incoming`, `confirm_sent`, `bump_touch`, `followup_turn`/`write`, `reply_turn`/`sell`, `forget_interrupted` |
 
 Зависимости идут в одну сторону: `companies` → `research` → `conversations` →
-`sender` (#7 — `delivery`); `refusals` зовут все. Другие модули
+`delivery` (#37); `refusals` зовут все. Другие модули
 импортируют только `public.py`; граф сторожат `*/tests/test_import_graph.py`.
 
 Модули верхнего уровня `backend/` (`config.py`, `clock.py`, `paths.py`,
