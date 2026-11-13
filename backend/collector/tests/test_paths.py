@@ -17,7 +17,8 @@ def test_data_layer_lives_in_backend_data():
     backend = paths.DATA.parent
     assert paths.DATA == backend / "data"
     assert (backend / "main.py").exists()
-    assert paths.PRODUCTION_STATE == paths.DATA / "state.db"
+    # conftest.py points PRODUCTION_STATE at a temp file; the name is what is checked.
+    assert paths.PRODUCTION_STATE.name == "state.db"
     assert paths.PAGES == paths.DATA / "pages"
     assert paths.SANDBOX_RUNS == paths.DATA / "sandbox"
 
