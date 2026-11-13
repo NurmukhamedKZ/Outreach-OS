@@ -21,6 +21,9 @@ def startup(tmp_path, monkeypatch):
     monkeypatch.setattr(api.queue, "cancel_current", lambda: None)
     started = []
     monkeypatch.setattr(api.delivery, "start", lambda *args: started.append(args) or [])
+    # The backup daemon writes to settings.backup_dir, the real iCloud folder: a test
+    # lifespan must never leave a snapshot of a temporary database in it.
+    monkeypatch.setattr(api.backup, "loop", lambda *args: None)
     monkeypatch.setattr(paths, "PRODUCTION_STATE", tmp_path / "data" / "state.db")
     return api
 
