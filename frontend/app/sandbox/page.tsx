@@ -18,9 +18,9 @@ import {
   activateSandboxRun,
   createSandboxRun,
   fetchActivity,
-  fetchLeads,
   fetchSandboxChat,
   fetchSandboxFaults,
+  fetchSandboxLeads,
   fetchSandboxRuns,
   fetchSender,
   moveSandboxClock,
@@ -31,7 +31,7 @@ import {
   setSandboxFaults,
   type ActivityEvent,
   type AutopilotMode,
-  type Lead,
+  type ResearchLead,
   type SandboxBubble,
   type SandboxChat,
   type SandboxFaults,
@@ -39,7 +39,6 @@ import {
   type SenderStatus,
 } from "../api";
 import { useLive } from "@/components/live";
-import Link from "next/link";
 
 const WHEN = new Intl.DateTimeFormat("ru", {
   day: "2-digit",
@@ -165,7 +164,7 @@ const STEPS = [
 export default function SandboxPage() {
   const { refreshTick } = useLive();
   const [runs, setRuns] = useState<SandboxRun[]>([]);
-  const [leads, setLeads] = useState<Lead[]>([]);
+  const [leads, setLeads] = useState<ResearchLead[]>([]);
   const [chat, setChat] = useState<SandboxChat | null>(null);
   const [faults, setFaults] = useState<SandboxFaults | null>(null);
   const [company, setCompany] = useState("");
@@ -211,8 +210,8 @@ export default function SandboxPage() {
 
   // Выдача читается один раз: пока идёт прогон, она не меняется.
   useEffect(() => {
-    fetchLeads(LEADS_IN_PICKER, "")
-      .then((data) => setLeads(data.leads))
+    fetchSandboxLeads()
+      .then((found) => setLeads(found.slice(0, LEADS_IN_PICKER)))
       .catch(report);
   }, []);
 
@@ -277,7 +276,7 @@ export default function SandboxPage() {
             <option value="">— выберите компанию из выдачи —</option>
             {leads.map((lead) => (
               <option key={lead.company_id} value={lead.company_id}>
-                {lead.name} · {lead.city} · интент {lead.intent_score.toFixed(1)}
+                {lead.name} · {lead.city} · оценка {lead.score.toFixed(1)}
               </option>
             ))}
           </select>
@@ -328,15 +327,6 @@ export default function SandboxPage() {
           <header className="cold-head">
             <b className="row-name">Чат с лидом</b>
             {chat && <span className="ghost mono">{chat.thread_id}</span>}
-            {active && (
-              <Link
-                className="ghost"
-                href={`/leads/${encodeURIComponent(active.company_id)}`}
-                target="_blank"
-              >
-                карточка лида
-              </Link>
-            )}
           </header>
 
           <ol className="thread-log">
@@ -596,7 +586,7 @@ function stepOf(
 
 /** Имя компании вместо идентификатора. Пока выдача не приехала — сам
  *  идентификатор: пустая строка выглядела бы как сломанный прогон. */
-function nameOf(leads: Lead[], companyId: string): string {
+function nameOf(leads: ResearchLead[], companyId: string): string {
   return leads.find((lead) => lead.company_id === companyId)?.name ?? companyId;
 }
 

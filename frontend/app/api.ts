@@ -534,12 +534,13 @@ export function fetchThreads() {
   return json<{ threads: ThreadSummary[] }>("/api/threads");
 }
 
-/** Первые касания, ждущие проверки. Порядок задаёт бэкенд: по убыванию скора. */
+/** Первые касания, ждущие проверки. Порядок задаёт бэкенд: по убыванию оценки
+ *  research. Компания, которой research не знает, приходит под своим id без города. */
 export type ColdDraft = {
   company_id: string;
   company_name: string;
-  city: string;
-  intent_score: number;
+  city: string | null;
+  score: number;
   thread_id: string;
   message_id: number;
   draft_text: string;
@@ -745,6 +746,11 @@ export type SandboxChat = {
 
 export function fetchSandboxRuns() {
   return json<{ runs: SandboxRun[]; now: string }>("/api/sandbox/runs");
+}
+
+/** Лиды research боевой базы: в базе прогона research пуст, а лид прогона — настоящая компания. */
+export function fetchSandboxLeads() {
+  return json<ResearchLead[]>("/api/sandbox/leads");
 }
 
 export function createSandboxRun(companyId: string, warmed: boolean) {

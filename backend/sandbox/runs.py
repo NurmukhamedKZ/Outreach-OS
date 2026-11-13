@@ -73,6 +73,11 @@ def create(company_id: str, warmed: bool, moment: datetime) -> Run:
     run = Run(run_id=f"{moment:%Y%m%d-%H%M%S}-{company_id}", company_id=company_id,
               created_at=moment.isoformat(timespec="seconds"), warmed=warmed,
               offset=timedelta())
+    # The id names the run's file: a company id with a path in it would put the
+    # run outside RUNS_DIR. The route lets only research's companies here; this
+    # is the second wall.
+    if Path(run.run_id).name != run.run_id:
+        raise ValueError(f"id компании {company_id!r} не годится в имя файла прогона")
     if run.path.exists():
         raise RunExistsError(run.run_id)
     RUNS_DIR.mkdir(parents=True, exist_ok=True)

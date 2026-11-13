@@ -155,3 +155,9 @@ def _open_thread(run, thread_id):
 def _threads(run):
     with sqlite3.connect(run.path) as db:
         return [row[0] for row in db.execute("SELECT thread_id FROM threads")]
+
+
+def test_a_company_id_cannot_lead_the_run_file_out_of_its_directory(tmp_path):
+    with pytest.raises(ValueError):
+        runs.create("../../evil", warmed=True, moment=MOMENT)
+    assert list(tmp_path.rglob("*.db")) == []
