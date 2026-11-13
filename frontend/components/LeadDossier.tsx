@@ -1,9 +1,8 @@
 "use client";
 
-/** Полное досье лида: почему сейчас, разбор скора, досье модели, каналы,
- *  сигналы, сырьё и оплаченные ответы модели. Всё, что пошло или может пойти
- *  в промпт, оператор видит до того, как писать.
- */
+/** Карточка компании по данным research: почему сейчас, досье, разбивка оценки
+ *  по сигналам, контакты, попытки и форма отказа. Всё, что пойдёт в первое
+ *  сообщение, оператор видит до того, как писать. */
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -12,243 +11,247 @@ import {
   SIGNAL_LABELS,
   channelLink,
   fetchThreads,
-  type Channel,
-  type LeadDetail,
+  type CompanyResearch,
+  type Contact,
+  type ResearchHook,
   type ThreadSummary,
 } from "@/app/api";
+import { day, moment, researchStatus } from "@/app/outcomes";
 import RefusalForm from "@/components/RefusalForm";
 
 export default function LeadDossier({
-  lead,
+  card,
+  actions,
   onRefused,
 }: {
-  lead: LeadDetail;
+  card: CompanyResearch;
+  actions: React.ReactNode;
   onRefused: () => void;
 }) {
+  const { dossier } = card;
   return (
     <article className="card">
-      <h2>{lead.name}</h2>
+      <h2>{card.name}</h2>
       <p className="card-sub">
-        {[lead.industry, lead.city, lead.domain].filter(Boolean).join(" · ")}
-        {" · intent "}
-        <span className="mono">{lead.intent_score.toFixed(1)}</span>
-        {" · fit "}
-        <span className="mono">{lead.fit_score.toFixed(1)}</span>
+        {[dossier?.what_they_do, card.city].filter(Boolean).join(" · ")}
+        {" · оценка "}
+        <span className="mono">{card.score.toFixed(1)}</span>
+        {card.researched_at && ` · исследована ${moment(card.researched_at)}`}
+        {card.model && <span className="mono"> · {card.model}</span>}
+        {card.versions > 1 && ` · версий досье ${card.versions}`}
       </p>
 
-      <div className="why">
-        <p>{lead.why_now}</p>
-        {lead.quote && <blockquote>{lead.quote}</blockquote>}
-        <span className="tag">
-          {lead.from_model ? "обоснование от модели" : "обоснование по шаблону из сигналов"}
-        </span>
+      <div className="lead-actions">
+        {card.refused && <span className="tone is-stop">в отказах</span>}
+        {!card.refused && !card.lead && <span className="tone is-idle">не лид</span>}
+        {actions}
       </div>
+      {!card.lead && !card.refused && <p className="note">{notLead(card)}</p>}
 
-      <h3>Разбор скора</h3>
-      <table className="table">
-        <thead>
-          <tr>
-            <th>правило</th>
-            <th>вклад</th>
-            <th>цитата</th>
-            <th>источник</th>
-          </tr>
-        </thead>
-        <tbody>
-          {lead.breakdown.map((part, index) => (
-            <tr key={index}>
-              <td>{part.rule ?? part.signal ?? "…"}</td>
-              <td className="mono">+{part.contribution.toFixed(1)}</td>
-              <td>{part.quote && `«${part.quote}»`}</td>
-              <td>
-                {part.url && (
-                  <a href={part.url} target="_blank" rel="noreferrer">
-                    {hostname(part.url)}
-                  </a>
-                )}
-                {part.observed_at ? ` · ${part.observed_at.slice(0, 10)}` : ""}
-              </td>
-            </tr>
-          ))}
-          {lead.breakdown.length === 0 && (
-            <tr>
-              <td colSpan={4} className="note">
-                Разбора нет — компания попала по фиту.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+      {card.why_now && (
+        <div className="why">
+          <p>{card.why_now.angle}</p>
+          <blockquote>«{card.why_now.quote}»</blockquote>
+          <HookSource hook={card.why_now} />
+        </div>
+      )}
 
-      <h3>Досье модели</h3>
-      {lead.dossier ? (
+      <h3>Досье</h3>
+      {dossier ? (
         <div className="dossier">
-          {lead.dossier.summary && (
+          <p>{dossier.summary}</p>
+          <p>
+            <b>Как заходить:</b> {dossier.approach}
+          </p>
+          {dossier.decision_maker_hint && (
             <p>
-              <b>Чем занимается:</b> {lead.dossier.summary}
+              <b>Кто решает:</b> {dossier.decision_maker_hint}
             </p>
           )}
-          {lead.dossier.approach && (
-            <p>
-              <b>Как заходить:</b> {lead.dossier.approach}
-            </p>
-          )}
-          {lead.dossier.decision_maker && (
-            <p>
-              <b>Кто решает:</b> {lead.dossier.decision_maker}
-            </p>
-          )}
+          <h4>Зацепки</h4>
           <ul className="signals">
-            {lead.dossier.hooks.map((hook, index) => (
+            {dossier.hooks.map((hook, index) => (
               <li key={index}>
                 <span>{hook.angle}</span>
-                <span className="weight mono">
-                  {hook.source ?? ""}
-                  {hook.observed_at ? ` · ${hook.observed_at.slice(0, 10)}` : ""}
-                </span>
                 <span className="signal-quote">«{hook.quote}»</span>
-                {hook.url && (
-                  <span className="signal-quote">
-                    <a href={hook.url} target="_blank" rel="noreferrer">
-                      {hostname(hook.url)}
-                    </a>
-                  </span>
-                )}
+                <span className="signal-quote">
+                  <HookSource hook={hook} />
+                </span>
               </li>
             ))}
           </ul>
-          {lead.dossier.hooks.length === 0 && <p className="note">Зацепок нет.</p>}
+          {dossier.hooks.length === 0 && <p className="note">Подтверждённых зацепок нет.</p>}
+          {dossier.pains.length > 0 && (
+            <>
+              <h4>Боли</h4>
+              <ul className="signals">
+                {dossier.pains.map((pain, index) => (
+                  <li key={index}>
+                    <span>{pain.statement}</span>
+                    <span className={`tone is-${pain.severity === "видно явно" ? "attention" : "idle"}`}>
+                      {pain.severity}
+                    </span>
+                    {pain.evidence.map((line, n) => (
+                      <span key={n} className="signal-quote">
+                        {line}
+                      </span>
+                    ))}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </div>
       ) : (
-        <p className="note">Досье модели для этой компании нет.</p>
+        <p className="note">Досье нет: компанию ещё не исследовали или попытки не удались.</p>
       )}
 
-      <h3>Каналы</h3>
-      <div className="channels">
-        {lead.channels.map((channel) => (
-          <ChannelRow
-            key={`${channel.kind}:${channel.handle}`}
-            channel={channel}
-            primary={
-              channel.kind === lead.channel?.kind && channel.handle === lead.channel?.handle
-            }
-          />
-        ))}
-        {lead.channels.length === 0 && <p className="note">Каналов не осталось.</p>}
+      <h3>Разбивка оценки</h3>
+      <div className="settings-table">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>сигнал</th>
+              <th>вес</th>
+              <th>возраст</th>
+              <th>вклад</th>
+              <th>цитата</th>
+              <th>источник</th>
+            </tr>
+          </thead>
+          <tbody>
+            {card.breakdown.map((part) => (
+              <tr key={part.signal}>
+                <td>{SIGNAL_LABELS[part.signal] ?? part.signal}</td>
+                <td className="mono">{part.weight}</td>
+                <td className="mono">{part.age_days} дн.</td>
+                <td className="mono">+{part.contribution.toFixed(2)}</td>
+                <td>«{part.quote}»</td>
+                <td>
+                  <a href={part.url} target="_blank" rel="noreferrer">
+                    {hostname(part.url)}
+                  </a>
+                  {` · ${day(part.observed_at)}`}
+                </td>
+              </tr>
+            ))}
+            {card.breakdown.length === 0 && (
+              <tr>
+                <td colSpan={6} className="note">
+                  Сигналов нет — оценка нулевая.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
 
-      <h3>Сигналы</h3>
-      <ul className="signals">
-        {lead.signals.map((signal, index) => (
-          <li key={`${signal.type}:${index}`}>
-            <span>
-              {SIGNAL_LABELS[signal.type] ?? signal.type}
-              {signal.url && (
-                <>
-                  {" · "}
-                  <a href={signal.url} target="_blank" rel="noreferrer">
-                    источник
-                  </a>
-                </>
-              )}
-            </span>
-            <span className="weight mono">
-              +{signal.weight.toFixed(1)} · {signal.observed_at.slice(0, 10)}
-            </span>
-            {signal.quote && <span className="signal-quote">«{signal.quote}»</span>}
-          </li>
+      <h3>Контакты</h3>
+      <div className="channels">
+        {card.contacts.map((contact) => (
+          <ContactRow
+            key={`${contact.kind}:${contact.handle}`}
+            contact={contact}
+            primary={contact.kind === card.channel?.kind && contact.handle === card.channel?.handle}
+            refused={card.refused}
+          />
         ))}
-        {lead.signals.length === 0 && <li>Ни одного — компания попала в выдачу по fit.</li>}
-      </ul>
+        {card.contacts.length === 0 && <p className="note">Контактов нет.</p>}
+      </div>
 
-      <h3>Сырьё</h3>
-      <table className="table">
-        <thead>
-          <tr>
-            <th>url</th>
-            <th>финальный</th>
-            <th>статус</th>
-            <th>скачано</th>
-          </tr>
-        </thead>
-        <tbody>
-          {lead.fetches.map((fetch, index) => (
-            <tr key={index}>
-              <td>
-                <a href={fetch.url} target="_blank" rel="noreferrer">
-                  {hostname(fetch.url)}
-                </a>
-              </td>
-              <td>{fetch.final_url && fetch.final_url !== fetch.url ? hostname(fetch.final_url) : "—"}</td>
-              <td className="mono">{fetch.status ?? "…"}</td>
-              <td className="mono">{fetch.fetched_at ? fetch.fetched_at.slice(0, 16) : "…"}</td>
-            </tr>
-          ))}
-          {lead.fetches.length === 0 && (
-            <tr>
-              <td colSpan={4} className="note">
-                Скачанных страниц нет.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-
-      <h3>Ответы модели</h3>
-      {lead.llm_answers.map((answer, index) => (
-        <details key={index} className="prompt-details">
-          <summary>
-            {answer.kind} · {answer.model}
-          </summary>
-          <div className="prompt-block mono">
-            <div className="prompt-pair">
-              <span className="prompt-role">prompt</span>
-              <pre>{answer.prompt}</pre>
-            </div>
-            <div className="prompt-pair">
-              <span className="prompt-role">answer</span>
-              <pre>{answer.answer}</pre>
-            </div>
-          </div>
-        </details>
-      ))}
-      {lead.llm_answers.length === 0 && (
-        <p className="note">За эту компанию модель ещё не отвечала.</p>
+      <h3>Попытки</h3>
+      {card.attempts.length > 0 ? (
+        <div className="settings-table">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>партия</th>
+                <th>статус</th>
+                <th>попытка</th>
+                <th>причина</th>
+                <th>отброшено цитат</th>
+                <th>закончена</th>
+              </tr>
+            </thead>
+            <tbody>
+              {card.attempts.map((attempt) => {
+                const status = researchStatus(attempt.status);
+                return (
+                  <tr key={attempt.batch_id}>
+                    <td className="mono">{attempt.batch_id}</td>
+                    <td>
+                      <span className={`tone is-${status.tone}`}>{status.label}</span>
+                    </td>
+                    <td className="mono">{attempt.attempt ?? "—"}</td>
+                    <td>{attempt.error ?? "—"}</td>
+                    <td className="mono">{attempt.rejected_quotes}</td>
+                    <td className="mono">{moment(attempt.finished_at)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="note">Компанию ещё не брали в партию.</p>
       )}
 
-      <ThreadSummaryRow companyId={lead.company_id} />
+      <ThreadSummaryRow companyId={card.company_id} />
 
-      <RefusalForm channel={lead.channel} onDone={onRefused} />
+      {!card.refused && (
+        <RefusalForm channel={card.channel ?? card.contacts[0] ?? null} onDone={onRefused} />
+      )}
     </article>
   );
 }
 
-/** primary — канал, которым система предлагает писать: первый по приоритету
- *  WhatsApp → телефон → почта, не попавший в suppression. Остальные показаны
- *  как запасные, потому что решает всё равно человек. */
-function ChannelRow({ channel, primary }: { channel: Channel; primary: boolean }) {
+/** Почему компания не лид — по тем же трём правилам, что у бэкенда, только для
+ *  подписи: решение «лид или нет» приходит готовым полем `lead`. */
+function notLead(card: CompanyResearch) {
+  if (!card.dossier) return "Не лид: досье нет.";
+  if (!card.channel) return "Не лид: нет канала для WhatsApp — ни WhatsApp, ни мобильного.";
+  return "Не лид: в досье нет подтверждённой зацепки.";
+}
+
+function HookSource({ hook }: { hook: ResearchHook }) {
+  return (
+    <span className="tag">
+      <a href={hook.url} target="_blank" rel="noreferrer">
+        {hook.source === "reviews" ? "отзыв 2GIS" : hostname(hook.url)}
+      </a>
+      {` · ${day(hook.observed_at)}`}
+    </span>
+  );
+}
+
+/** primary — канал, которым система предлагает писать в WhatsApp. */
+function ContactRow({
+  contact,
+  primary,
+  refused,
+}: {
+  contact: Contact;
+  primary: boolean;
+  refused: boolean;
+}) {
   const [copied, setCopied] = useState(false);
 
   return (
-    <div
-      className={`channel${primary ? " is-primary" : ""}${
-        channel.suppressed ? " is-suppressed" : ""
-      }`}
-    >
-      <span className="channel-kind">{CHANNEL_LABELS[channel.kind] ?? channel.kind}</span>
-      <span className="handle mono">{channel.handle}</span>
+    <div className={`channel${primary ? " is-primary" : ""}${refused ? " is-suppressed" : ""}`}>
+      <span className="channel-kind">{CHANNEL_LABELS[contact.kind] ?? contact.kind}</span>
+      <span className="handle mono">{contact.handle}</span>
       <button
         className="ghost"
         onClick={() => {
-          navigator.clipboard.writeText(channel.handle);
+          navigator.clipboard.writeText(contact.handle);
           setCopied(true);
           setTimeout(() => setCopied(false), 1200);
         }}
       >
         {copied ? "скопировано" : "копировать"}
       </button>
-      {!channel.suppressed && (
-        <a className="ghost" href={channelLink(channel)} target="_blank" rel="noreferrer">
+      {!refused && (
+        <a className="ghost" href={channelLink(contact)} target="_blank" rel="noreferrer">
           открыть
         </a>
       )}
@@ -279,13 +282,11 @@ function ThreadSummaryRow({ companyId }: { companyId: string }) {
       {thread ? (
         <p className="note">
           Отправлено <b className="mono">{thread.sent}</b>, ответов от лида{" "}
-          <b className="mono">{thread.replies}</b>.{" "}
-          <Link href="/threads">Открыть диалог →</Link>
+          <b className="mono">{thread.replies}</b>. <Link href="/threads">Открыть диалог →</Link>
         </p>
       ) : (
         <p className="note">
-          Переписки ещё не было. <Link href="/threads">Открыть «Диалоги» →</Link>{" "}
-          или напишите первой строкой из «Холодных».
+          Переписки ещё не было. <Link href="/threads">Открыть «Диалоги» →</Link>
         </p>
       )}
     </section>

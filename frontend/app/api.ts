@@ -17,62 +17,6 @@ export type Lead = {
   sources: string[];
 };
 
-export type Signal = {
-  type: string;
-  observed_at: string;
-  weight: number;
-  quote: string | null;
-  url: string | null;
-};
-
-export type BreakdownPart = {
-  rule?: string;
-  signal?: string;
-  contribution: number;
-  quote?: string;
-  url?: string;
-  observed_at?: string;
-};
-
-export type Hook = {
-  angle: string;
-  quote: string;
-  url: string | null;
-  source: string | null;
-  observed_at: string | null;
-};
-
-export type Dossier = {
-  summary: string | null;
-  approach: string | null;
-  decision_maker: string | null;
-  hooks: Hook[];
-  confidence: number | null;
-};
-
-export type Fetch = {
-  url: string;
-  final_url: string | null;
-  status: number | null;
-  fetched_at: string | null;
-};
-
-export type ModelAnswer = {
-  kind: string;
-  model: string;
-  prompt: string;
-  answer: string;
-};
-
-export type LeadDetail = Lead & {
-  channels: Channel[];
-  signals: Signal[];
-  breakdown: BreakdownPart[];
-  dossier: Dossier | null;
-  fetches: Fetch[];
-  llm_answers: ModelAnswer[];
-};
-
 export type Stats = {
   companies: number;
   with_intent: number;
@@ -115,10 +59,6 @@ export function fetchLeads(limit: number, city: string) {
   return json<{ leads: Lead[]; stats: Stats }>(`/api/leads?${query}`);
 }
 
-export function fetchLead(companyId: string) {
-  return json<LeadDetail>(`/api/leads/${encodeURIComponent(companyId)}`);
-}
-
 /** Отказ в той форме, в какой его хранит бэкенд: контакт уже приведён к
  *  канонической форме, `refused_at` — ISO 8601 в UTC. */
 export type Refusal = { handle: string; reason: string; refused_at: string };
@@ -130,6 +70,180 @@ export function refuse(handle: string, reason: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ handle, reason }),
   });
+}
+
+// ---- Исследование: партия, лиды, карточка (модуль research) ----
+
+export type SignalType =
+  | "reviews_missed_lead"
+  | "reviews_unanswered_complaint"
+  | "site_hiring_sales"
+  | "site_no_pricing"
+  | "crm_widget"
+  | "ads_platform"
+  | "inbound_widget";
+
+export const SIGNAL_LABELS: Record<SignalType, string> = {
+  reviews_missed_lead: "Жалоба: не дозвонились или не ответили",
+  reviews_unanswered_complaint: "Жалоба в отзыве без ответа",
+  site_hiring_sales: "Ищут людей в продажи",
+  site_no_pricing: "Нет цен на сайте",
+  crm_widget: "CRM на сайте",
+  ads_platform: "Платят за рекламу",
+  inbound_widget: "Виджет входящих",
+};
+
+export type Contact = { kind: string; handle: string };
+
+export type ResearchHook = {
+  angle: string;
+  quote: string;
+  url: string;
+  source: "reviews" | "site";
+  observed_at: string;
+};
+
+export type Pain = {
+  statement: string;
+  evidence: string[];
+  severity: "видно явно" | "предполагается" | "не видно";
+};
+
+export type ResearchDossier = {
+  summary: string;
+  what_they_do: string;
+  hooks: ResearchHook[];
+  pains: Pain[];
+  approach: string;
+  decision_maker_hint: string | null;
+};
+
+export type Contribution = {
+  signal: SignalType;
+  weight: number;
+  age_days: number;
+  contribution: number;
+  quote: string;
+  url: string;
+  observed_at: string;
+};
+
+export type ResearchLead = {
+  company_id: string;
+  name: string;
+  city: string;
+  channel: Contact;
+  score: number;
+  why_now: ResearchHook;
+  breakdown: Contribution[];
+  dossier: ResearchDossier;
+};
+
+export type BatchStatus = "collecting" | "researching" | "done" | "stopped" | "interrupted";
+export type ResearchStatus = "pending" | "researching" | "done" | "failed";
+
+export type BatchCompany = {
+  company_id: string;
+  name: string;
+  status: ResearchStatus;
+  attempt: number | null;
+  error: string | null;
+  rejected_quotes: number;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
+export type Batch = {
+  batch_id: number;
+  status: BatchStatus;
+  size: number;
+  stop_requested: boolean;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+  counts: Record<ResearchStatus, number>;
+  companies: BatchCompany[];
+};
+
+export type ResearchAttempt = Omit<BatchCompany, "company_id" | "name"> & { batch_id: number };
+
+export type CompanyResearch = {
+  company_id: string;
+  name: string;
+  city: string;
+  contacts: Contact[];
+  channel: Contact | null;
+  refused: boolean;
+  lead: boolean;
+  score: number;
+  breakdown: Contribution[];
+  why_now: ResearchHook | null;
+  dossier: ResearchDossier | null;
+  model: string | null;
+  researched_at: string | null;
+  versions: number;
+  attempts: ResearchAttempt[];
+};
+
+export type ResearchSettings = {
+  batch_size: number;
+  model: string;
+  weights: Record<SignalType, number>;
+  half_life_days: number;
+};
+
+export function fetchResearchLeads() {
+  return json<ResearchLead[]>("/api/research/leads");
+}
+
+/** `null` — партий ещё не было. */
+export function fetchBatch() {
+  return json<Batch | null>("/api/research/batches/current");
+}
+
+export function startBatch() {
+  return json<Batch>("/api/research/batches", { method: "POST" });
+}
+
+export function stopBatch() {
+  return json<Batch>("/api/research/batches/current/stop", { method: "POST" });
+}
+
+export function fetchCompanyResearch(companyId: string) {
+  return json<CompanyResearch>(`/api/research/companies/${encodeURIComponent(companyId)}`);
+}
+
+export function researchAgain(companyId: string) {
+  return json<Batch>(`/api/research/companies/${encodeURIComponent(companyId)}`, {
+    method: "POST",
+  });
+}
+
+export function fetchResearchSettings() {
+  return json<ResearchSettings>("/api/research/settings");
+}
+
+export function saveResearchSettings(settings: ResearchSettings) {
+  return json<ResearchSettings>("/api/research/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+}
+
+/** Тексты ошибок исследования по `code`; неизвестный код — `detail` бэкенда. */
+const RESEARCH_ERRORS: Record<string, string> = {
+  "errors.batchRunning": "Партия уже идёт — дождитесь её или остановите.",
+  "errors.batchNotRunning": "Партия уже не идёт — останавливать нечего.",
+  "errors.modelKeyMissing":
+    "Нет ключа модели: задайте OPENROUTER_API_KEY в backend/.env и перезапустите бэкенд.",
+  "errors.companyRefused": "Компания в отказах — ей больше не пишем, исследовать незачем.",
+  "errors.companyNotFound": "Такой компании нет в базе.",
+};
+
+export function researchError(failure: unknown) {
+  const code = failure instanceof ApiError ? failure.code : undefined;
+  return (code && RESEARCH_ERRORS[code]) || (failure instanceof Error ? failure.message : String(failure));
 }
 
 // ---- Компании: сегменты и их сбор из 2GIS ----
@@ -574,13 +688,6 @@ function post<T>(url: string, body: unknown) {
     body: JSON.stringify(body),
   });
 }
-
-export const SIGNAL_LABELS: Record<string, string> = {
-  ads_platform: "Платит за рекламу",
-  crm_widget: "CRM на сайте",
-  inbound_widget: "Виджет входящих",
-  service_catalog: "Каталог услуг с ценами",
-};
 
 // ---- Песочница: подменный транспорт и роль лида ----
 

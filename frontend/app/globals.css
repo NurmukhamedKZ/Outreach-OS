@@ -1733,3 +1733,102 @@ a.nav-item:hover {
 .settings-table {
   overflow-x: auto;
 }
+
+.settings-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-field {
+  display: grid;
+  grid-template-columns: minmax(0, 300px) 160px auto;
+  align-items: center;
+  gap: 4px 12px;
+  font-size: 14px;
+}
+
+.settings-field .input {
+  width: 100%;
+}
+
+@media (max-width: 640px) {
+  .settings-field {
+    grid-template-columns: 1fr auto;
+  }
+
+  .settings-field > span:first-child {
+    grid-column: 1 / -1;
+  }
+}
+
+/* --- партия исследования ------------------------------------------------------ */
+
+.batch {
+  margin-bottom: 16px;
+}
+
+.batch-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+}
+
+.batch-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.batch .note,
+.batch .error-line {
+  margin: 10px 0 0;
+}
+
+.batch-failures {
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.batch-failures ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+/* Строка лида — не ссылка целиком: внутри неё ссылка на источник цитаты. */
+.lead-row {
+  align-items: start;
+}
+
+.lead-row .row-name {
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.lead-row .row-name:hover {
+  text-decoration: underline;
+}
+
+.lead-why {
+  display: block;
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--body);
+}
+
+.lead-why blockquote {
+  margin: 4px 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--hairline-strong);
+  font-style: italic;
+}
+
+.lead-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
