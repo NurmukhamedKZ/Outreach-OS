@@ -1,12 +1,15 @@
 """Facade of backup for the app assembler and the operator's task list."""
 
+from contextlib import suppress
 from datetime import datetime
 from threading import Event
 
 import clock
+from backup.dependencies import get_backup
+from backup.exceptions import BackupDisabledError, BackupFailedError, BackupRunningError
 from backup.service import CHECK_SECONDS, BackupService, tick
 
-__all__ = ["BackupService", "loop", "now"]
+__all__ = ["BackupService", "back_up", "get_backup", "loop", "now"]
 
 
 def now() -> datetime:
@@ -28,3 +31,13 @@ def loop(service: BackupService, stop: Event) -> None:
     while not stop.is_set():
         tick(service, now())
         stop.wait(CHECK_SECONDS)
+
+
+def back_up(service: BackupService) -> None:
+    """Take a snapshot now, due or not, as after a batch; nothing is raised for it.
+
+    Every outcome, a disabled folder or one already being written included, is
+    already in the journal of the backup itself.
+    """
+    with suppress(BackupDisabledError, BackupFailedError, BackupRunningError):
+        service.run(now())

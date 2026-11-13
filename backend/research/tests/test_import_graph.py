@@ -1,13 +1,13 @@
-"""research depends on core, companies and refusals, the last two through public only."""
+"""research depends on core, companies, refusals and backup, the last three through public only."""
 
 import ast
 from pathlib import Path
 
 MODULE = Path(__file__).resolve().parent.parent
 BACKEND = MODULE.parent
-DOMAIN = ("collector", "writer", "sender", "sandbox", "refusals", "companies",
+DOMAIN = ("backup", "collector", "writer", "sender", "sandbox", "refusals", "companies",
           "conversations", "delivery", "overview", "analytics", "tasks", "activity")
-ALLOWED = {"companies.public", "refusals.public"}
+ALLOWED = {"backup.public", "companies.public", "refusals.public"}
 
 
 def imports(path: Path) -> set[str]:

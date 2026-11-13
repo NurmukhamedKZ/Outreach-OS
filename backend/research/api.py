@@ -2,7 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, status
 
 import clock
 import paths
-from research.dependencies import ModelDep, PagesDep, ResearchServiceDep, run_in_background
+from research.dependencies import BackupDep, ModelDep, PagesDep, ResearchServiceDep, run_in_background
 from research.schemas import BatchView, CompanyResearch, Lead, ResearchSettings
 
 router = APIRouter(prefix="/api/research", tags=["research"])
@@ -16,11 +16,12 @@ NOT_FOUND = {404: {"description": "errors.companyNotFound: no such company"}}
              summary="Start a batch in the background, or resume the interrupted one",
              responses=ALREADY_RUNNING | NO_KEY)
 def start_batch(background: BackgroundTasks, service: ResearchServiceDep, pages: PagesDep,
-                model: ModelDep) -> BatchView:
+                model: ModelDep, backups: BackupDep) -> BatchView:
     # The state is in the batch tables: losing the task with the process loses
     # nothing, the next start marks the batch interrupted and resumes it.
     batch_id = service.start(clock.now())
-    background.add_task(run_in_background, paths.state_db(), pages, model, batch_id, clock.now)
+    background.add_task(run_in_background, paths.state_db(), pages, model, batch_id, clock.now,
+                       backups)
     return service.batch(batch_id)
 
 
@@ -56,9 +57,10 @@ def company(company_id: str, service: ResearchServiceDep) -> CompanyResearch:
                  409: {"description": "errors.batchRunning: a batch is already running;"
                                       " errors.companyRefused: the company is refused"}})
 def research_again(company_id: str, background: BackgroundTasks, service: ResearchServiceDep,
-                   pages: PagesDep, model: ModelDep) -> BatchView:
+                   pages: PagesDep, model: ModelDep, backups: BackupDep) -> BatchView:
     batch_id = service.start_one(company_id, clock.now())
-    background.add_task(run_in_background, paths.state_db(), pages, model, batch_id, clock.now)
+    background.add_task(run_in_background, paths.state_db(), pages, model, batch_id, clock.now,
+                       backups)
     return service.batch(batch_id)
 
 
