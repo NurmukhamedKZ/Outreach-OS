@@ -4,7 +4,6 @@ import logging
 
 import pytest
 
-import logctx
 import logging_setup
 
 
@@ -47,23 +46,6 @@ def test_scrapling_noise_does_not_leak_into_backend_log(clean_logging):
         handler.flush()
 
     assert "dead.kz" not in (clean_logging / "backend.log").read_text(encoding="utf-8")
-
-
-def test_context_fields_appear_only_when_set(clean_logging):
-    logging_setup.configure()
-    logger = logging.getLogger("app.demo2")
-    logger.info("no context")
-    with logctx.job("job-7"), logctx.entity("adelex.kz"):
-        logger.info("with context")
-    for handler in logging.getLogger().handlers:
-        handler.flush()
-
-    lines = (clean_logging / "backend.log").read_text(encoding="utf-8").splitlines()
-    no_context_line = next(l for l in lines if "no context" in l)
-    with_context_line = next(l for l in lines if "with context" in l)
-    assert "job_id=" not in no_context_line and "entity=" not in no_context_line
-    assert "job_id=job-7" in with_context_line
-    assert "entity=adelex.kz" in with_context_line
 
 
 def test_configure_is_idempotent(clean_logging):

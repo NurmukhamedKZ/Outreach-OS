@@ -184,6 +184,52 @@ def stats(db: sqlite3.Connection) -> dict[str, int]:
     return ConversationRepository(db).stats()
 
 
+def escalated(db: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return threads handed to a human: company_id, channel, status_reason, our_number, at.
+
+    `at` is when the lead last wrote and the reply was handled; None when it never was.
+    """
+    return ConversationRepository(db).escalated()
+
+
+class SentThread(TypedDict):
+    """A thread as the funnel counts it: what happened to it and what opened it."""
+
+    company_id: str
+    stage: str
+    outcome: str | None
+    replied: bool
+    # The thread's first sent message; the breakdowns judge the thread by it.
+    first_sent_at: str
+    offer_variant: str | None
+    angle: str | None
+    # Its messages sent in the period, and how many of them the operator edited.
+    messages: list[int]
+    edited: int
+
+
+def sent_since(db: sqlite3.Connection, since: datetime) -> list[SentThread]:
+    """Return the threads with a message sent since `since`, one record a thread."""
+    repo = ConversationRepository(db)
+    sent: dict[str, list[dict[str, Any]]] = {}
+    for message in repo.sent_messages(since):
+        sent.setdefault(message["company_id"], []).append(message)
+    return [
+        SentThread(
+            company_id=row["company_id"],
+            stage=row["stage"],
+            outcome=row["outcome"],
+            replied=bool(row["replied"]),
+            first_sent_at=row["first_sent_at"],
+            offer_variant=row["offer_variant"],
+            angle=row["angle"],
+            messages=[m["message_id"] for m in sent.get(row["company_id"], [])],
+            edited=sum(bool(m["edited"]) for m in sent.get(row["company_id"], [])),
+        )
+        for row in repo.sent_threads(since)
+    ]
+
+
 def cold_drafts(db: sqlite3.Connection) -> list[dict[str, Any]]:
     """Return first touches waiting for review, the newest first: company_id, channel, created_at."""
     return [dict(row) for row in ConversationRepository(db).cold_drafts()]

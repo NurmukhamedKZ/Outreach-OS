@@ -1,4 +1,4 @@
-"""Facade of delivery for the app assembler, the counters of «Сегодня» and the sandbox."""
+"""Facade of delivery for the app assembler, overview (counters, tasks, funnel) and the sandbox."""
 
 import sqlite3
 from collections import Counter
@@ -8,12 +8,13 @@ from threading import Event, Thread
 from typing import Any
 
 from conversations import public as conversation
+from core.activity import Journal
 from core.model import Model
 from core.whatsapp import WhatsApp
 from delivery import notify, worker
 from delivery.repository import DeliveryRepository
 from delivery.schemas import DeliverySettings
-from delivery.service import Notify, heartbeat, load_settings
+from delivery.service import TICK_ACTOR, Notify, load_settings
 
 # The longest pause between two sends of a number: whether a send still fits the window.
 LONGEST_JITTER_MINUTES = max(worker.JITTER_MINUTES)
@@ -21,10 +22,12 @@ LONGEST_JITTER_MINUTES = max(worker.JITTER_MINUTES)
 __all__ = [
     "LONGEST_JITTER_MINUTES",
     "DeliverySettings",
+    "delivered_messages",
     "register_number",
     "settings",
     "start",
     "stats",
+    "stuck",
     "telegram",
 ]
 
@@ -37,7 +40,7 @@ def settings(db: sqlite3.Connection) -> DeliverySettings:
     return load_settings(db)
 
 
-def stats(db: sqlite3.Connection, now: datetime) -> dict[str, Any]:
+def stats(db: sqlite3.Connection, now: datetime, journal: Journal) -> dict[str, Any]:
     """Return the counters of delivery for «Сегодня»; reads the database only, Node is not asked."""
     repo = DeliveryRepository(db)
     return {
@@ -45,8 +48,33 @@ def stats(db: sqlite3.Connection, now: datetime) -> dict[str, Any]:
         "numbers": dict(Counter(row["status"] for row in repo.numbers())),
         "queue": repo.counters(now),
         "threads": conversation.counters(db),
-        "heartbeat": heartbeat(),
+        "heartbeat": journal.last_at(TICK_ACTOR),
     }
+
+
+def stuck(db: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Return sends whose fate only the phone knows: company_id, channel, our_number, at.
+
+    A row whose thread is gone is left out: there is nobody to name.
+    """
+    found = []
+    for row in DeliveryRepository(db).stuck():
+        thread = conversation.thread(db, row["thread_id"])
+        if thread is not None:
+            found.append(
+                {
+                    "company_id": row["thread_id"],
+                    "channel": thread["channel"],
+                    "our_number": row["our_number"],
+                    "at": row["updated_at"],
+                }
+            )
+    return found
+
+
+def delivered_messages(db: sqlite3.Connection) -> set[int]:
+    """Return the ids of messages a receipt confirmed delivered to the lead's phone."""
+    return DeliveryRepository(db).delivered_messages()
 
 
 def register_number(db: sqlite3.Connection, number: str, now: datetime, skip_warmup: bool) -> None:
@@ -56,7 +84,11 @@ def register_number(db: sqlite3.Connection, number: str, now: datetime, skip_war
 
 
 def start(
-    stop: Event, whatsapp: WhatsApp, notifier: Notify, model: Callable[[], Model]
+    stop: Event,
+    whatsapp: WhatsApp,
+    notifier: Notify,
+    model: Callable[[], Model],
+    journal: Journal,
 ) -> list[Thread]:
     """Start the three daemons as threads; each ends on its tick after `stop` is set.
 
@@ -71,7 +103,7 @@ def start(
     threads = [
         Thread(
             target=worker.run,
-            args=(actor, step, interval, stop, whatsapp, notifier, model),
+            args=(actor, step, interval, stop, whatsapp, notifier, model, journal),
             name=actor,
             daemon=True,
         )

@@ -2,18 +2,21 @@ from contextlib import closing
 
 import pytest
 
-import activity
 from backup.service import BackupService
 from core import db as core_db
+from core.activity import Journal
 
 
 @pytest.fixture
 def state(tmp_path):
     path = tmp_path / "data" / "state.db"
     core_db.migrate(path)
-    activity.use(path)
-    yield path
-    activity.use(None)
+    return path
+
+
+@pytest.fixture
+def journal(state):
+    return Journal(lambda: state)
 
 
 @pytest.fixture
@@ -42,6 +45,6 @@ def icloud(tmp_path):
 
 
 @pytest.fixture
-def service(sources, icloud):
+def service(sources, icloud, journal):
     state, pages, sessions = sources
-    return BackupService(icloud, state, pages, sessions)
+    return BackupService(icloud, state, pages, sessions, journal)

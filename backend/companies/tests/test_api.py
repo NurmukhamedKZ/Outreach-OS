@@ -4,10 +4,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 import clock
-from collector.api import app
 from companies import domain
 from companies.dependencies import get_pages
 from core import pages
+from main import app
 
 NOW = datetime(2026, 11, 12, 10, 0, tzinfo=UTC)
 
@@ -124,9 +124,9 @@ def test_a_collected_segment_is_not_collected_again(client, network, gis):
 
 
 def test_the_start_of_the_app_forgets_a_collection_cut_by_a_restart(client, state):
-    from collector.api import prepare_database
     from companies.service import CompanyService
     from core import db as core_db
+    from main import prepare_database
 
     with core_db.connect(state) as db:
         CompanyService(db).claim(NOW)

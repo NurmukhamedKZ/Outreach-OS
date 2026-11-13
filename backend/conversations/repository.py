@@ -388,6 +388,40 @@ class ConversationRepository:
         ).fetchone()[0]
         return {"waiting": int(waiting), "escalated": int(escalated)}
 
+    def escalated(self) -> list[dict[str, Any]]:
+        rows = self._db.execute(
+            "SELECT t.company_id, t.channel, t.status_reason, t.our_number,"
+            "       (SELECT max(m.handled_at) FROM messages m"
+            "        WHERE m.company_id = t.company_id AND m.role = 'incoming') AS at"
+            " FROM threads t WHERE t.status = 'escalated'"
+        )
+        return [dict(row) for row in rows]
+
+    def sent_threads(self, since: datetime) -> list[dict[str, Any]]:
+        """Threads with a message sent since `since`, with the thread's first sent message."""
+        rows = self._db.execute(
+            "SELECT t.company_id, t.stage, t.outcome,"
+            "       EXISTS (SELECT 1 FROM messages i WHERE i.company_id = t.company_id"
+            "               AND i.role = 'incoming') AS replied,"
+            "       f.sent_at AS first_sent_at, f.offer_variant, f.angle"
+            " FROM threads t JOIN messages f ON f.message_id = ("
+            "   SELECT min(o.message_id) FROM messages o WHERE o.company_id = t.company_id"
+            "   AND o.role = 'outgoing' AND o.sent_text IS NOT NULL)"
+            " WHERE EXISTS (SELECT 1 FROM messages m WHERE m.company_id = t.company_id"
+            "   AND m.role = 'outgoing' AND m.sent_text IS NOT NULL AND m.sent_at >= ?)",
+            (stamp(since),),
+        )
+        return [dict(row) for row in rows]
+
+    def sent_messages(self, since: datetime) -> list[dict[str, Any]]:
+        rows = self._db.execute(
+            "SELECT company_id, message_id,"
+            "       draft_text IS NOT NULL AND sent_text != draft_text AS edited"
+            " FROM messages WHERE role = 'outgoing' AND sent_text IS NOT NULL AND sent_at >= ?",
+            (stamp(since),),
+        )
+        return [dict(row) for row in rows]
+
     def stats(self) -> dict[str, int]:
         threads = self._db.execute("SELECT count(*) FROM threads").fetchone()[0]
         row = self._db.execute(

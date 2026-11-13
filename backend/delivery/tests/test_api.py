@@ -22,6 +22,7 @@ from delivery.tests.conftest import (
     OURS,
     add_draft,
     add_number,
+    journal_of,
     open_thread,
     queued,
     status_of,
@@ -31,7 +32,7 @@ from refusals import public as refusals
 
 
 @pytest.fixture
-def http(state, monkeypatch, whatsapp, notes):
+def http(state, monkeypatch, whatsapp, notes, journal):
     monkeypatch.setattr(paths, "PRODUCTION_STATE", state)
     monkeypatch.setattr(clock, "now", lambda: INSIDE)
     monkeypatch.setattr(settings, "sender_webhook_secret", None)
@@ -39,6 +40,7 @@ def http(state, monkeypatch, whatsapp, notes):
     app.add_exception_handler(DomainError, domain_error_handler)  # type: ignore[arg-type]  # Starlette types handlers loosely
     app.include_router(api.router)
     app.state.whatsapp = whatsapp
+    app.state.journal = journal
     app.dependency_overrides[dependencies.get_notify] = lambda: notes.append
     return TestClient(app)
 
@@ -617,7 +619,7 @@ def test_the_operators_text_loses_its_edge_spaces_in_the_service(db, whatsapp, n
     open_thread(db)
     message_id = add_draft(db)
 
-    DeliveryService(db, whatsapp, notes.append).enqueue(
+    DeliveryService(db, whatsapp, notes.append, journal_of(db)).enqueue(
         "c1", INSIDE, Author.OPERATOR, text="  Привет  "
     )
 

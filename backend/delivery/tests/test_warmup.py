@@ -5,7 +5,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-import activity
 from core.model import FakeModel
 from core.whatsapp import TransportError
 from delivery import worker
@@ -13,6 +12,7 @@ from delivery.repository import DeliveryRepository
 from delivery.schemas import NumberStatus
 from delivery.tests.conftest import (
     add_number,
+    journal_of,
     number_of,
 )
 
@@ -30,7 +30,7 @@ def work(db, whatsapp, notes, monkeypatch):
     # The first of the options: the test measures the limit, not a roulette.
     rng = random.Random()
     monkeypatch.setattr(rng, "choice", lambda options: options[0])
-    return worker.Worker(db, whatsapp, notes.append, FakeModel, rng)
+    return worker.Worker(db, whatsapp, notes.append, FakeModel, rng, journal_of(db))
 
 
 def pair(db, first=NumberStatus.WARMING, second=NumberStatus.ACTIVE):
@@ -42,11 +42,11 @@ def status(db, number):
     return number_of(db, number)["status"]
 
 
-def test_the_socket_delay_day_sends_nothing(db, work, whatsapp):
+def test_the_socket_delay_day_sends_nothing(db, work, whatsapp, journal):
     pair(db)
     assert work.warm(at(1)) is None
     assert whatsapp.sends == []
-    assert activity.recent(actor=worker.WARMUP_ACTOR)[0]["outcome"] == "idle"
+    assert journal.recent(actor=worker.WARMUP_ACTOR)[0]["outcome"] == "idle"
 
 
 def test_a_passive_newcomer_receives_from_an_active_number_once_in_two_hours(db, work, whatsapp):
@@ -62,7 +62,7 @@ def test_a_passive_newcomer_receives_from_an_active_number_once_in_two_hours(db,
     assert [(send["number"], send["to"]) for send in whatsapp.sends] == [(SECOND, FRESH)] * 2
 
 
-def test_the_internal_phase_writes_to_another_of_our_numbers(db, work, whatsapp):
+def test_the_internal_phase_writes_to_another_of_our_numbers(db, work, whatsapp, journal):
     pair(db)
 
     sender = work.warm(at(5))
@@ -73,15 +73,15 @@ def test_the_internal_phase_writes_to_another_of_our_numbers(db, work, whatsapp)
     assert repo.sent_today(SECOND, at(5)) == 1
     log = repo.warmup_log(10)
     assert (log[0]["our_number"], log[0]["recipient"], log[0]["status"]) == (SECOND, FIRST, "sent")
-    assert activity.recent(actor=worker.WARMUP_ACTOR)[0]["outcome"] == "sent"
+    assert journal.recent(actor=worker.WARMUP_ACTOR)[0]["outcome"] == "sent"
 
 
-def test_a_frame_that_did_not_leave_spends_nothing(db, work, whatsapp):
+def test_a_frame_that_did_not_leave_spends_nothing(db, work, whatsapp, journal):
     pair(db)
     whatsapp.sent = False
     assert work.warm(at(5)) is None
     assert DeliveryRepository(db).sent_today(SECOND, at(5)) == 0
-    assert activity.recent(actor=worker.WARMUP_ACTOR)[0]["outcome"] == "not_sent"
+    assert journal.recent(actor=worker.WARMUP_ACTOR)[0]["outcome"] == "not_sent"
 
 
 def test_a_number_that_spent_its_limit_is_skipped(db, work):
@@ -142,11 +142,11 @@ def test_a_number_never_writes_to_itself(db, work, whatsapp):
     assert whatsapp.sends[0]["to"] == FIRST
 
 
-def test_node_down_during_warmup_is_transport_down_not_a_crash(db, work, whatsapp):
+def test_node_down_during_warmup_is_transport_down_not_a_crash(db, work, whatsapp, journal):
     pair(db)
     whatsapp.error = TransportError("down")
 
     assert work.warm(at(5)) is None
 
-    assert activity.recent(actor=worker.WARMUP_ACTOR)[0]["outcome"] == "transport_down"
+    assert journal.recent(actor=worker.WARMUP_ACTOR)[0]["outcome"] == "transport_down"
     assert DeliveryRepository(db).sent_today(SECOND, at(5)) == 0

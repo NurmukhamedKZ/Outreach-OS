@@ -40,6 +40,7 @@ def test_the_seam_reaches_the_daemons_of_delivery(tmp_path, monkeypatch):
 
     import paths
     from core import db as core_db
+    from core.activity import Journal
     from delivery import worker
 
     monkeypatch.setattr(paths, "PRODUCTION_STATE", tmp_path / "state.db")
@@ -51,32 +52,6 @@ def test_the_seam_reaches_the_daemons_of_delivery(tmp_path, monkeypatch):
         stop.set()
 
     clock.use(timedelta(days=3))
-    worker.run("sender.tick", step, lambda: 0, stop, None, print, lambda: None)
+    journal = Journal(paths.state_db)
+    worker.run("sender.tick", step, lambda: 0, stop, None, print, lambda: None, journal)
     assert seen[0] - datetime.now(timezone.utc) > timedelta(days=2, hours=23)
-
-
-def test_the_seam_reaches_the_dashboard(tmp_path, monkeypatch):
-    """Счётчики очереди на /api/stats считаются по тем же часам, что тик
-    воркера. Иначе после сдвига дашборд показывает ноль просроченных, пока
-    воркер их разгребает, и два числа на одном экране спорят друг с другом.
-    """
-    import paths
-    from collector.services import metrics
-    from core import db as core_db
-
-    path = tmp_path / "state.db"
-    core_db.migrate(path)
-    db = core_db.connect(path)
-    ripe = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat(
-        timespec="seconds")
-    db.execute("INSERT INTO outbox (thread_id, our_number, send_after, status, kind,"
-               " author, attempts, created_at, updated_at)"
-               " VALUES ('c1', '+77000000001', ?, 'pending', 'cold', 'operator', 0, ?, ?)",
-               (ripe, ripe, ripe))
-    db.commit()
-    db.close()
-    monkeypatch.setattr(paths, "PRODUCTION_STATE", path)
-
-    assert metrics.sender_stats()["queue"]["overdue"] == 0
-    clock.use(timedelta(days=1))
-    assert metrics.sender_stats()["queue"]["overdue"] == 1

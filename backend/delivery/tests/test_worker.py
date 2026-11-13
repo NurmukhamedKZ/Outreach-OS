@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-import activity
 from conversations import public as conversation
 from core import operator_settings
 from core.model import FakeModel
@@ -22,6 +21,7 @@ from delivery.tests.conftest import (
     OURS,
     add_draft,
     add_number,
+    journal_of,
     open_thread,
     queued,
     row_of,
@@ -41,8 +41,8 @@ def set_mode(db, mode: Mode | str) -> None:
 
 
 @pytest.fixture
-def work(db, whatsapp, notes, model):
-    return worker.Worker(db, whatsapp, notes.append, lambda: model, random.Random(7))
+def work(db, whatsapp, notes, model, journal):
+    return worker.Worker(db, whatsapp, notes.append, lambda: model, random.Random(7), journal)
 
 
 @pytest.fixture(autouse=True)
@@ -54,14 +54,14 @@ def manual(db):
 # --- one due row ----------------------------------------------------------------------
 
 
-def test_nothing_due_is_idle_in_the_journal_once(work):
+def test_nothing_due_is_idle_in_the_journal_once(work, journal):
     assert work.tick(INSIDE) is None
     work.tick(INSIDE)
-    events = activity.recent(actor=worker.TICK_ACTOR)
+    events = journal.recent(actor=worker.TICK_ACTOR)
     assert [(event["outcome"], event["repeats"]) for event in events] == [("idle", 2)]
 
 
-def test_the_happy_path_sends_the_operators_edit_and_writes_history(db, work, whatsapp):
+def test_the_happy_path_sends_the_operators_edit_and_writes_history(db, work, whatsapp, journal):
     outbox_id, message_id = queued(db, text="Черновик модели")
     with db:
         conversation.set_queued_text(db, message_id, "Правленый оператором текст")
@@ -82,7 +82,7 @@ def test_the_happy_path_sends_the_operators_edit_and_writes_history(db, work, wh
         db.execute("SELECT sent_text FROM messages").fetchone()[0] == "Правленый оператором текст"
     )
     assert thread_of(db, "c1")["touch_no"] == 1
-    sent = activity.recent(actor=worker.TICK_ACTOR)[0]
+    sent = journal.recent(actor=worker.TICK_ACTOR)[0]
     assert (sent["outcome"], sent["subject"], sent["detail"]) == ("sent", OURS, "тред c1")
 
 
@@ -270,7 +270,7 @@ def test_manual_holds_the_rows_the_automaton_queued_before_the_switch(db, work, 
 
 def test_confirm_releases_a_held_row_in_manual(db, work, whatsapp):
     held, _ = queued(db, author=Author.AUTOMAT)
-    DeliveryService(db, whatsapp, lambda text: None).confirm(held, INSIDE)
+    DeliveryService(db, whatsapp, lambda text: None, journal_of(db)).confirm(held, INSIDE)
     assert work.tick(INSIDE) == "sent"
 
 
@@ -358,7 +358,9 @@ def test_a_lead_without_whatsapp_does_not_stall_cold_outreach(db, work, whatsapp
 # --- the loop --------------------------------------------------------------------------
 
 
-def test_the_loop_survives_a_crash_and_stops_on_the_event(state, monkeypatch, whatsapp, notes):
+def test_the_loop_survives_a_crash_and_stops_on_the_event(
+    state, monkeypatch, whatsapp, notes, journal
+):
     import threading
 
     import paths
@@ -373,10 +375,10 @@ def test_the_loop_survives_a_crash_and_stops_on_the_event(state, monkeypatch, wh
             raise RuntimeError("boom")
         stop.set()
 
-    worker.run("sender.tick", step, lambda: 0, stop, whatsapp, notes.append, FakeModel)
+    worker.run("sender.tick", step, lambda: 0, stop, whatsapp, notes.append, FakeModel, journal)
 
     assert len(calls) == 2
-    assert activity.recent(actor="sender.tick")[0]["outcome"] == "crashed"
+    assert journal.recent(actor="sender.tick")[0]["outcome"] == "crashed"
 
 
 def test_the_dashboard_has_a_label_for_every_outcome_and_thread_status():
@@ -435,17 +437,19 @@ def test_a_row_cancelled_between_the_read_and_the_claim_is_not_sent(db, work, wh
     assert status_of(db, outbox_id) == "cancelled"
 
 
-def test_a_journal_failing_after_the_send_does_not_revive_the_row(db, work, whatsapp, monkeypatch):
+def test_a_journal_failing_after_the_send_does_not_revive_the_row(
+    db, work, whatsapp, monkeypatch, journal
+):
     """The row is already sent: a retry would send the same message again."""
     outbox_id, _ = queued(db)
-    real = activity.record
+    real = journal.record
 
     def locked(actor, outcome, subject=None, detail=None):
         if outcome == "sent":
             raise sqlite3.OperationalError("database is locked")
         return real(actor, outcome, subject=subject, detail=detail)
 
-    monkeypatch.setattr(activity, "record", locked)
+    monkeypatch.setattr(journal, "record", locked)
 
     assert work.tick(INSIDE) == "taken"
     assert work.tick(INSIDE + timedelta(hours=1)) is None

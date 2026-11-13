@@ -5,7 +5,6 @@ import sqlite3
 
 import pytest
 
-import activity
 from conversations import public as conversation
 from core.model import FakeModel
 from delivery import worker
@@ -15,6 +14,7 @@ from delivery.tests.conftest import (
     INSIDE,
     OURS,
     add_number,
+    journal_of,
     open_thread,
     thread_of,
 )
@@ -48,7 +48,9 @@ def replied(db):
 
 def seller(db, whatsapp, notes, *answers):
     model = FakeModel(*answers)
-    return worker.Worker(db, whatsapp, notes.append, lambda: model, random.Random(1)), model
+    return worker.Worker(
+        db, whatsapp, notes.append, lambda: model, random.Random(1), journal_of(db)
+    ), model
 
 
 def rows(db):
@@ -71,7 +73,9 @@ def test_the_seller_reads_the_thread_and_its_request_is_kept(replied, whatsapp, 
     assert "а сколько стоит?" in stored
 
 
-def test_in_replies_the_answer_is_drafted_counted_and_queued_in_one_go(replied, whatsapp, notes):
+def test_in_replies_the_answer_is_drafted_counted_and_queued_in_one_go(
+    replied, whatsapp, notes, journal
+):
     work, _ = seller(replied, whatsapp, notes, answer("Цену назовём после разговора."))
 
     assert work.tick(INSIDE) == "answered"
@@ -80,7 +84,7 @@ def test_in_replies_the_answer_is_drafted_counted_and_queued_in_one_go(replied, 
     thread = thread_of(replied, "c1")
     assert (thread["auto_replies"], thread["status"]) == (1, "active")
     assert conversation.unhandled_incoming(replied) is None
-    event = activity.recent(actor=worker.TICK_ACTOR)[0]
+    event = journal.recent(actor=worker.TICK_ACTOR)[0]
     # The length, not the words: what was said lives in the thread, not in the journal.
     assert (event["outcome"], event["detail"]) == ("answered", "29 знаков")
 
@@ -139,7 +143,9 @@ def test_a_switch_to_replies_while_the_model_thinks_does_not_bypass_the_limit(
             return super().answer(*args, **kwargs)
 
     model = SwitchesTheMode(answer("Ответ агента"))
-    work = worker.Worker(replied, whatsapp, notes.append, lambda: model, random.Random(1))
+    work = worker.Worker(
+        replied, whatsapp, notes.append, lambda: model, random.Random(1), journal_of(replied)
+    )
 
     assert work.handle_incoming(INSIDE, work._service.settings()) == "answered"
 
@@ -150,7 +156,7 @@ def test_a_switch_to_replies_while_the_model_thinks_does_not_bypass_the_limit(
 @pytest.mark.parametrize(
     "text, why", [("Обойдётся в 250 000 тенге в месяц.", "цен"), ("а" * 601, "длиннее")]
 )
-def test_a_price_or_a_long_answer_goes_to_a_human(replied, whatsapp, notes, text, why):
+def test_a_price_or_a_long_answer_goes_to_a_human(replied, whatsapp, notes, text, why, journal):
     work, _ = seller(replied, whatsapp, notes, answer(text))
 
     assert work.handle_incoming(INSIDE, work._service.settings()) == "escalated"
@@ -158,7 +164,7 @@ def test_a_price_or_a_long_answer_goes_to_a_human(replied, whatsapp, notes, text
     assert rows(replied) == []
     thread = thread_of(replied, "c1")
     assert thread["status"] == "escalated" and why in (thread["status_reason"] or "")
-    assert why in activity.recent(actor=worker.TICK_ACTOR)[0]["detail"]
+    assert why in journal.recent(actor=worker.TICK_ACTOR)[0]["detail"]
     assert len(notes) == 1
 
 
@@ -172,7 +178,7 @@ def test_a_price_or_a_long_answer_goes_to_a_human(replied, whatsapp, notes, text
     ],
 )
 def test_every_verdict_moves_the_thread_with_the_sellers_reason(
-    replied, whatsapp, notes, decision, expected
+    replied, whatsapp, notes, decision, expected, journal
 ):
     work, _ = seller(replied, whatsapp, notes, verdict(decision, "просит КП на почту"))
 
@@ -180,7 +186,7 @@ def test_every_verdict_moves_the_thread_with_the_sellers_reason(
 
     thread = thread_of(replied, "c1")
     assert (thread["status"], thread["status_reason"]) == (expected, "просит КП на почту")
-    assert "просит КП" in activity.recent(actor=worker.TICK_ACTOR)[0]["detail"]
+    assert "просит КП" in journal.recent(actor=worker.TICK_ACTOR)[0]["detail"]
 
 
 def test_a_refusal_verdict_records_the_refusal(replied, whatsapp, notes):
@@ -242,7 +248,9 @@ def test_a_thread_taken_by_a_human_while_the_model_thinks_gets_a_draft_but_no_ro
     replied, whatsapp, notes
 ):
     model = Mid(replied, "escalated", answer("Ответ"))
-    work = worker.Worker(replied, whatsapp, notes.append, lambda: model, random.Random(1))
+    work = worker.Worker(
+        replied, whatsapp, notes.append, lambda: model, random.Random(1), journal_of(replied)
+    )
 
     assert work.handle_incoming(INSIDE, work._service.settings()) == "answered"
 
@@ -254,7 +262,9 @@ def test_a_verdict_does_not_reopen_a_thread_the_lead_closed_while_the_model_thou
     replied, whatsapp, notes
 ):
     model = Mid(replied, "closed_refused", verdict("interested", "хочет КП"))
-    work = worker.Worker(replied, whatsapp, notes.append, lambda: model, random.Random(1))
+    work = worker.Worker(
+        replied, whatsapp, notes.append, lambda: model, random.Random(1), journal_of(replied)
+    )
 
     assert work.handle_incoming(INSIDE, work._service.settings()) == "closed"
 
@@ -264,7 +274,7 @@ def test_a_verdict_does_not_reopen_a_thread_the_lead_closed_while_the_model_thou
 
 
 def test_a_failed_refusal_record_is_loud_and_the_thread_stays_closed(
-    replied, whatsapp, notes, monkeypatch
+    replied, whatsapp, notes, monkeypatch, journal
 ):
     def locked(*_args):
         raise sqlite3.OperationalError("database is locked")
@@ -276,4 +286,4 @@ def test_a_failed_refusal_record_is_loud_and_the_thread_stays_closed(
 
     assert thread_of(replied)["status"] == "closed_refused"
     assert len(notes) == 1 and "не записан" in notes[0]
-    assert "crashed" in {event["outcome"] for event in activity.recent(actor=worker.TICK_ACTOR)}
+    assert "crashed" in {event["outcome"] for event in journal.recent(actor=worker.TICK_ACTOR)}

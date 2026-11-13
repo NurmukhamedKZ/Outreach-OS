@@ -13,6 +13,7 @@ from delivery.tests.conftest import (
     INSIDE,
     OURS,
     add_number,
+    journal_of,
     open_thread,
     thread_of,
 )
@@ -44,7 +45,9 @@ def due(db):
 
 def writer(db, whatsapp, notes, *answers):
     model = FakeModel(*answers)
-    return worker.Worker(db, whatsapp, notes.append, lambda: model, random.Random(1)), model
+    return worker.Worker(
+        db, whatsapp, notes.append, lambda: model, random.Random(1), journal_of(db)
+    ), model
 
 
 def touch(work):
@@ -138,7 +141,9 @@ def test_a_thread_taken_by_a_human_while_the_writer_thinks_gets_a_draft_but_no_r
             return super().answer(*args, **kwargs)
 
     model = Takes(draft())
-    work = worker.Worker(due, whatsapp, notes.append, lambda: model, random.Random(1))
+    work = worker.Worker(
+        due, whatsapp, notes.append, lambda: model, random.Random(1), journal_of(due)
+    )
 
     assert touch(work) == "touched"
 

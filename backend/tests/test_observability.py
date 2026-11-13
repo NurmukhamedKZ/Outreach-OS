@@ -1,5 +1,4 @@
-"""observability.py — общий модуль верхнего уровня (как config.py); тест
-живёт здесь просто потому, что testpaths pytest покрывают collector/tests."""
+"""observability.py — общий модуль верхнего уровня (как config.py)."""
 
 import logging
 from types import SimpleNamespace

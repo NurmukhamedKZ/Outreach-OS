@@ -5,6 +5,7 @@ from fastapi import Depends, Header, Request
 
 from config import settings
 from core import phones
+from core.activity import JournalDep
 from core.db import Db
 from core.whatsapp import WhatsApp
 from delivery import notify
@@ -26,8 +27,9 @@ def get_service(
     db: Db,
     whatsapp: Annotated[WhatsApp, Depends(get_whatsapp)],
     notifier: Annotated[Notify, Depends(get_notify)],
+    journal: JournalDep,
 ) -> DeliveryService:
-    return DeliveryService(db, whatsapp, notifier)
+    return DeliveryService(db, whatsapp, notifier, journal)
 
 
 def valid_number(number: str) -> str:

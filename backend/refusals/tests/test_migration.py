@@ -4,7 +4,6 @@ from typing import Any
 
 import pytest
 
-from collector.services import jobs
 from core import db as core_db
 
 LEGACY = "CREATE TABLE suppression ( handle TEXT PRIMARY KEY, added_at TEXT NOT NULL, reason TEXT)"
@@ -188,22 +187,3 @@ def test_a_database_without_the_old_table_ends_with_the_same_schema(tmp_path):
     core_db.migrate(legacy)
 
     assert schema_of(fresh) == schema_of(legacy)
-
-
-@pytest.mark.parametrize("old_schema_first", [True, False])
-def test_the_old_state_schema_before_or_after_the_migration_changes_nothing(
-    tmp_path, old_schema_first
-):
-    reference, path = tmp_path / "reference.db", tmp_path / "state.db"
-    core_db.migrate(reference)
-
-    def old_schema():
-        with closing(sqlite3.connect(path)) as db:
-            db.executescript(jobs.state_schema())
-
-    if old_schema_first:
-        old_schema()
-    core_db.migrate(path)
-    old_schema()
-
-    assert schema_of(path) == schema_of(reference)

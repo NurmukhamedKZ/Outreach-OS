@@ -3,7 +3,7 @@
 Each is a thread with a plain loop and a shared stop event. A tick opens its
 own connection and holds no transaction across the network: a send, a model
 call and Telegram happen between commits. No tick works silently: its outcome
-goes to the activity journal.
+goes to the journal (core.activity).
 """
 
 import logging
@@ -15,11 +15,11 @@ from datetime import datetime, timedelta
 from threading import Event
 from typing import Any
 
-import activity
 import clock
 import paths
 from conversations import public as conversation
 from core import db as core_db
+from core.activity import Journal
 from core.model import Model
 from core.whatsapp import Session, SessionLoggedOutError, TransportError, WhatsApp
 from delivery import domain
@@ -118,13 +118,15 @@ class Worker:
         notify: Notify,
         model: Callable[[], Model],
         rng: random.Random,
+        journal: Journal,
     ) -> None:
         self._db = db
         self._whatsapp = whatsapp
         self._notify = notify
         self._model = model
         self._rng = rng
-        self._service = DeliveryService(db, whatsapp, notify)
+        self._journal = journal
+        self._service = DeliveryService(db, whatsapp, notify, journal)
         self._repo = DeliveryRepository(db)
 
     # --- the queue tick ------------------------------------------------------------
@@ -142,7 +144,7 @@ class Worker:
         ]
         outcome = next((found for found in outcomes if found), None)
         if outcome is None:
-            activity.record(TICK_ACTOR, "idle")
+            self._journal.record(TICK_ACTOR, "idle")
         return outcome
 
     def _guarded(
@@ -192,13 +194,13 @@ class Worker:
             with self._db:
                 self._repo.cancel(row["outbox_id"], decision.reason, now)
             log.info("row %s cancelled: %s", row["outbox_id"], decision.blame)
-            activity.record(
+            self._journal.record(
                 TICK_ACTOR, "cancelled", subject=row["thread_id"], detail=decision.reason
             )
             return "cancelled"
         if decision.action is domain.Action.RESCHEDULE:
             self._postpone(row, decision, now, settings)
-            activity.record(
+            self._journal.record(
                 TICK_ACTOR, "rescheduled", subject=row["thread_id"], detail=decision.reason
             )
             return "rescheduled"
@@ -285,7 +287,7 @@ class Worker:
             with self._db:
                 self._repo.mark_stuck(outbox_id, now)
             log.warning("row %s: the fate of the send is unknown (%s)", outbox_id, error)
-            activity.record(TICK_ACTOR, "stuck", subject=thread_id, detail=str(error))
+            self._journal.record(TICK_ACTOR, "stuck", subject=thread_id, detail=str(error))
             self._notify(f"Отправка в {lead} оборвалась: {error}. Проверь в телефоне, ушло или нет")
             return "stuck"
         if not result.sent:
@@ -302,7 +304,9 @@ class Worker:
                 }
                 conversation.bump_touch(self._db, thread_id, cadence, now)
         log.info("row %s sent, company %s", outbox_id, thread_id)
-        activity.record(TICK_ACTOR, "sent", subject=row["our_number"], detail=f"тред {thread_id}")
+        self._journal.record(
+            TICK_ACTOR, "sent", subject=row["our_number"], detail=f"тред {thread_id}"
+        )
         return "sent"
 
     def _retry(self, row: dict[str, Any], error: str | None, now: datetime) -> str:
@@ -313,7 +317,7 @@ class Worker:
             with self._db:
                 self._repo.fail(row["outbox_id"], reason, now)
             log.error("row %s failed %s times, giving up", row["outbox_id"], len(BACKOFF_MINUTES))
-            activity.record(TICK_ACTOR, "failed", subject=row["thread_id"], detail=reason)
+            self._journal.record(TICK_ACTOR, "failed", subject=row["thread_id"], detail=reason)
             thread = conversation.thread(self._db, row["thread_id"])
             lead = thread["channel"] if thread else row["thread_id"]
             self._notify(
@@ -327,7 +331,7 @@ class Worker:
         log.warning(
             "row %s not sent, attempt %s of %s", row["outbox_id"], attempt, len(BACKOFF_MINUTES)
         )
-        activity.record(TICK_ACTOR, "retry", subject=row["thread_id"], detail=reason)
+        self._journal.record(TICK_ACTOR, "retry", subject=row["thread_id"], detail=reason)
         return "retry"
 
     # --- the lead's replies --------------------------------------------------------------
@@ -402,7 +406,9 @@ class Worker:
                 self._repo.put(message_id, company_id, our_number, now, Kind.REPLY, Author.AUTOMAT)
             conversation.mark_handled(self._db, row["message_id"], now)
         # The length, not the text: the journal keeps what happened, the thread keeps what was said.
-        activity.record(TICK_ACTOR, "answered", subject=company_id, detail=f"{len(text)} знаков")
+        self._journal.record(
+            TICK_ACTOR, "answered", subject=company_id, detail=f"{len(text)} знаков"
+        )
         if not automatic:
             log.info("answer to company %s stays a draft", company_id)
         return "answered"
@@ -431,7 +437,7 @@ class Worker:
         # The refusal first: the journal may fail, the legal record must not wait for it.
         if status == "closed_refused":
             self._record_refusal(thread["channel"], f"агент: {reply.reason}", now)
-        activity.record(
+        self._journal.record(
             TICK_ACTOR, outcome, subject=company_id, detail=f"{reply.decision}: {reply.reason}"
         )
         if status == "escalated":
@@ -448,7 +454,7 @@ class Worker:
             refusals.record(self._db, channel, reason, now)
         except Exception:
             log.exception("refusal of a closed thread was not recorded")
-            activity.record_crash(TICK_ACTOR, detail="отказ закрытого треда не записан")
+            self._journal.record_crash(TICK_ACTOR, detail="отказ закрытого треда не записан")
             self._notify(
                 f"Отказ {channel} не записан в базу: внесите его вручную («Больше не писать»)"
             )
@@ -461,7 +467,7 @@ class Worker:
             conversation.set_status(self._db, thread["company_id"], "escalated", why)
             conversation.mark_handled(self._db, row["message_id"], now)
         log.warning("company %s escalated: %s", thread["company_id"], why)
-        activity.record(TICK_ACTOR, "escalated", subject=thread["company_id"], detail=why)
+        self._journal.record(TICK_ACTOR, "escalated", subject=thread["company_id"], detail=why)
         self._notify(f"{thread['channel']} — разбирай руками: {why}")
         return "escalated"
 
@@ -490,7 +496,7 @@ class Worker:
                 conversation.set_status(
                     self._db, company_id, "exhausted", "новых поводов написать нет"
                 )
-            activity.record(TICK_ACTOR, "exhausted", subject=company_id)
+            self._journal.record(TICK_ACTOR, "exhausted", subject=company_id)
             return "exhausted"
         our_number = self._writable(company_id)
         automatic = self._service.settings().autopilot is Mode.FULL and our_number is not None
@@ -509,7 +515,7 @@ class Worker:
                 self._repo.put(
                     message_id, company_id, our_number, now, Kind.FOLLOWUP, Author.AUTOMAT
                 )
-        activity.record(TICK_ACTOR, "touched", subject=company_id)
+        self._journal.record(TICK_ACTOR, "touched", subject=company_id)
         return "touched"
 
     def _writable(self, company_id: str) -> str | None:
@@ -554,7 +560,7 @@ class Worker:
             except (NoNumberAvailableError, SessionLoggedOutError, TransportFailedError) as skip:
                 log.info("cold touches wait: %s", type(skip).__name__)
                 return None
-            activity.record(TICK_ACTOR, "queued", subject=company_id)
+            self._journal.record(TICK_ACTOR, "queued", subject=company_id)
             return "queued"
         return None
 
@@ -571,7 +577,7 @@ class Worker:
         recipient = self._recipient(now)
         sender = self._sender(now, ceiling, skip=recipient) if recipient else None
         if recipient is None or sender is None:
-            activity.record(WARMUP_ACTOR, "idle")
+            self._journal.record(WARMUP_ACTOR, "idle")
             return None
         try:
             result = self._whatsapp.send(
@@ -580,15 +586,15 @@ class Worker:
         except TransportError as error:
             # Node's state, not a crash of ours; a warmup message of unknown fate is not recorded.
             log.warning("warmup %s -> %s: node failed: %s", tail(sender), tail(recipient), error)
-            activity.record_quietly(WARMUP_ACTOR, "transport_down", detail=str(error))
+            self._journal.record_quietly(WARMUP_ACTOR, "transport_down", detail=str(error))
             return None
         if not result.sent:
             log.warning("warmup %s -> %s did not leave", tail(sender), tail(recipient))
-            activity.record(WARMUP_ACTOR, "not_sent", subject=sender, detail=result.error)
+            self._journal.record(WARMUP_ACTOR, "not_sent", subject=sender, detail=result.error)
             return None
         with self._db:
             self._repo.put_warmup(sender, recipient, result.provider_id, now)
-        activity.record(WARMUP_ACTOR, "sent", subject=sender)
+        self._journal.record(WARMUP_ACTOR, "sent", subject=sender)
         return sender
 
     def _promote(self, now: datetime) -> None:
@@ -601,7 +607,7 @@ class Worker:
             if promoted is not None:
                 with self._db:
                     self._repo.set_number_status(row["number"], promoted, None)
-                activity.record(WARMUP_ACTOR, promoted, subject=row["number"])
+                self._journal.record(WARMUP_ACTOR, promoted, subject=row["number"])
 
     def _recipient(self, now: datetime) -> str | None:
         """Return whom to write: a number in the passive phase first, about once in two hours."""
@@ -647,14 +653,14 @@ class Worker:
         except TransportError as error:
             # Node's state, not a crash of ours: the first tick at start finds no socket yet.
             log.warning("node did not answer the health check: %s", error)
-            activity.record_quietly(MONITOR_ACTOR, "transport_down", detail=str(error))
+            self._journal.record_quietly(MONITOR_ACTOR, "transport_down", detail=str(error))
             sessions = None
         verdicts = self._judge(sessions, now) if sessions is not None else []
         # A freed number is the one event that lets blocked_channel threads go.
         self._service.rescue_stranded(now)
         if sessions is not None and not verdicts:
-            activity.record(MONITOR_ACTOR, "healthy")
-        activity.prune()
+            self._journal.record(MONITOR_ACTOR, "healthy")
+        self._journal.prune()
         return verdicts
 
     def _judge(self, sessions: dict[str, Session], now: datetime) -> list[domain.Verdict]:
@@ -680,7 +686,9 @@ class Worker:
             with self._db:
                 self._repo.set_number_status(row["number"], found.status, found.reason)
             log.warning("number %s -> %s", tail(row["number"]), found.status)
-            activity.record(MONITOR_ACTOR, found.status, subject=row["number"], detail=found.reason)
+            self._journal.record(
+                MONITOR_ACTOR, found.status, subject=row["number"], detail=found.reason
+            )
             self._notify(f"Номер {row['number']} → {found.status}: {found.reason}")
             verdicts.append(found)
         return verdicts
@@ -699,7 +707,7 @@ class Worker:
             log.error(
                 "row %s stuck in sending: only the phone knows whether it left", row["outbox_id"]
             )
-            activity.record(
+            self._journal.record(
                 MONITOR_ACTOR,
                 "stuck",
                 subject=str(row["outbox_id"]),
@@ -725,6 +733,7 @@ def run(
     whatsapp: WhatsApp,
     notify: Notify,
     model: Callable[[], Model],
+    journal: Journal,
 ) -> None:
     """Run `step` on a connection of its own until `stop` is set; a crash costs one tick.
 
@@ -734,10 +743,10 @@ def run(
     while not stop.is_set():
         try:
             with closing(core_db.connect(paths.state_db())) as db:
-                step(Worker(db, whatsapp, notify, model, rng), clock.now())
+                step(Worker(db, whatsapp, notify, model, rng, journal), clock.now())
         except Exception:
             log.exception("%s crashed on a tick", actor)
-            activity.record_crash(actor)
+            journal.record_crash(actor)
         stop.wait(interval())
 
 
