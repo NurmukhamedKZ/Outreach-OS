@@ -8,13 +8,16 @@ from collections.abc import Callable, Collection
 from datetime import datetime
 
 from companies import domain
-from companies.schemas import Company, CompanyCounts, Contact
+
+# Re-exported: callers annotate with them without reaching into companies.
+from companies.schemas import Company as Company
+from companies.schemas import CompanyCounts as CompanyCounts
+from companies.schemas import Contact as Contact
 from companies.service import CompanyService
 from core.pages import Pages
 
 
-def prioritized(db: sqlite3.Connection, limit: int,
-                exclude: Collection[str] = ()) -> list[Company]:
+def prioritized(db: sqlite3.Connection, limit: int, exclude: Collection[str] = ()) -> list[Company]:
     """Return up to `limit` reachable companies in the order of research.
 
     Only companies of the segments chosen now. Reachable means a WhatsApp

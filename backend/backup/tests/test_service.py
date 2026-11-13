@@ -32,8 +32,10 @@ def test_a_snapshot_holds_the_database_and_the_sessions(service, icloud):
     assert (icloud / snapshot.name / "state.db").exists()
     assert (icloud / snapshot.name / "sessions" / "+77001112233" / "creds.json").read_text() == "{}"
     # One self-contained database file: no -wal/-shm to restore by mistake.
-    assert sorted(path.name for path in (icloud / snapshot.name).iterdir()) == ["sessions",
-                                                                                "state.db"]
+    assert sorted(path.name for path in (icloud / snapshot.name).iterdir()) == [
+        "sessions",
+        "state.db",
+    ]
     assert snapshots(icloud) == [snapshot.name]
 
 
@@ -123,9 +125,8 @@ def test_without_the_folder_backup_is_off_and_says_so(sources, tmp_path):
 
 
 def test_a_second_run_while_one_is_going_is_refused(service):
-    with service.running():
-        with pytest.raises(BackupRunningError):
-            service.run(NOW)
+    with service.running(), pytest.raises(BackupRunningError):
+        service.run(NOW)
 
 
 def test_it_is_due_when_there_is_none_or_the_last_is_a_day_old(service):
@@ -161,7 +162,7 @@ def test_overdue_after_two_days_or_when_off(service, sources, tmp_path):
 
     state, pages, sessions = sources
     off = BackupService(tmp_path / "none" / "x", state, pages, sessions)
-    assert "нет каталога iCloud Drive" in off.overdue(NOW)
+    assert "нет каталога iCloud Drive" in (off.overdue(NOW) or "")
 
 
 def test_tick_runs_only_when_due_and_survives_failure(service, icloud, monkeypatch):
@@ -183,7 +184,7 @@ def test_a_burst_of_manual_runs_leaves_the_previous_days_untouched(service, iclo
     for second in range(15):
         last = service.run(today + timedelta(seconds=second))
 
-    assert snapshots(icloud) == before[1:] + [last.name]
+    assert snapshots(icloud) == [*before[1:], last.name]
 
 
 def test_a_second_run_in_the_same_second_is_refused_and_keeps_the_first(service, icloud):
@@ -251,6 +252,7 @@ def test_a_busy_journal_does_not_fail_a_written_snapshot(service, icloud):
 def test_a_crashing_tick_is_journaled(service, monkeypatch):
     def broken(now):
         raise RuntimeError("boom")
+
     monkeypatch.setattr(service, "due", broken)
 
     backup_service.tick(service, NOW)

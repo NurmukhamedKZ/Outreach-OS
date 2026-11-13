@@ -6,9 +6,10 @@ from companies.repository import CompanyRepository
 from companies.schemas import Segment
 
 NOW = datetime(2026, 11, 12, 10, 0, tzinfo=UTC)
+ALMATY_653 = Segment("almaty", "653")
 
 
-def company(db, company_id, contacts, reviews=0, branches=1, segment=Segment("almaty", "653")):
+def company(db, company_id, contacts, reviews=0, branches=1, segment=ALMATY_653):
     """A company found in `segment` (one of the default ones unless given)."""
     repo = CompanyRepository(db)
     repo.claim(segment, NOW)
@@ -16,9 +17,12 @@ def company(db, company_id, contacts, reviews=0, branches=1, segment=Segment("al
     for n in range(branches):
         branch_id = f"{company_id}-{n}"
         count = reviews[n] if isinstance(reviews, list) else reviews
-        repo.add_branch(ListedBranch(branch_id, None, "Филиал", None, "Абая, 1", count),
-                        "almaty", f"https://2gis.kz/almaty/firm/{branch_id}",
-                        Placement(company_id, "self" if n == 0 else "org_id", 1.0))
+        repo.add_branch(
+            ListedBranch(branch_id, None, "Филиал", None, "Абая, 1", count),
+            "almaty",
+            f"https://2gis.kz/almaty/firm/{branch_id}",
+            Placement(company_id, "self" if n == 0 else "org_id", 1.0),
+        )
         repo.replace_contacts(branch_id, contacts)
         repo.link_segment(branch_id, segment)
     db.commit()
@@ -49,21 +53,40 @@ def test_as_many_as_asked_skipping_the_given(db):
 
 
 def test_a_company_comes_with_its_contacts_and_branches(db):
-    company(db, "a", [("whatsapp", "+77010000001"), ("website", "https://a.kz")],
-            reviews=7, branches=2)
+    company(
+        db, "a", [("whatsapp", "+77010000001"), ("website", "https://a.kz")], reviews=7, branches=2
+    )
 
     [found] = public.prioritized(db, 1)
 
     assert found.model_dump() == {
-        "company_id": "a", "name": "Компания a", "city": "almaty", "review_count": 7,
-        "contacts": [{"kind": "website", "handle": "https://a.kz"},
-                     {"kind": "whatsapp", "handle": "+77010000001"}],
-        "branches": [{"branch_id": "a-0", "name": "Филиал", "address": "Абая, 1",
-                      "source_url": "https://2gis.kz/almaty/firm/a-0", "rule": "self",
-                      "confidence": 1.0},
-                     {"branch_id": "a-1", "name": "Филиал", "address": "Абая, 1",
-                      "source_url": "https://2gis.kz/almaty/firm/a-1", "rule": "org_id",
-                      "confidence": 1.0}]}
+        "company_id": "a",
+        "name": "Компания a",
+        "city": "almaty",
+        "review_count": 7,
+        "contacts": [
+            {"kind": "website", "handle": "https://a.kz"},
+            {"kind": "whatsapp", "handle": "+77010000001"},
+        ],
+        "branches": [
+            {
+                "branch_id": "a-0",
+                "name": "Филиал",
+                "address": "Абая, 1",
+                "source_url": "https://2gis.kz/almaty/firm/a-0",
+                "rule": "self",
+                "confidence": 1.0,
+            },
+            {
+                "branch_id": "a-1",
+                "name": "Филиал",
+                "address": "Абая, 1",
+                "source_url": "https://2gis.kz/almaty/firm/a-1",
+                "rule": "org_id",
+                "confidence": 1.0,
+            },
+        ],
+    }
 
 
 def test_a_company_of_an_unticked_segment_is_not_offered(db):
@@ -104,9 +127,9 @@ def test_the_channel_is_whatsapp_first_then_a_mobile_and_none_for_a_city_line(db
     company(db, "city", [("phone", "+77272960782"), ("email", "c@d.kz")])
     found = public.by_id(db, ["both", "mobile", "city"])
 
-    assert public.channel(found["both"]).model_dump() == {"kind": "whatsapp",
-                                                          "handle": "+77010000001"}
-    assert public.channel(found["mobile"]).handle == "+77010000002"
+    both, mobile = public.channel(found["both"]), public.channel(found["mobile"])
+    assert both is not None and both.model_dump() == {"kind": "whatsapp", "handle": "+77010000001"}
+    assert mobile is not None and mobile.handle == "+77010000002"
     assert public.channel(found["city"]) is None
 
 
@@ -136,5 +159,4 @@ def test_a_company_is_labelled_by_the_names_of_its_first_segment(db):
 
     labels = public.segment_labels(db, ["a", "b", "nobody"])
 
-    assert labels == {"a": "Бухгалтерские услуги · Алматы",
-                      "b": "Аудиторские услуги · Астана"}
+    assert labels == {"a": "Бухгалтерские услуги · Алматы", "b": "Аудиторские услуги · Астана"}

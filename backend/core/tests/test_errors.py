@@ -16,7 +16,7 @@ class NumberExistsError(DomainError):
 
 def test_domain_error_becomes_code_and_detail_with_its_status():
     app = FastAPI()
-    app.add_exception_handler(DomainError, domain_error_handler)
+    app.add_exception_handler(DomainError, domain_error_handler)  # type: ignore[arg-type]  # Starlette types a handler for Exception, not its subclass
 
     @app.post("/numbers")
     def add_number() -> None:
@@ -25,13 +25,15 @@ def test_domain_error_becomes_code_and_detail_with_its_status():
     response = TestClient(app).post("/numbers")
 
     assert response.status_code == 409
-    assert response.json() == {"code": "errors.numberExists",
-                               "detail": "number +7700 is already in the pool"}
+    assert response.json() == {
+        "code": "errors.numberExists",
+        "detail": "number +7700 is already in the pool",
+    }
 
 
 def test_other_exceptions_are_not_touched_by_the_handler():
     app = FastAPI()
-    app.add_exception_handler(DomainError, domain_error_handler)
+    app.add_exception_handler(DomainError, domain_error_handler)  # type: ignore[arg-type]  # Starlette types a handler for Exception, not its subclass
 
     @app.get("/boom")
     def boom() -> None:

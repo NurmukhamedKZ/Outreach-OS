@@ -16,11 +16,16 @@ path = context.config.attributes.get("path") or paths.state_db()
 # foreign_keys stays off (SQLite default): batch mode rebuilds tables by
 # copy-and-drop, and with it on the drop would cascade into child rows.
 # timeout: a second process (uvicorn --reload) may hold the write lock.
-engine = create_engine(f"sqlite:///{path}", poolclass=NullPool,
-                       connect_args={"autocommit": False, "timeout": 10})
+engine = create_engine(
+    f"sqlite:///{path}", poolclass=NullPool, connect_args={"autocommit": False, "timeout": 10}
+)
 
 with engine.connect() as connection:
-    context.configure(connection=connection, render_as_batch=True,
-                      transactional_ddl=True, transaction_per_migration=True)
+    context.configure(
+        connection=connection,
+        render_as_batch=True,
+        transactional_ddl=True,
+        transaction_per_migration=True,
+    )
     with context.begin_transaction():
         context.run_migrations()

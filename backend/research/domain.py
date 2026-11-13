@@ -18,14 +18,27 @@ from urllib.parse import urldefrag, urljoin, urlsplit
 
 from core.model import Message
 from research.exceptions import UnexpectedPageError, UnverifiedResearchError
-from research.schemas import (Complaint, ComplaintType, Contribution, Dossier, Facts, Hook,
-                              HookDraft, ResearchAnswer, Severity, SignalType, Source)
+from research.schemas import (
+    Complaint,
+    ComplaintType,
+    Contribution,
+    Dossier,
+    Facts,
+    Hook,
+    HookDraft,
+    ResearchAnswer,
+    Severity,
+    SignalType,
+    Source,
+)
 
 # The public key 2GIS ships in its own frontend: undocumented, it may change.
 REVIEWS_KEY = "6e7e1929-4ea9-4a5d-8c05-d601860389bd"
 # One page per branch, the freshest first.
-REVIEWS_API = ("https://public-api.reviews.2gis.com/2.0/branches/{branch_id}/reviews"
-               "?limit=50&sort_by=date_edited&rated=true&locale=ru_KZ&key=" + REVIEWS_KEY)
+REVIEWS_API = (
+    "https://public-api.reviews.2gis.com/2.0/branches/{branch_id}/reviews"
+    "?limit=50&sort_by=date_edited&rated=true&locale=ru_KZ&key=" + REVIEWS_KEY
+)
 REVIEWS_HEADERS = {"Accept": "application/json"}
 REVIEWS_IN_PROMPT = 30
 SITE_HOME = "https://{domain}/"
@@ -48,16 +61,23 @@ NO_PRICING = "цены не выложены — продают через зв�
 SITE_MARKERS = [
     (SignalType.CRM_WIDGET, r"bitrix24|b24\.kz|cdn\.bitrix24", "виджет Bitrix24"),
     (SignalType.CRM_WIDGET, r"amocrm|amo\.crm", "виджет amoCRM"),
-    (SignalType.ADS_PLATFORM, r"googletagmanager|gtag\(|google-analytics", "Google Ads / Analytics"),
+    (
+        SignalType.ADS_PLATFORM,
+        r"googletagmanager|gtag\(|google-analytics",
+        "Google Ads / Analytics",
+    ),
     (SignalType.ADS_PLATFORM, r"mc\.yandex\.ru|ym\(\d+|yandex_metrika", "Яндекс.Метрика"),
     (SignalType.ADS_PLATFORM, r"connect\.facebook\.net|fbq\(", "пиксель Meta"),
     (SignalType.INBOUND_WIDGET, r"jivo|talk-me|verbox|carrotquest|chat2desk", "виджет чата"),
     (SignalType.INBOUND_WIDGET, r"wa\.me/|api\.whatsapp\.com|whatsapp://", "кнопка WhatsApp"),
-    (SignalType.INBOUND_WIDGET, r"<form[^>]*>(?:(?!</form>).)*?(?:заявк|заказать|обратн)",
-     "форма заявки"),
+    (
+        SignalType.INBOUND_WIDGET,
+        r"<form[^>]*>(?:(?!</form>).)*?(?:заявк|заказать|обратн)",
+        "форма заявки",
+    ),
 ]
 
-LINK = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.I | re.S)
+LINK = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
 QUOTE_MARKS = str.maketrans({mark: '"' for mark in "«»„“”‟‹›"} | {"‘": "'", "’": "'"})
 DASHES = str.maketrans({dash: "-" for dash in "‐‑‒–—―−"})
 QUOTE_EDGES = " \"'.…"
@@ -136,19 +156,25 @@ def parse_reviews(body: str, card_url: str) -> list[Review]:
         UnexpectedPageError: the answer is no reviews list.
     """
     try:
-        items = json.loads(body[body.index("{"): body.rindex("}") + 1])["reviews"]
+        items = json.loads(body[body.index("{") : body.rindex("}") + 1])["reviews"]
         reviews = []
         for item in items or []:
             # A review without a date cannot be weighed; the rest of the page still can.
             if not isinstance(item.get("date_created"), str):
                 continue
             created = datetime.fromisoformat(item["date_created"])
-            reviews.append(Review(
-                url=card_url, text=(item.get("text") or "").strip(), rating=item.get("rating"),
-                # Without an offset the machine's zone would be guessed: take UTC instead.
-                created_at=(created.astimezone(UTC) if created.tzinfo
-                            else created.replace(tzinfo=UTC)),
-                answered=_answered(item.get("official_answer"))))
+            reviews.append(
+                Review(
+                    url=card_url,
+                    text=(item.get("text") or "").strip(),
+                    rating=item.get("rating"),
+                    # Without an offset the machine's zone would be guessed: take UTC instead.
+                    created_at=(
+                        created.astimezone(UTC) if created.tzinfo else created.replace(tzinfo=UTC)
+                    ),
+                    answered=_answered(item.get("official_answer")),
+                )
+            )
         return reviews
     # No "reviews" key is a refusal in a 200 ({"meta": {"code": 403}}), not "no reviews".
     except (ValueError, KeyError, TypeError, AttributeError) as error:
@@ -179,8 +205,7 @@ def site_pages(fetched: Sequence[tuple[str, str, datetime]]) -> list[SitePage]:
             break
         text = strip_html(html)[:budget]
         budget -= len(text)
-        pages.append(SitePage(url=url, html=html[:HTML_LIMIT], text=text,
-                              fetched_at=fetched_at))
+        pages.append(SitePage(url=url, html=html[:HTML_LIMIT], text=text, fetched_at=fetched_at))
     return pages
 
 
@@ -191,8 +216,12 @@ def inner_links(html: str, home: str) -> list[str]:
     for href, label in LINK.findall(html):
         url = urldefrag(urljoin(home, href.strip())).url
         parts = urlsplit(url)
-        if (parts.scheme not in ("http", "https") or _bare_host(url) != host
-                or url.rstrip("/") == home.rstrip("/") or url in found):
+        if (
+            parts.scheme not in ("http", "https")
+            or _bare_host(url) != host
+            or url.rstrip("/") == home.rstrip("/")
+            or url in found
+        ):
             continue
         text = " ".join(re.sub(r"(?s)<[^>]+>", " ", label).split())
         if not any(k in f"{text} {parts.path} {href}".lower() for k in LINK_KEYWORDS):
@@ -232,13 +261,22 @@ def prompt(card: Card, reviews: Sequence[Review], pages: Sequence[SitePage]) -> 
 
     No phones and no other contacts: the model needs none of them.
     """
-    lines = ["Карточка 2GIS", f"Компания: {card.name}", f"Город: {card.city}",
-             f"Адреса: {', '.join(card.addresses) or 'не указаны'}",
-             f"Отзывов в 2GIS: {card.review_count}", f"Сайт: {card.site or 'нет'}", ""]
+    lines = [
+        "Карточка 2GIS",
+        f"Компания: {card.name}",
+        f"Город: {card.city}",
+        f"Адреса: {', '.join(card.addresses) or 'не указаны'}",
+        f"Отзывов в 2GIS: {card.review_count}",
+        f"Сайт: {card.site or 'нет'}",
+        "",
+    ]
     if reviews:
         lines.append("Отзывы (свежие сверху: [оценка] дата текст; [ОТВЕТИЛИ] — компания ответила):")
-        lines += [f"[{r.rating or '–'}] {r.created_at:%Y-%m-%d} {r.text}"
-                  + (" [ОТВЕТИЛИ]" if r.answered else "") for r in reviews]
+        lines += [
+            f"[{r.rating or '–'}] {r.created_at:%Y-%m-%d} {r.text}"
+            + (" [ОТВЕТИЛИ]" if r.answered else "")
+            for r in reviews
+        ]
     else:
         lines.append("Отзывов нет")
     lines.append("")
@@ -274,20 +312,22 @@ def _clean(quote: str) -> str:
     return " ".join(quote.split()).strip(" \"'«»„“”")
 
 
-def _review_with(reviews: Sequence[Review], quote: str,
-                 silent_only: bool = False) -> Review | None:
+def _review_with(reviews: Sequence[Review], quote: str, silent_only: bool = False) -> Review | None:
     """Return the freshest review the quote stands in; `reviews` go freshest first."""
-    return next((r for r in reviews
-                 if contains(r.text, quote) and not (silent_only and r.answered)), None)
+    return next(
+        (r for r in reviews if contains(r.text, quote) and not (silent_only and r.answered)), None
+    )
 
 
 def _page_with(pages: Sequence[SitePage], quote: str) -> SitePage | None:
-    return max((p for p in pages if contains(p.text, quote)), key=lambda p: p.fetched_at,
-               default=None)
+    return max(
+        (p for p in pages if contains(p.text, quote)), key=lambda p: p.fetched_at, default=None
+    )
 
 
-def _complaint_signals(complaints: Sequence[Complaint],
-                       reviews: Sequence[Review]) -> tuple[list[Signal], int]:
+def _complaint_signals(
+    complaints: Sequence[Complaint], reviews: Sequence[Review]
+) -> tuple[list[Signal], int]:
     """Return the review signals and how many complaints were not found."""
     rejected = 0
     missed: list[tuple[Review, str]] = []
@@ -301,8 +341,10 @@ def _complaint_signals(complaints: Sequence[Complaint],
         elif silent := _review_with(reviews, complaint.quote, silent_only=True):
             unanswered.append((silent, complaint.quote))
     signals = []
-    for kind, matches in ((SignalType.REVIEWS_MISSED_LEAD, missed),
-                          (SignalType.REVIEWS_UNANSWERED_COMPLAINT, unanswered)):
+    for kind, matches in (
+        (SignalType.REVIEWS_MISSED_LEAD, missed),
+        (SignalType.REVIEWS_UNANSWERED_COMPLAINT, unanswered),
+    ):
         if matches:
             review, quote = max(matches, key=lambda match: match[0].created_at)
             signals.append(Signal(kind, review.created_at, _clean(quote), review.url))
@@ -317,24 +359,31 @@ def _site_signals(facts: Facts, pages: Sequence[SitePage]) -> tuple[list[Signal]
         if not (found := _page_with(pages, vacancy.quote)):
             rejected += 1
         elif vacancy.sales and not signals:
-            signals.append(Signal(SignalType.SITE_HIRING_SALES, found.fetched_at,
-                                  _clean(vacancy.quote), found.url))
+            signals.append(
+                Signal(
+                    SignalType.SITE_HIRING_SALES, found.fetched_at, _clean(vacancy.quote), found.url
+                )
+            )
     # Prices are "not shown" only on a site that was read, not on an empty JS shell.
     if any(p.text for p in pages) and not facts.pricing_visible:
-        signals.append(Signal(SignalType.SITE_NO_PRICING, pages[0].fetched_at, NO_PRICING,
-                              pages[0].url))
+        signals.append(
+            Signal(SignalType.SITE_NO_PRICING, pages[0].fetched_at, NO_PRICING, pages[0].url)
+        )
     seen: set[SignalType] = set()
     for kind, pattern, label in SITE_MARKERS:
         if kind in seen:
             continue
-        if marked := next((p for p in pages if re.search(pattern, p.html, re.I | re.S)), None):
+        if marked := next(
+            (p for p in pages if re.search(pattern, p.html, re.IGNORECASE | re.DOTALL)), None
+        ):
             seen.add(kind)
             signals.append(Signal(kind, marked.fetched_at, label, marked.url))
     return signals, rejected
 
 
-def _hooks(drafts: Sequence[HookDraft], reviews: Sequence[Review],
-           pages: Sequence[SitePage]) -> tuple[list[Hook], int]:
+def _hooks(
+    drafts: Sequence[HookDraft], reviews: Sequence[Review], pages: Sequence[SitePage]
+) -> tuple[list[Hook], int]:
     """Return the hooks whose quote was found, dated by the place, and how many were not."""
     rejected = 0
     hooks: list[Hook] = []
@@ -345,20 +394,31 @@ def _hooks(drafts: Sequence[HookDraft], reviews: Sequence[Review],
             continue  # one hook per turn of the conversation: the same quote twice is one
         seen.add(key)
         # Found in several places, a quote is dated by the freshest of them.
-        places = [(r.created_at, r.url, Source.REVIEWS)
-                  for r in [_review_with(reviews, draft.quote)] if r]
-        places += [(p.fetched_at, p.url, Source.SITE) for p in [_page_with(pages, draft.quote)] if p]
+        places = [
+            (r.created_at, r.url, Source.REVIEWS) for r in [_review_with(reviews, draft.quote)] if r
+        ]
+        places += [
+            (p.fetched_at, p.url, Source.SITE) for p in [_page_with(pages, draft.quote)] if p
+        ]
         if not places:
             rejected += 1
             continue
         observed_at, url, source = max(places)
-        hooks.append(Hook(angle=draft.angle, quote=_clean(draft.quote), url=url, source=source,
-                          observed_at=observed_at))
+        hooks.append(
+            Hook(
+                angle=draft.angle,
+                quote=_clean(draft.quote),
+                url=url,
+                source=source,
+                observed_at=observed_at,
+            )
+        )
     return hooks[:MAX_HOOKS], rejected
 
 
-def findings(answer: ResearchAnswer, reviews: Sequence[Review],
-             pages: Sequence[SitePage]) -> Findings:
+def findings(
+    answer: ResearchAnswer, reviews: Sequence[Review], pages: Sequence[SitePage]
+) -> Findings:
     """Return what of the model's answer stands, and the signals that follow from it.
 
     A complaint must stand in a review, a vacancy on a site page, a hook in
@@ -371,11 +431,19 @@ def findings(answer: ResearchAnswer, reviews: Sequence[Review],
     # Asking the model for the order is a wish; the code holds it.
     strength = list(Severity)
     pains = sorted(answer.dossier.pains, key=lambda p: strength.index(p.severity))[:MAX_PAINS]
-    dossier = Dossier(summary=answer.dossier.summary, what_they_do=answer.facts.what_they_do,
-                      hooks=hooks, pains=pains, approach=answer.dossier.approach,
-                      decision_maker_hint=answer.facts.decision_maker_hint)
-    return Findings(dossier=dossier, signals=review_signals + site_signals,
-                    rejected=rejected_complaints + rejected_vacancies + rejected_hooks)
+    dossier = Dossier(
+        summary=answer.dossier.summary,
+        what_they_do=answer.facts.what_they_do,
+        hooks=hooks,
+        pains=pains,
+        approach=answer.dossier.approach,
+        decision_maker_hint=answer.facts.decision_maker_hint,
+    )
+    return Findings(
+        dossier=dossier,
+        signals=review_signals + site_signals,
+        rejected=rejected_complaints + rejected_vacancies + rejected_hooks,
+    )
 
 
 def judge(found: Findings) -> None:
@@ -391,8 +459,9 @@ def judge(found: Findings) -> None:
 # --- the lead -----------------------------------------------------------------------
 
 
-def score(signals: Iterable[Signal], weights: Mapping[str, float], half_life_days: float,
-          now: datetime) -> tuple[float, list[Contribution]]:
+def score(
+    signals: Iterable[Signal], weights: Mapping[str, float], half_life_days: float, now: datetime
+) -> tuple[float, list[Contribution]]:
     """Return the lead's score and its breakdown, the largest contribution first.
 
     A signal halves its weight every half-life; a signal dated after `now` counts
@@ -402,10 +471,17 @@ def score(signals: Iterable[Signal], weights: Mapping[str, float], half_life_day
     for signal in signals:
         age = max(0, (now - signal.observed_at).days)
         weight = weights[signal.type]
-        parts.append(Contribution(
-            signal=signal.type, weight=weight, age_days=age,
-            contribution=round(weight * exp(-log(2) * age / half_life_days), 3),
-            quote=signal.quote, url=signal.url, observed_at=signal.observed_at))
+        parts.append(
+            Contribution(
+                signal=signal.type,
+                weight=weight,
+                age_days=age,
+                contribution=round(weight * exp(-log(2) * age / half_life_days), 3),
+                quote=signal.quote,
+                url=signal.url,
+                observed_at=signal.observed_at,
+            )
+        )
     parts.sort(key=lambda c: (-c.contribution, c.signal))
     return round(sum(c.contribution for c in parts), 3), parts
 

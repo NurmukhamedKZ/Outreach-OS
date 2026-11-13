@@ -17,7 +17,8 @@ from research.service import ResearchService
 
 def get_pages(request: Request) -> Pages:
     """Return the process's one page adapter: the pace belongs to the host."""
-    return request.app.state.pages
+    pages: Pages = request.app.state.pages
+    return pages
 
 
 def get_model() -> Model:
@@ -34,8 +35,14 @@ def get_research_service(db: Db) -> ResearchService:
     return ResearchService(db)
 
 
-def run_in_background(path: Path, pages: Pages, model: Model, batch_id: int,
-                      now: Callable[[], datetime], backups: backup.BackupService) -> None:
+def run_in_background(
+    path: Path,
+    pages: Pages,
+    model: Model,
+    batch_id: int,
+    now: Callable[[], datetime],
+    backups: backup.BackupService,
+) -> None:
     """Run a started batch on a connection of its own, then back up however it ended.
 
     The request's connection is closed by then. The backup runs outside the

@@ -49,10 +49,13 @@ class BackupService:
             names = self._snapshots() if enabled else []
         except OSError:
             enabled, names = False, []
-        return BackupStatus(enabled=enabled, running=self._lock.locked(),
-                            target=str(self.target),
-                            last_at=_moment(names[-1]) if names else None,
-                            snapshots=len(names))
+        return BackupStatus(
+            enabled=enabled,
+            running=self._lock.locked(),
+            target=str(self.target),
+            last_at=_moment(names[-1]) if names else None,
+            snapshots=len(names),
+        )
 
     def due(self, now: datetime) -> bool:
         """Return True when there is no good snapshot or the last is a day old."""
@@ -67,8 +70,10 @@ class BackupService:
         if status.last_at is None:
             return "бэкап ни разу не записался — причина в журнале «Процессов»"
         if now - status.last_at >= OVERDUE_AFTER:
-            return (f"удачного бэкапа не было с {status.last_at:%d.%m %H:%M} UTC —"
-                    " бэкап падает или бэкенд не работал")
+            return (
+                f"удачного бэкапа не было с {status.last_at:%d.%m %H:%M} UTC —"
+                " бэкап падает или бэкенд не работал"
+            )
         return None
 
     @contextmanager
@@ -112,8 +117,9 @@ class BackupService:
                 log.exception("backup %s failed", name)
                 activity.record_quietly(ACTOR, "failed", subject=name, detail=str(error))
                 # The reason is in the journal; the answer carries no paths.
-                raise BackupFailedError("бэкап не записан — причина в журнале «Процессов»") \
-                    from error
+                raise BackupFailedError(
+                    "бэкап не записан — причина в журнале «Процессов»"
+                ) from error
             detail = f"новых страниц: {snapshot.pages_added}"
             try:
                 self._rotate()
@@ -136,8 +142,10 @@ class BackupService:
             copy = tmp / "state.db"
             # SQLite's backup, not a file copy: the database is in WAL, and a copy
             # taken mid-write may be torn.
-            with closing(sqlite3.connect(self.database)) as source, \
-                    closing(sqlite3.connect(copy)) as target:
+            with (
+                closing(sqlite3.connect(self.database)) as source,
+                closing(sqlite3.connect(copy)) as target,
+            ):
                 source.backup(target)
                 # One self-contained file: no -wal/-shm beside it to restore by mistake.
                 target.execute("PRAGMA journal_mode=DELETE")
@@ -159,8 +167,9 @@ class BackupService:
     def _snapshots(self) -> list[str]:
         if not self.target.is_dir():
             return []
-        return sorted(path.name for path in self.target.iterdir()
-                      if path.is_dir() and _is_snapshot(path.name))
+        return sorted(
+            path.name for path in self.target.iterdir() if path.is_dir() and _is_snapshot(path.name)
+        )
 
 
 def stale(names: list[str]) -> list[str]:
@@ -174,7 +183,8 @@ def intact(path: Path) -> bool:
     """Return True when SQLite finds nothing wrong with the database at `path`."""
     try:
         with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as db:
-            return db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+            verdict: str = db.execute("PRAGMA integrity_check").fetchone()[0]
+            return verdict == "ok"
     except sqlite3.DatabaseError:
         return False
 

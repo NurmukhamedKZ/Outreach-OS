@@ -6,11 +6,23 @@ from datetime import datetime
 
 from companies import domain
 from companies.domain import ListedBranch
-from companies.exceptions import (InvalidCityError, InvalidRubricError, SubstitutedPageError,
-                                  UnexpectedPageError)
+from companies.exceptions import (
+    InvalidCityError,
+    InvalidRubricError,
+    SubstitutedPageError,
+    UnexpectedPageError,
+)
 from companies.repository import CompanyRepository
-from companies.schemas import (CatalogItem, Company, CompanyCounts, Segment, SegmentSettings,
-                               SegmentState, SegmentStatus, SegmentsView)
+from companies.schemas import (
+    CatalogItem,
+    Company,
+    CompanyCounts,
+    Segment,
+    SegmentSettings,
+    SegmentState,
+    SegmentStatus,
+    SegmentsView,
+)
 from core import operator_settings
 from core.pages import BotCheckError, FetchError, HttpStatusError, Pages
 
@@ -54,8 +66,9 @@ class CompanyService:
         if invalid := [r for r in rubrics if not domain.RUBRIC_ID.fullmatch(r)]:
             raise InvalidRubricError(f"Id рубрики 2GIS — только цифры: {', '.join(invalid)}")
         with self._db:
-            operator_settings.save(self._db, MODULE,
-                                   SegmentSettings(cities=cities, rubrics=rubrics))
+            operator_settings.save(
+                self._db, MODULE, SegmentSettings(cities=cities, rubrics=rubrics)
+            )
         return self.segments_view()
 
     def segments_view(self) -> SegmentsView:
@@ -66,17 +79,24 @@ class CompanyService:
         states = []
         for segment in _segments(settings):
             row = rows.get(segment)
-            states.append(SegmentState(
-                city=segment.city, rubric=segment.rubric,
-                status=row["status"] if row else SegmentStatus.NEW,
-                branches=row["branches"] if row else 0, companies=counts.get(segment, 0),
-                capped=bool(row and row["capped"]), error=row["error"] if row else None,
-                updated_at=row["updated_at"] if row else None))
+            states.append(
+                SegmentState(
+                    city=segment.city,
+                    rubric=segment.rubric,
+                    status=row["status"] if row else SegmentStatus.NEW,
+                    branches=row["branches"] if row else 0,
+                    companies=counts.get(segment, 0),
+                    capped=bool(row and row["capped"]),
+                    error=row["error"] if row else None,
+                    updated_at=row["updated_at"] if row else None,
+                )
+            )
         return SegmentsView(
             settings=settings,
             cities=[CatalogItem(id=k, name=v) for k, v in domain.CITIES.items()],
             rubrics=[CatalogItem(id=k, name=v) for k, v in domain.RUBRICS.items()],
-            segments=states)
+            segments=states,
+        )
 
     def claim(self, now: datetime) -> list[Segment]:
         """Mark the chosen segments not collected yet as being collected; return them.
@@ -94,8 +114,7 @@ class CompanyService:
 
     # --- collection ---------------------------------------------------------
 
-    def collect(self, pages: Pages, segments: list[Segment],
-                now: Callable[[], datetime]) -> None:
+    def collect(self, pages: Pages, segments: list[Segment], now: Callable[[], datetime]) -> None:
         """Collect claimed segments one by one; a failure stays with its segment.
 
         Each segment ends collected or failed with a reason for the operator.
@@ -160,11 +179,13 @@ class CompanyService:
 
     def _store(self, segment: Segment, found: Found, now: datetime) -> None:
         known = self._repo.branches()
-        identities = {b: domain.identity(s.org_id, s.name, s.city, s.contacts)
-                      for b, s in known.items()}
+        identities = {
+            b: domain.identity(s.org_id, s.name, s.city, s.contacts) for b, s in known.items()
+        }
         for listed, handles in found:
             identities[listed.branch_id] = domain.identity(
-                listed.org_id, listed.org_name or listed.name, segment.city, handles)
+                listed.org_id, listed.org_name or listed.name, segment.city, handles
+            )
         companies_of = {b: s.company_id for b, s in known.items()}
         result = domain.assign(identities, companies_of, set(companies_of.values()))
         for conflict in result.conflicts:
@@ -179,8 +200,9 @@ class CompanyService:
                 self._repo.refresh_branch(listed)
             else:
                 url = domain.FIRM_CARD.format(city=segment.city, branch_id=listed.branch_id)
-                self._repo.add_branch(listed, segment.city, url,
-                                      result.placements[listed.branch_id])
+                self._repo.add_branch(
+                    listed, segment.city, url, result.placements[listed.branch_id]
+                )
             self._repo.replace_contacts(listed.branch_id, handles)
             self._repo.link_segment(listed.branch_id, segment)
 
@@ -193,9 +215,13 @@ class CompanyService:
     def counts(self) -> CompanyCounts:
         """Count every company found and those with a channel to write to in WhatsApp."""
         found = self._repo.companies()
-        return CompanyCounts(companies=len(found), reachable=sum(
-            domain.channel((c.kind, c.handle) for c in company.contacts) is not None
-            for company in found))
+        return CompanyCounts(
+            companies=len(found),
+            reachable=sum(
+                domain.channel((c.kind, c.handle) for c in company.contacts) is not None
+                for company in found
+            ),
+        )
 
     def segment_labels(self, company_ids: Collection[str]) -> dict[str, str]:
         """Label each company by the rubric and city names of its first segment."""
@@ -204,8 +230,10 @@ class CompanyService:
         for company_id, segments in self._repo.company_segments().items():
             if company_id in wanted:
                 first = min(segments)
-                labels[company_id] = (f"{domain.RUBRICS.get(first.rubric, first.rubric)}"
-                                      f" · {domain.CITIES.get(first.city, first.city)}")
+                labels[company_id] = (
+                    f"{domain.RUBRICS.get(first.rubric, first.rubric)}"
+                    f" · {domain.CITIES.get(first.city, first.city)}"
+                )
         return labels
 
     def prioritized(self, limit: int, exclude: Collection[str]) -> list[Company]:
@@ -215,22 +243,30 @@ class CompanyService:
         is not offered; `exclude` skips companies already given out.
         """
         chosen = set(_segments(self.settings()))
-        in_chosen = {company_id for company_id, segments in self._repo.company_segments().items()
-                     if segments & chosen}
+        in_chosen = {
+            company_id
+            for company_id, segments in self._repo.company_segments().items()
+            if segments & chosen
+        }
         ranked = []
         for company in self._repo.companies():
             handles = [(c.kind, c.handle) for c in company.contacts]
-            if (company.company_id in exclude or company.company_id not in in_chosen
-                    or not domain.is_reachable(handles)):
+            if (
+                company.company_id in exclude
+                or company.company_id not in in_chosen
+                or not domain.is_reachable(handles)
+            ):
                 continue
-            ranked.append((domain.priority_key(handles, company.review_count,
-                                               company.company_id), company))
+            ranked.append(
+                (domain.priority_key(handles, company.review_count, company.company_id), company)
+            )
         ranked.sort(key=lambda pair: pair[0])
-        return [company for _key, company in ranked[:max(limit, 0)]]
+        return [company for _key, company in ranked[: max(limit, 0)]]
 
 
-def _card(pages: Pages, segment: Segment,
-          branch: ListedBranch) -> tuple[ListedBranch, list[tuple[str, str]]] | None:
+def _card(
+    pages: Pages, segment: Segment, branch: ListedBranch
+) -> tuple[ListedBranch, list[tuple[str, str]]] | None:
     """Return the branch with its card contacts, or None when the card is gone."""
     url = domain.FIRM_CARD.format(city=segment.city, branch_id=branch.branch_id)
     try:

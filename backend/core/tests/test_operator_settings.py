@@ -37,23 +37,26 @@ def test_nothing_saved_returns_defaults(conn):
 def test_saved_section_replaces_defaults_and_stays_per_module(conn):
     save(conn, "sending", Sending(batch_size=30, stopwords=[]))
 
-    assert operator_settings.load(conn, "sending", Sending) == Sending(
-        batch_size=30, stopwords=[])
+    assert operator_settings.load(conn, "sending", Sending) == Sending(batch_size=30, stopwords=[])
     assert operator_settings.load(conn, "companies", Sending) == Sending()
 
 
 def test_saved_keys_overlay_defaults_and_unknown_keys_are_ignored(conn):
     with conn:
-        conn.execute("INSERT INTO operator_settings (module, data) VALUES (?, ?)",
-                     ("sending", '{"batch_size": 7, "removed_long_ago": true}'))
+        conn.execute(
+            "INSERT INTO operator_settings (module, data) VALUES (?, ?)",
+            ("sending", '{"batch_size": 7, "removed_long_ago": true}'),
+        )
 
     assert operator_settings.load(conn, "sending", Sending) == Sending(batch_size=7)
 
 
 def test_value_the_schema_no_longer_accepts_falls_back_to_its_default(conn):
     with conn:
-        conn.execute("INSERT INTO operator_settings (module, data) VALUES (?, ?)",
-                     ("sending", '{"batch_size": 0, "window": [9, 21]}'))
+        conn.execute(
+            "INSERT INTO operator_settings (module, data) VALUES (?, ?)",
+            ("sending", '{"batch_size": 0, "window": [9, 21]}'),
+        )
 
     assert operator_settings.load(conn, "sending", Sending) == Sending(window=(9, 21))
 
@@ -69,10 +72,9 @@ def test_edit_from_another_connection_is_read_on_the_next_call(conn, path):
 
 
 def test_save_is_part_of_the_callers_transaction(conn):
-    with pytest.raises(RuntimeError):
-        with conn:
-            operator_settings.save(conn, "sending", Sending(batch_size=30))
-            raise RuntimeError("operation failed after saving")
+    with pytest.raises(RuntimeError), conn:
+        operator_settings.save(conn, "sending", Sending(batch_size=30))
+        raise RuntimeError("operation failed after saving")
 
     assert operator_settings.load(conn, "sending", Sending) == Sending()
 
@@ -90,7 +92,9 @@ class Window(BaseModel):
 
 def test_section_the_schema_rejects_as_a_whole_falls_back_to_defaults(conn):
     with conn:
-        conn.execute("INSERT INTO operator_settings (module, data) VALUES (?, ?)",
-                     ("window", '{"start": 20, "end": 9}'))
+        conn.execute(
+            "INSERT INTO operator_settings (module, data) VALUES (?, ?)",
+            ("window", '{"start": 20, "end": 9}'),
+        )
 
     assert operator_settings.load(conn, "window", Window) == Window()
