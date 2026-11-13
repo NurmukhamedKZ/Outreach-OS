@@ -22,6 +22,7 @@ from openrouter.utils import BackoffStrategy, RetryConfig
 import logctx
 import observability
 from config import settings
+from core.model import openrouter_client
 from writer.schemas.outreach import Draft
 from writer.services import stages
 
@@ -49,10 +50,6 @@ TRANSPORT_RETRIES = 3
 # короткое сообщение по готовым фактам, а не рассуждать. Ответ приходит за
 # секунды, reasoning-токены не оплачиваются.
 REASONING = {"enabled": False}
-
-# Без явного timeout зависшее соединение блокирует draft() навсегда — см.
-# collector/services/pipeline/llm.py::REQUEST_TIMEOUT_MS.
-REQUEST_TIMEOUT_MS = 60_000
 
 SYSTEM = """# Роль
 Ты пишешь исходящие сообщения в WhatsApp от лица команды, которая предлагает:
@@ -104,13 +101,15 @@ def client(config):
 
     require_parameters ограничивает роутинг OpenRouter провайдерами, реально
     поддерживающими strict json_schema — см. collector/services/pipeline/llm.py.
+    Таймауты и общий срок запроса — у клиента SDK из core.model (#27): зависший
+    автоответ иначе держал бы тик воркера отправки.
     """
     return ChatOpenRouter(
+        client=openrouter_client(settings.openrouter_api_key),
         model=config["llm"]["model"],
         api_key=settings.openrouter_api_key,
         temperature=config["llm"]["temperature"],
         reasoning=REASONING,
-        timeout=REQUEST_TIMEOUT_MS,
         model_kwargs={"retries": NO_SDK_RETRY},
         openrouter_provider={"require_parameters": True},
     )

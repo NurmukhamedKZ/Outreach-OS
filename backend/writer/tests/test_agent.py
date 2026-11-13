@@ -89,3 +89,14 @@ def test_draft_returns_the_prompt_that_was_sent():
            attempt.prompt == sent["messages"]
     assert attempt.prompt[0][0] == "system"
     assert "оффер" in attempt.prompt[0][1]
+
+
+def test_client_cuts_a_never_ending_reply_by_the_core_deadline(monkeypatch):
+    """#27: зависший автоответ продавца держал бы тик воркера отправки."""
+    from core import model as core_model
+
+    monkeypatch.setattr(agent.settings, "openrouter_api_key", "test-key")
+    llm = agent.client({"llm": {"model": "openai/gpt-5-mini", "temperature": 0}})
+
+    http = llm.client.sdk_configuration.client
+    assert isinstance(http._transport, core_model.DeadlineTransport)
