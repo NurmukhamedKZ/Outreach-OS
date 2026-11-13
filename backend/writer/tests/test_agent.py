@@ -8,6 +8,7 @@ PITCHABLE = frozenset({"crm_widget", "site_no_pricing",
                         "reviews_unanswered_complaint"})
 
 import observability
+from core import model as core_model
 from writer.schemas.outreach import Draft
 from writer.services import agent, stages
 
@@ -91,10 +92,10 @@ def test_draft_returns_the_prompt_that_was_sent():
     assert "оффер" in attempt.prompt[0][1]
 
 
-def test_client_cuts_a_never_ending_reply_by_the_core_deadline(monkeypatch):
-    """#27: зависший автоответ продавца держал бы тик воркера отправки."""
-    from core import model as core_model
-
+def test_client_goes_through_the_core_deadline_transport(monkeypatch):
+    """#27: зависший автоответ продавца держал бы тик воркера отправки. Само
+    поведение срока проверяет core/tests/test_model.py; здесь — что writer
+    собирает клиент через него (транспорт у agent.client не подменяется)."""
     monkeypatch.setattr(agent.settings, "openrouter_api_key", "test-key")
     llm = agent.client({"llm": {"model": "openai/gpt-5-mini", "temperature": 0}})
 

@@ -1,5 +1,6 @@
 """Model adapter with the OpenRouter client replaced: no request leaves the process."""
 
+import json
 import threading
 import time
 
@@ -177,6 +178,15 @@ class Trickle(httpx.SyncByteStream):
         self.closed = True
 
 
+class Chunks(httpx.SyncByteStream):
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def __iter__(self):
+        for start in range(0, len(self.body), 16):
+            yield self.body[start:start + 16]
+
+
 COMPLETION = {
     "id": "gen-1", "object": "chat.completion", "created": 0, "model": "openai/gpt-5-mini",
     "system_fingerprint": None,
@@ -199,7 +209,11 @@ class OpenRouterStub(httpx.MockTransport):
             self.bodies.append(Trickle())
             return httpx.Response(200, headers={"content-type": "application/json"},
                                   stream=self.bodies[-1])
-        return httpx.Response(200, json=COMPLETION)
+        # Streamed in pieces, as the network delivers it: only then does the
+        # body pass through the deadline check at all.
+        body = json.dumps(COMPLETION).encode()
+        return httpx.Response(200, headers={"content-type": "application/json"},
+                              stream=Chunks(body))
 
 
 @pytest.fixture
@@ -241,3 +255,14 @@ def test_hung_calls_leave_no_threads_behind(wire):
             answer(adapter)
 
     assert threading.active_count() <= before
+
+
+def test_closing_the_client_closes_the_network_transport():
+    stub = OpenRouterStub()
+    sdk = model.openrouter_client("key", stub)
+    closed = []
+    stub.close = lambda: closed.append(True)
+
+    sdk.sdk_configuration.client.close()
+
+    assert closed == [True]
