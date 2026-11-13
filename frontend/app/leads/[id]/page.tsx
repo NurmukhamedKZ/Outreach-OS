@@ -32,15 +32,20 @@ export default function LeadPage() {
 
   const load = useCallback(() => {
     fetchCompanyResearch(id)
-      .then(setCard)
+      .then((next) => {
+        setCard(next);
+        setFailure(null);
+      })
       .catch((failure) => setFailure(researchError(failure)));
   }, [id]);
 
   useEffect(load, [load]);
-  const { batch, adopt } = useBatch(load);
+  const { batch, track } = useBatch(load);
   const running = isRunning(batch);
 
-  if (failure) {
+  // Карточка уже на экране — неудачное перечитывание показываем строкой под
+  // кнопками, а не прячем то, что оператор читает.
+  if (failure && !card) {
     return (
       <div className="failure">
         <b>Карточка не открылась.</b> {failure}
@@ -55,8 +60,7 @@ export default function LeadPage() {
   const again = () => {
     setBusy(true);
     setError(null);
-    researchAgain(card.company_id)
-      .then(adopt)
+    track(() => researchAgain(card.company_id))
       .catch((failure) => setError(researchError(failure)))
       .finally(() => setBusy(false));
   };
@@ -74,13 +78,17 @@ export default function LeadPage() {
           actions={
             !card.refused && (
               <>
-                <button className="btn-secondary" onClick={again} disabled={busy || running}>
+                <button
+                  className="btn-secondary"
+                  onClick={again}
+                  disabled={busy || running || batch === undefined}
+                >
                   {mine ? "Исследуется…" : "Исследовать заново"}
                 </button>
                 {running && !mine && <span className="page-sub">идёт партия — дождитесь её</span>}
-                {error && (
+                {(error ?? failure) && (
                   <span className="error-line" role="alert">
-                    {error}
+                    {error ?? failure}
                   </span>
                 )}
               </>

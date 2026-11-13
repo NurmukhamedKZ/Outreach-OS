@@ -46,7 +46,11 @@ export default function LeadDossier({
         {!card.refused && !card.lead && <span className="tone is-idle">не лид</span>}
         {actions}
       </div>
-      {!card.lead && !card.refused && <p className="note">{notLead(card)}</p>}
+      {!card.lead && !card.refused && (
+        <p className="note">
+          Лид — досье с подтверждённой зацепкой, канал для WhatsApp и ни одного отказа.
+        </p>
+      )}
 
       {card.why_now && (
         <div className="why">
@@ -203,14 +207,6 @@ export default function LeadDossier({
       )}
     </article>
   );
-}
-
-/** Почему компания не лид — по тем же трём правилам, что у бэкенда, только для
- *  подписи: решение «лид или нет» приходит готовым полем `lead`. */
-function notLead(card: CompanyResearch) {
-  if (!card.dossier) return "Не лид: досье нет.";
-  if (!card.channel) return "Не лид: нет канала для WhatsApp — ни WhatsApp, ни мобильного.";
-  return "Не лид: в досье нет подтверждённой зацепки.";
 }
 
 function HookSource({ hook }: { hook: ResearchHook }) {

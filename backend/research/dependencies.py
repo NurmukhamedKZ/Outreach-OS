@@ -30,11 +30,6 @@ def get_model() -> Model:
     return OpenRouterModel(settings.openrouter_api_key)
 
 
-def get_backup(request: Request) -> backup.BackupService:
-    """Return the process's one backup service: its lock keeps one backup at a time."""
-    return request.app.state.backup
-
-
 def get_research_service(db: Db) -> ResearchService:
     return ResearchService(db)
 
@@ -55,5 +50,5 @@ def run_in_background(path: Path, pages: Pages, model: Model, batch_id: int,
 
 PagesDep = Annotated[Pages, Depends(get_pages)]
 ModelDep = Annotated[Model, Depends(get_model)]
-BackupDep = Annotated[backup.BackupService, Depends(get_backup)]
+BackupDep = Annotated[backup.BackupService, Depends(backup.get_backup)]
 ResearchServiceDep = Annotated[ResearchService, Depends(get_research_service)]

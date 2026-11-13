@@ -68,7 +68,9 @@ export function tickOutcome(outcome: string): Outcome {
   return TICK_OUTCOME[outcome] ?? unknown(outcome);
 }
 
-/** Статус партии исследования: `research.schemas.BatchStatus`. */
+/** Статус партии исследования: `research.schemas.BatchStatus`. Проверки
+ *  расхождения с бэкендом у словарей research нет — новый статус покажется
+ *  сырым словом (`unknown`). */
 const BATCH_STATUS: Record<string, Outcome> = {
   collecting: { label: "собирает сегменты", tone: "ok" },
   researching: { label: "исследует компании", tone: "ok" },

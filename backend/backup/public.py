@@ -1,14 +1,15 @@
 """Facade of backup for the app assembler and the operator's task list."""
 
-from datetime import datetime
 from contextlib import suppress
+from datetime import datetime
 from threading import Event
 
 import clock
+from backup.dependencies import get_backup
 from backup.exceptions import BackupDisabledError, BackupFailedError, BackupRunningError
 from backup.service import CHECK_SECONDS, BackupService, tick
 
-__all__ = ["BackupService", "back_up", "loop", "now"]
+__all__ = ["BackupService", "back_up", "get_backup", "loop", "now"]
 
 
 def now() -> datetime:

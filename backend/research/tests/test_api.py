@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 import clock
 import config
 from collector.api import app
+from backup import public as backup
 from research import dependencies
 from research.service import ResearchService
 
@@ -47,9 +48,9 @@ class FakeBackup:
 @pytest.fixture
 def backups():
     fake = FakeBackup()
-    app.dependency_overrides[dependencies.get_backup] = lambda: fake
+    app.dependency_overrides[backup.get_backup] = lambda: fake
     yield fake
-    app.dependency_overrides.pop(dependencies.get_backup)
+    app.dependency_overrides.pop(backup.get_backup)
 
 
 @pytest.fixture
@@ -145,7 +146,8 @@ def test_settings_out_of_bounds_are_422(client, body):
     assert client.put("/api/research/settings", json=body).status_code == 422
 
 
-def test_without_a_model_key_a_batch_does_not_start(state, db, network, monkeypatch, company_a):
+def test_without_a_model_key_a_batch_does_not_start(state, db, network, backups, monkeypatch,
+                                                   company_a):
     monkeypatch.setattr(config.settings, "openrouter_api_key", None)
     client = TestClient(app)
 

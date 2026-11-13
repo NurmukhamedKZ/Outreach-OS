@@ -15,42 +15,51 @@ export function isRunning(batch: Batch | null | undefined) {
 }
 
 /** Текущая партия с опросом: чаще, пока идёт. `onFinished` зовётся, когда
- *  идущая партия закончилась, — по нему перечитывают лидов или карточку. */
+ *  идущая партия закончилась, — по нему перечитывают лидов или карточку.
+ *  `track` — запуск или остановка: ответ опроса, ушедшего раньше, отбрасывается,
+ *  иначе он затёр бы только что начатую партию старым состоянием. */
 export function useBatch(onFinished: () => void) {
   const [batch, setBatch] = useState<Batch | null | undefined>(undefined);
   const [failure, setFailure] = useState<string | null>(null);
   const finished = useRef(onFinished);
   const wasRunning = useRef(false);
-  finished.current = onFinished;
+  const latest = useRef(0);
+  useEffect(() => {
+    finished.current = onFinished;
+  });
 
-  const adopt = useCallback((next: Batch | null) => {
-    setBatch(next);
-    setFailure(null);
-    if (wasRunning.current && !isRunning(next)) finished.current();
-    wasRunning.current = isRunning(next);
+  const track = useCallback((call: () => Promise<Batch | null>) => {
+    const request = ++latest.current;
+    return call().then((next) => {
+      if (request !== latest.current) return;
+      setBatch(next);
+      setFailure(null);
+      if (wasRunning.current && !isRunning(next)) finished.current();
+      wasRunning.current = isRunning(next);
+    });
   }, []);
 
   const running = isRunning(batch);
   useEffect(() => {
-    const load = () => fetchBatch().then(adopt).catch((error) => setFailure(researchError(error)));
+    const load = () =>
+      track(fetchBatch).catch((error) => setFailure(researchError(error)));
     load();
     const timer = setInterval(load, running ? RUNNING_MS : IDLE_MS);
     return () => clearInterval(timer);
-  }, [running, adopt]);
+  }, [running, track]);
 
-  return { batch, adopt, failure };
+  return { batch, track, failure };
 }
 
 export default function BatchPanel({ onFinished }: { onFinished: () => void }) {
-  const { batch, adopt, failure } = useBatch(onFinished);
+  const { batch, track, failure } = useBatch(onFinished);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const act = (call: () => Promise<Batch>) => {
     setBusy(true);
     setError(null);
-    call()
-      .then(adopt)
+    track(call)
       .catch((failure) => setError(researchError(failure)))
       .finally(() => setBusy(false));
   };
