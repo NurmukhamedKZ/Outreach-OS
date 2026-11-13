@@ -6,13 +6,25 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { CHANNEL_LABELS, fetchResearchLeads, researchError, type ResearchLead } from "../api";
+import {
+  CHANNEL_LABELS,
+  fetchResearchLeads,
+  fetchCityNames,
+  researchError,
+  type ResearchLead,
+} from "../api";
 import { day } from "../outcomes";
 import BatchPanel from "@/components/BatchPanel";
 
 export default function Leads() {
   const [leads, setLeads] = useState<ResearchLead[] | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  // Лид несёт id города 2GIS; название — из справочника модуля companies.
+  const [cities, setCities] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    fetchCityNames().then(setCities).catch(() => undefined);
+  }, []);
 
   const load = useCallback(() => {
     fetchResearchLeads()
@@ -55,8 +67,8 @@ export default function Leads() {
                 {lead.name}
               </Link>
               <span className="row-sub mono">
-                {lead.city} · {CHANNEL_LABELS[lead.channel.kind] ?? lead.channel.kind}{" "}
-                {lead.channel.handle}
+                {cities[lead.city] ?? lead.city} ·{" "}
+                {CHANNEL_LABELS[lead.channel.kind] ?? lead.channel.kind} {lead.channel.handle}
               </span>
               <span className="lead-why">
                 {lead.why_now.angle}

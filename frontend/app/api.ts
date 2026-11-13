@@ -275,6 +275,13 @@ export function fetchSegments() {
 
 /** Раздел сохраняется целиком: неизвестный город или id рубрики не из цифр —
  *  422 с `code` (`errors.cityInvalid`, `errors.rubricInvalid`). */
+/** id города 2GIS → название: лиды и карточка несут id. */
+export function fetchCityNames() {
+  return fetchSegments().then(
+    (view) => Object.fromEntries(view.cities.map((c) => [c.id, c.name])) as Record<string, string>,
+  );
+}
+
 export function saveSegments(settings: SegmentSettings) {
   return json<SegmentsView>("/api/companies/segments", {
     method: "PUT",

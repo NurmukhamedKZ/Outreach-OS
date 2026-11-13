@@ -119,7 +119,7 @@ export default function BatchPanel({ onFinished }: { onFinished: () => void }) {
           приоритету. Размер партии и модель — в «Настройках».
         </p>
       )}
-      {batch && !running && (
+      {batch?.finished_at && !running && (
         <p className="note">
           {batch.status === "stopped" ? "Остановлена" : "Закончилась"} {moment(batch.finished_at)}.
         </p>

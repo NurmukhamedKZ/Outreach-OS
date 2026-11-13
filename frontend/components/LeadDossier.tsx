@@ -10,6 +10,7 @@ import {
   CHANNEL_LABELS,
   SIGNAL_LABELS,
   channelLink,
+  fetchCityNames,
   fetchThreads,
   type CompanyResearch,
   type Contact,
@@ -29,11 +30,15 @@ export default function LeadDossier({
   onRefused: () => void;
 }) {
   const { dossier } = card;
+  const [cities, setCities] = useState<Record<string, string>>({});
+  useEffect(() => {
+    fetchCityNames().then(setCities).catch(() => undefined);
+  }, []);
   return (
     <article className="card">
       <h2>{card.name}</h2>
       <p className="card-sub">
-        {[dossier?.what_they_do, card.city].filter(Boolean).join(" · ")}
+        {[dossier?.what_they_do, cities[card.city] ?? card.city].filter(Boolean).join(" · ")}
         {" · оценка "}
         <span className="mono">{card.score.toFixed(1)}</span>
         {card.researched_at && ` · исследована ${moment(card.researched_at)}`}

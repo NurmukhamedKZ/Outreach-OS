@@ -1832,3 +1832,25 @@ a.nav-item:hover {
   gap: 10px;
   margin-bottom: 14px;
 }
+
+/* Бейдж в строке сигнала не растягивается на высоту длинной формулировки. */
+.signals .tone {
+  align-self: start;
+}
+
+/* Длинный адрес сайта или Instagram на телефоне переносится, а кнопки уходят
+   на следующую строку, вместо горизонтальной прокрутки всей страницы. */
+.channel {
+  flex-wrap: wrap;
+}
+
+.channel .handle {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.dossier h4 {
+  margin: 16px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
