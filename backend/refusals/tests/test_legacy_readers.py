@@ -1,4 +1,4 @@
-"""sender, writer and the old collector keep their old paths until #7 and #13."""
+"""sender and the old collector keep their old paths until #7 and #13; writer reads research."""
 
 import sqlite3
 from contextlib import closing
@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from collector.db import lead
 from refusals import public as refusals
 from sender.services import worker
-from writer.db import leads_source
 
 NOW = datetime(2026, 11, 12, 10, 0, tzinfo=UTC)
 
@@ -19,12 +18,11 @@ def test_sender_sees_a_refusal_written_through_the_facade(db):
     assert worker._suppressed(db, "+77019999999") is False
 
 
-def test_writer_and_old_collector_see_it_through_the_attached_database(db, state):
+def test_the_old_collector_sees_it_through_the_attached_database(db, state):
     refusals.record(db, "info@kofe.kz", "просил по почте", NOW)
 
     with closing(sqlite3.connect(":memory:")) as derived:
         derived.execute("ATTACH DATABASE ? AS state", (str(state),))
-        assert leads_source.suppression_handles(derived) == {"info@kofe.kz"}
         assert lead.suppression_handles(derived) == {"info@kofe.kz"}
 
 

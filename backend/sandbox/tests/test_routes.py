@@ -5,6 +5,7 @@ Node: стоп-слова, дедуп и гашение расписания о�
 """
 
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -12,14 +13,24 @@ import pytest
 from fastapi import HTTPException
 
 import clock
+import paths
+from core import db as core_db
 from sandbox import faults, node, routes, runs
+from writer.tests.research_leads import add_lead, migrate
 
 MOMENT = datetime(2026, 9, 3, 9, 0, tzinfo=timezone.utc)
+LEADS = ("c_romashka", "c_one", "c_two")
 
 
 @pytest.fixture(autouse=True)
 def sandbox(tmp_path, monkeypatch):
+    """Прогоны и боевая база — в tmp_path; в боевой три лида research."""
     monkeypatch.setattr(runs, "RUNS_DIR", tmp_path / "sandbox")
+    monkeypatch.setattr(paths, "PRODUCTION_STATE", tmp_path / "state.db")
+    migrate(paths.PRODUCTION_STATE)
+    with closing(core_db.connect(paths.PRODUCTION_STATE)) as db:
+        for n, company_id in enumerate(LEADS, 1):
+            add_lead(db, company_id, [("whatsapp", f"+7701000000{n}")])
     sent = []
 
     async def deliver(payload: dict) -> bool:
@@ -226,3 +237,37 @@ async def test_runs_listing_carries_the_stand_clock():
     moved = datetime.fromisoformat(listing["now"])
     assert moved - datetime.now(timezone.utc) > timedelta(hours=23)
     assert listing["runs"][0]["run_id"] == run["run"]["run_id"]
+
+
+async def test_a_run_is_made_only_for_a_research_lead():
+    with closing(core_db.connect(paths.PRODUCTION_STATE)) as db:
+        add_lead(db, "c_no_hook", [("whatsapp", "+77010000009")], hooks=[])
+
+    for company_id, status in (("c_nobody", 404), ("c_no_hook", 409), ("../../evil", 404)):
+        with pytest.raises(HTTPException) as failure:
+            await routes.create_run(routes.NewRun(company_id=company_id, warmed=True))
+        assert failure.value.status_code == status, company_id
+    assert runs.all() == []
+
+
+async def test_the_run_drafts_its_lead_from_research_into_its_own_database(monkeypatch):
+    """Лид прогона — настоящая компания: досье читается из боевой базы, а тред
+    ложится в базу прогона. Двоеточие в id компании — как у 2GIS."""
+    from writer.routes import threads as writer_routes
+    from writer.services import agent
+
+    with closing(core_db.connect(paths.PRODUCTION_STATE)) as db:
+        add_lead(db, "2gis:7000", [("whatsapp", "+77010000005")])
+    monkeypatch.setattr(writer_routes, "require_api_key", lambda: None)
+    monkeypatch.setattr(writer_routes, "_writer_move", lambda kind, threads, thread, history:
+                        agent.Attempt(draft=agent.Draft(text="Здравствуйте", angle="other",
+                                                        stop=False), prompt=[], model=""))
+
+    run = (await routes.create_run(routes.NewRun(company_id="2gis:7000", warmed=True)))["run"]
+    writer_routes.make_draft("2gis:7000", writer_routes.DraftRequest(kind="first"))
+
+    with closing(sqlite3.connect(runs.get(run["run_id"]).path)) as db:
+        seeds = db.execute("SELECT thread_id, json_extract(seed, '$.name') FROM threads").fetchall()
+    assert seeds == [("+77010000005", "Компания 2gis:7000")]
+    with closing(sqlite3.connect(paths.PRODUCTION_STATE)) as db:
+        assert db.execute("SELECT count(*) FROM threads").fetchone() == (0,)

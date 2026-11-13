@@ -6,6 +6,7 @@
 бы вторые гейты, а проверять надо те же, что в бою.
 """
 
+import asyncio
 import logging
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -19,6 +20,8 @@ from pydantic import BaseModel
 
 import clock
 import paths
+import sqlite_tools
+from research import public as research
 from sandbox import chat, faults, node, runs
 
 router = APIRouter(prefix="/api/sandbox")
@@ -74,6 +77,7 @@ async def list_runs() -> dict:
 
 @router.post("/runs", status_code=201)
 async def create_run(body: NewRun) -> dict:
+    await asyncio.to_thread(_require_lead, body.company_id)
     # Системное время, а не clock.now(): id прогона и дата регистрации номера
     # не должны наследовать сдвиг прошлого прогона — иначе новый прогон
     # рождается в будущем и его календарь прогрева врёт с первого дня.
@@ -154,6 +158,21 @@ async def incoming(body: NewIncoming) -> dict:
             502, f"песочница не достучалась до себя по {node.self_url()}: {error}."
                  " Проверьте SANDBOX_SELF_URL — он должен указывать на этот же"
                  " процесс") from None
+
+
+def _require_lead(company_id: str) -> None:
+    """Refuse a run for anything but a research lead, read from the production database.
+
+    The run writes to that company, and its id names the run's file.
+    """
+    with closing(sqlite_tools.connect_readonly(paths.PRODUCTION_STATE, None)) as db:
+        try:
+            card = research.company(db, company_id, clock.now())
+        except research.CompanyNotFoundError:
+            raise HTTPException(404, f"компании {company_id} нет в research") from None
+    if not card.lead:
+        raise HTTPException(409, f"компания {card.name} не лид: прогон заводится на лида"
+                                 " из выдачи research")
 
 
 def _require_scenario() -> runs.Run:

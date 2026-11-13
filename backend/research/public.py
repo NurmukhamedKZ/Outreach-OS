@@ -6,6 +6,8 @@ writer reads its leads here (#17); the app's assembler resets interrupted work.
 import sqlite3
 from datetime import datetime
 
+# What company() raises, re-exported for callers to catch without reaching into research.
+from research.exceptions import CompanyNotFoundError  # noqa: F401
 from research.schemas import CompanyResearch, Lead
 from research.service import ResearchService
 

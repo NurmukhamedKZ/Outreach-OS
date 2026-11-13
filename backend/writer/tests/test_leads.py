@@ -1,197 +1,110 @@
-"""Отбор кандидатов: F19 и F21 воспроизведены запросом, не импортом collector'а.
-
-База формы collector'а строится из collector/db/schema.sql (см. conftest):
-всегда та же форма, что у живого derived.db, иначе проверка прошла бы на
-выдуманной таблице.
-"""
-
-from datetime import date
+"""«Черновики топ-N» берут лидов из research: кто лид, решает research, о чём писать — writer."""
 
 import pytest
 
-from writer.db import leads_source
-from writer.db.leads_source import PitchRules
-
-RULES = PitchRules(
-    pitchable=frozenset({"reviews_unanswered_complaint", "site_hiring_sales"}),
-    max_age_days=60,
-    today=date(2026, 9, 2),
-)
+from refusals import public as refusals
+from writer.db import thread_store
+from writer.services import agent, operations
+from writer.tests.research_leads import HOOK, NOW, add_lead, days_ago
 
 
-def _extra_signals(db, run_id=1):
-    """Три случая рядом с уже лежащим crm_widget: годный, старый, безцитатный."""
-    rows = (
-        ("reviews_unanswered_complaint", "2026-08-25", "второй раз не дозвонился", "https://2gis.kz/1"),
-        ("site_hiring_sales", "2026-05-01", "ищем менеджера по продажам", "https://romashka.kz/jobs"),
-        ("reviews_missed_lead", "2026-08-30", None, "https://2gis.kz/2"),
-    )
-    for kind, observed_at, quote, url in rows:
-        db.execute("INSERT INTO signals_all (run_id, company_id, type, observed_at, weight,"
-                   " quote, url) VALUES (?, 'c_ok', ?, ?, 4.0, ?, ?)",
-                   (run_id, kind, observed_at, quote, url))
-    db.commit()
+class Ctx:
+    def __init__(self):
+        self.logs = []
+
+    def log(self, message):
+        self.logs.append(message)
+
+    def progress(self, current, total, label):
+        pass
+
+    def check_cancelled(self):
+        pass
 
 
-def _seed(db, run_id=1):
-    """Пять случаев в *_all-таблицах + current_run, как у боевой базы."""
-    for company_id, name, intent in (
-        ("c_ok", "Ромашка", 6.0),
-        ("c_phone", "Лютик", 4.0),
-        ("c_no_channel", "Тишина", 5.0),
-        ("c_suppressed", "Отказ", 5.5),
-        ("c_short_number", "Короткий", 5.0),
-        ("c_no_intent", "Пусто", 0.0),
-    ):
-        branch = f"b_{company_id}"
-        db.execute("INSERT INTO companies_all (run_id, company_id, name_norm, city, rubric_id)"
-                   " VALUES (?, ?, ?, 'almaty', '653')",
-                   (run_id, company_id, name))
-        db.execute("INSERT INTO scores_all (run_id, company_id, fit_score, intent_score, breakdown)"
-                   " VALUES (?, ?, 5.0, ?, '[]')", (run_id, company_id, intent))
-        db.execute("INSERT INTO orgs_all (run_id, branch_id, name, org_name, branch_count,"
-                   " city, rubric_id, address) VALUES (?, ?, ?, ?, 1, 'almaty', '653', 'ул. Абая, 1')",
-                   (run_id, branch, name, name))
-        db.execute("INSERT INTO company_links_all (run_id, company_id, branch_id, rule, confidence)"
-                   " VALUES (?, ?, ?, 'self', 1.0)", (run_id, company_id, branch))
-        db.execute("INSERT INTO dossiers_all (run_id, company_id, model, summary,"
-                   " hooks, pains, approach, sources, confidence)"
-                   " VALUES (?, ?, 'модель', 'бухгалтерия', '[]',"
-                   " '[{\"statement\": \"ищет клиентов\", \"evidence\": [], \"severity\": \"видно явно\"}]',"
-                   " 'заходить через рост', '[\"reviews\"]', 0.8)",
-                   (run_id, company_id))
-        db.execute("INSERT INTO signals_all (run_id, company_id, type, observed_at, weight,"
-                   " quote, url) VALUES (?, ?, 'crm_widget', '2026-08-01', 3.0,"
-                   " 'виджет Bitrix24', 'https://romashka.kz/')", (run_id, company_id))
+@pytest.fixture
+def drafting(monkeypatch):
+    """The model stand-in: every first message is drafted, each seed is kept."""
+    seeds = []
 
-    contacts = (
-        ("b_c_ok", "whatsapp", "https://wa.me/77010000001?text=%D0%9F%D0%B8%D1%88%D1%83"),
-        ("b_c_ok", "phone", "+77010000009"),
-        ("b_c_phone", "phone", "+77010000003"),
-        ("b_c_suppressed", "whatsapp", "https://wa.me/77010000002"),
-        ("b_c_short_number", "phone", "1400"),
-        ("b_c_no_intent", "phone", "+77010000004"),
-    )
-    for branch, kind, handle in contacts:
-        db.execute("INSERT INTO contacts_all (run_id, branch_id, kind, handle, source_url)"
-                   " VALUES (?, ?, ?, ?, NULL)", (run_id, branch, kind, handle))
-    db.execute("INSERT INTO state.suppression (handle, added_at, reason)"
-               " VALUES ('+77010000002', '2026-08-10', 'просил не писать')")
-    db.execute("INSERT INTO current_run (id, run_id) VALUES (1, ?)", (run_id,))
-    db.commit()
+    def draft(llm, seed, history, task, **kwargs):
+        seeds.append(seed)
+        return agent.Attempt(draft=agent.Draft(text="Здравствуйте", angle="reviews_missed_lead",
+                                               stop=False), prompt=[], model="")
+
+    monkeypatch.setattr(operations.settings, "openrouter_api_key", "test-key")
+    monkeypatch.setattr(operations.agent, "model", lambda config: object())
+    monkeypatch.setattr(operations.agent, "draft", draft)
+    return seeds
 
 
-def test_a_refusal_in_canonical_form_closes_a_channel_in_another_spelling(leads_db):
-    """F21: refusals are kept canonical; 2GIS spells the phone its own way."""
-    db = leads_db
-    _seed(db)
-    db.execute("UPDATE contacts_all SET handle = '701 000 00 03' WHERE branch_id = 'b_c_phone'")
-    db.execute("INSERT INTO state.suppression (handle, added_at, reason)"
-               " VALUES ('+77010000003', '2026-08-10T00:00:00+00:00', 'просил')")
-    db.commit()
+def test_drafts_go_to_leads_by_score_past_threads_and_refusals(db, drafting):
+    add_lead(db, "low", [("phone", "+77010000001")],
+             signals=[("site_no_pricing", NOW, "цены по запросу")])
+    add_lead(db, "high", [("whatsapp", "+77010000002")],
+             signals=[("reviews_missed_lead", NOW, HOOK)])
+    add_lead(db, "refused", [("whatsapp", "+77010000003")],
+             signals=[("reviews_missed_lead", NOW, HOOK)])
+    add_lead(db, "threaded", [("whatsapp", "+77010000004")],
+             signals=[("reviews_missed_lead", NOW, HOOK)])
+    refusals.record(db, "+77010000003", "просил не писать", NOW)
+    thread_store.open_thread(db, "+77010000004", "threaded", {})
 
-    found = {row["company_id"] for row in leads_source.candidates(db, RULES)}
+    result = operations.open_new_threads(Ctx())
 
-    assert "c_phone" not in found, "отказ в канонической форме не закрыл канал (F21)"
-
-
-def test_pitchable_fresh_and_quoted_signals_only(leads_db):
-    db = leads_db
-    _seed(db)
-    _extra_signals(db)
-
-    signals = leads_source.signals_of(db, "c_ok", RULES)
-    kinds = [signal["type"] for signal in signals]
-
-    assert kinds == ["reviews_unanswered_complaint"], (
-        "в поводы просочилось лишнее: crm_widget — не повод, site_hiring_sales старше"
-        f" 60 дней, reviews_missed_lead без цитаты. Получено: {kinds}"
-    )
+    assert result == {"drafted": 2}
+    assert [seed["name"] for seed in drafting] == ["Компания high", "Компания low"]
+    opened = {row["thread_id"]: row["company_id"] for row in thread_store.inbox(db)}
+    assert opened == {"+77010000002": "high", "+77010000001": "low", "+77010000004": "threaded"}
 
 
-def test_company_without_pitchable_signals_stays_in_candidates(leads_db):
-    db = leads_db
-    _seed(db)
+def test_the_seed_carries_the_dossier_and_only_fresh_pitchable_signals(db, drafting):
+    add_lead(db, "a", [("whatsapp", "+77010000001")],
+             hooks=[(HOOK, days_ago(2)), ("Отзыв двухлетней давности", days_ago(700))],
+             signals=[("reviews_missed_lead", days_ago(2), HOOK),
+                      ("crm_widget", NOW, "Bitrix24"),
+                      ("site_hiring_sales", days_ago(90), "Ищем менеджера по продажам")])
 
-    found = leads_source.candidates(db, RULES)
-    without_pitch = [lead for lead in found if lead["company_id"] == "c_phone"]
+    operations.open_new_threads(Ctx())
 
-    assert without_pitch, "лид без поводов исчез из выдачи вместо stop=true у агента"
-    assert without_pitch[0]["seed"]["signals"] == [], "непригодный сигнал попал в seed"
-
-
-def test_candidates_follow_f19_and_f21(leads_db):
-    db = leads_db
-    _seed(db)
-    found = leads_source.candidates(db, RULES, limit=10)
-    by_company = {row["company_id"]: row for row in found}
-
-    assert "c_ok" in by_company, "лид с WhatsApp не попал в отбор"
-    assert "c_no_channel" not in by_company, "лид без канала попал в отбор (F19)"
-    assert "c_suppressed" not in by_company, "лид из suppression попал в отбор (F21)"
-    assert "c_short_number" not in by_company, "сервисный короткий номер сошёл за канал"
-    assert "c_no_intent" not in by_company, "компания без intent попала в отбор"
-
-    lead = by_company["c_ok"]
-    assert lead["thread_id"] == "+77010000001", lead["thread_id"]
-    assert lead["channel_kind"] == "whatsapp", lead["channel_kind"]
-    assert lead["seed"]["name"] == "Ромашка", lead["seed"]
-    assert lead["seed"]["dossier"]["summary"] == "бухгалтерия", lead["seed"]
-    assert lead["seed"]["dossier"]["approach"] == "заходить через рост", lead["seed"]
-    # crm_widget остаётся сигналом и продолжает поднимать лид в очереди по
-    # intent_score, но поводом для письма не является: «у вас на сайте виджет
-    # CRM» — не боль, и цитировать в первом касании нечего.
-    assert [s["type"] for s in lead["seed"]["signals"]] == [], lead["seed"]
-
-    suppressed = leads_source.suppression_handles(db)
-    assert "+77010000002" in suppressed, "отказ не виден по handle"
-    assert "+77010000001" not in suppressed, "лишний handle в отказах"
-
-    assert [row["company_id"] for row in found] == ["c_ok", "c_phone"], \
-        "порядок отбора не по intent"
-    db.close()
+    [seed] = drafting
+    assert seed["city"] == "almaty"
+    assert seed["dossier"]["summary"] == "Бухгалтерская фирма на Абая"
+    assert seed["dossier"]["decision_maker"] == "Айгуль, основатель"
+    assert seed["dossier"]["approach"] == "Начать с отзывов о недозвоне"
+    assert [(h["source"], h["quote"]) for h in seed["dossier"]["hooks"]] == [("reviews", HOOK)]
+    assert [(s["type"], s["quote"]) for s in seed["signals"]] == [("reviews_missed_lead", HOOK)]
+    stored = thread_store.thread(db, "+77010000001")["seed"]
+    assert stored == seed
 
 
-def test_candidates_without_limit_returns_everyone(leads_db):
-    """limit=None — вызывающая сторона (operations.open_new_threads) сама режет
-    список после фильтра «уже есть тред», и не может заранее знать, сколько
-    кандидатов из начала списка тот фильтр отсеет."""
-    db = leads_db
-    _seed(db)
-    found = leads_source.candidates(db, RULES)
-    assert [row["company_id"] for row in found] == ["c_ok", "c_phone"]
-    db.close()
+def test_a_fresh_lead_behind_a_threaded_top_is_still_found(db, drafting):
+    """Регрессия: окно отбора резалось до фильтра «тред уже есть», и когда весь
+    топ уже в работе — обычное состояние после нескольких прогонов, — свежих
+    лидов не находилось, хотя дальше по списку они были."""
+    top_n = operations.CONFIG["llm"]["top_n"]
+    for n in range(top_n):
+        add_lead(db, f"busy{n}", [("whatsapp", f"+7701000{n:04d}")],
+                 signals=[("reviews_missed_lead", NOW, HOOK)])
+        thread_store.open_thread(db, f"+7701000{n:04d}", f"busy{n}", {})
+    add_lead(db, "fresh", [("whatsapp", "+77019999999")])
+
+    assert operations.open_new_threads(Ctx()) == {"drafted": 1}
+    assert [seed["name"] for seed in drafting] == ["Компания fresh"]
 
 
-def test_seed_carries_decision_maker(leads_db):
-    db = leads_db
-    _seed(db)
-    db.execute("UPDATE dossiers_all SET decision_maker = 'Айгуль, основатель'"
-               " WHERE company_id = 'c_ok'")
-    db.commit()
+def test_a_followup_takes_the_next_research_signal_the_thread_has_not_used(db, drafting):
+    from sender.db import conversation
+    from writer.services import followup
 
-    lead = next(l for l in leads_source.candidates(db, RULES) if l["company_id"] == "c_ok")
+    add_lead(db, "a", [("whatsapp", "+77010000001")],
+             signals=[("reviews_missed_lead", NOW, HOOK),
+                      ("site_no_pricing", NOW, "Цены на сайте не указаны")])
+    operations.open_new_threads(Ctx())
+    [(message_id,)] = db.execute("SELECT message_id FROM messages").fetchall()
+    with db:
+        conversation.confirm_sent(db, message_id, "P1", NOW)
 
-    assert lead["seed"]["dossier"]["decision_maker"] == "Айгуль, основатель", \
-        "имя ЛПР собрано системой 1, но до системы 2 не доехало"
+    task = followup.task(db, thread_store.thread(db, "+77010000001"))
 
-def test_seed_of_demands_pitch_rules(leads_db):
-    """Дефолт у rules означал бы «отдать все сигналы» — и забытый аргумент
-    тихо вернул бы поведение до фильтра, причём навсегда: seed замерзает в
-    threads.seed и кормит непригодными поводами каждый следующий ход."""
-    db = leads_db
-    _seed(db)
-
-    with pytest.raises(TypeError):
-        leads_source.seed_of(db, "c_ok")
-
-
-def test_seed_of_filters_the_same_way_as_candidates(leads_db):
-    db = leads_db
-    _seed(db)
-    _extra_signals(db)
-
-    seed = leads_source.seed_of(db, "c_ok", RULES)
-
-    assert [s["type"] for s in seed["signals"]] == ["reviews_unanswered_complaint"], \
-        "путь карточки отбирает поводы иначе, чем путь операции"
+    assert "возьми угол site_no_pricing" in task

@@ -47,7 +47,7 @@ async def touch_one(db, transport, config: dict, now: datetime) -> str | None:
         attempt = await asyncio.to_thread(
             _write, _llm(), card, history, task,
             offers.variant_of(thread["thread_id"], config)["text"],
-            leads_source.pitch_rules(config).pitchable)
+            leads_source.pitch_rules(config, now.date()).pitchable)
         draft = attempt.draft
     except Exception:
         # Срок остаётся на месте: следующий тик попробует снова, и лид не

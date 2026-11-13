@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from writer.services import operations
+from writer.tests.research_leads import add_lead
 
 
 class DummyCtx:
@@ -33,83 +34,6 @@ def test_open_new_threads_without_api_key_raises_before_touching_db(monkeypatch)
         operations.open_new_threads(DummyCtx())
 
 
-def test_open_new_threads_skips_existing_threads_and_drafts_only_new(monkeypatch):
-    monkeypatch.setattr(operations.settings, "openrouter_api_key", "test-key")
-
-    candidates = [
-        {"thread_id": "t1", "company_id": "c1", "seed": {"name": "Alpha"}},
-        {"thread_id": "t2", "company_id": "c2", "seed": {"name": "Beta"}},
-    ]
-    existing_threads = {"t1"}
-    drafted = []
-
-    monkeypatch.setattr(operations.leads_source, "connect",
-                         lambda path: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(operations.leads_source, "candidates",
-                         lambda db, rules, limit=None, skip=frozenset():
-                         [c for c in candidates if c["thread_id"] not in skip][:limit])
-    monkeypatch.setattr(operations.thread_store, "connect",
-                         lambda path: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(operations.thread_store, "open_thread_ids",
-                         lambda db: frozenset(existing_threads))
-    monkeypatch.setattr(operations.thread_store, "open_thread", lambda *a: None)
-    monkeypatch.setattr(operations.thread_store, "add_draft",
-                         lambda db, thread_id, text, angle, **kw: drafted.append(thread_id))
-    monkeypatch.setattr(operations.agent, "model", lambda config: "llm-stub")
-    monkeypatch.setattr(operations.agent, "draft",
-                         lambda *a, **kw: SimpleNamespace(
-                             draft=SimpleNamespace(stop=False, text="hi", angle="pain"),
-                             prompt=[], model=""))
-
-    ctx = DummyCtx()
-    result = operations.open_new_threads(ctx)
-
-    assert result == {"drafted": 1}
-    assert drafted == ["t2"]
-    assert any("Beta" in line for line in ctx.logs)
-
-
-def test_open_new_threads_looks_past_already_threaded_top_of_list(monkeypatch):
-    """Баг: candidates() резался окном limit*3, и если весь топ по intent уже
-    имел тред (нормальное состояние после нескольких прогонов), open_new_threads
-    находил ноль свежих лидов, хотя дальше по списку их полно."""
-    monkeypatch.setattr(operations.settings, "openrouter_api_key", "test-key")
-
-    top_n = operations.CONFIG["llm"]["top_n"]
-    # top_n*3 уже занятых тредом + один свежий лид сразу за окном старой догадки.
-    candidates = [{"thread_id": f"busy{i}", "company_id": f"c{i}", "seed": {"name": f"Busy{i}"}}
-                  for i in range(top_n * 3)]
-    candidates.append({"thread_id": "fresh1", "company_id": "cN", "seed": {"name": "Свежий"}})
-    existing_threads = {c["thread_id"] for c in candidates[:-1]}
-
-    monkeypatch.setattr(operations.leads_source, "connect", lambda path: SimpleNamespace(close=lambda: None))
-    # Как настоящий leads_source.candidates: skip отсеивает занятые треды ДО
-    # того, как limit режет список. Порядок здесь и есть суть теста: режь limit
-    # раньше skip — и свежий лид за окном снова потеряется.
-    def fake_candidates(db, rules, limit=None, skip=frozenset()):
-        fresh = [c for c in candidates if c["thread_id"] not in skip]
-        return fresh[:limit] if limit is not None else fresh
-
-    monkeypatch.setattr(operations.leads_source, "candidates", fake_candidates)
-    monkeypatch.setattr(operations.thread_store, "connect", lambda path: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(operations.thread_store, "open_thread_ids",
-                        lambda db: frozenset(existing_threads))
-    monkeypatch.setattr(operations.thread_store, "open_thread", lambda *a: None)
-    drafted = []
-    monkeypatch.setattr(operations.thread_store, "add_draft",
-                         lambda db, thread_id, text, angle, **kw: drafted.append(thread_id))
-    monkeypatch.setattr(operations.agent, "model", lambda config: "llm-stub")
-    monkeypatch.setattr(operations.agent, "draft",
-                         lambda *a, **kw: SimpleNamespace(
-                             draft=SimpleNamespace(stop=False, text="hi", angle="pain"),
-                             prompt=[], model=""))
-
-    result = operations.open_new_threads(DummyCtx())
-
-    assert result == {"drafted": 1}
-    assert drafted == ["fresh1"]
-
-
 def test_write_pipeline_is_registered_in_collector_queue():
     import collector.api  # noqa: F401 — импорт наполняет реестр операций
     from collector.services.jobs import check_pipelines
@@ -120,21 +44,12 @@ def test_write_pipeline_is_registered_in_collector_queue():
     check_pipelines()
 
 
-def test_open_new_threads_tags_draft_calls_with_thread_id(monkeypatch):
+def test_open_new_threads_tags_draft_calls_with_thread_id(db, monkeypatch):
     import logctx
 
+    add_lead(db, "c9", [("whatsapp", "+77010000009")])
     monkeypatch.setattr(operations.settings, "openrouter_api_key", "test-key")
-
-    candidates = [{"thread_id": "t9", "company_id": "c9", "seed": {"name": "Gamma"}}]
-    monkeypatch.setattr(operations.leads_source, "connect", lambda path: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(operations.leads_source, "candidates",
-                        lambda db, rules, limit=None, skip=frozenset(): candidates)
-    monkeypatch.setattr(operations.thread_store, "connect", lambda path: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(operations.thread_store, "open_thread_ids", lambda db: frozenset())
-    monkeypatch.setattr(operations.thread_store, "open_thread", lambda *a: None)
-    monkeypatch.setattr(operations.thread_store, "add_draft", lambda *a, **kw: None)
     monkeypatch.setattr(operations.agent, "model", lambda config: "llm-stub")
-
     seen_entity = []
 
     def fake_draft(*a, **kw):
@@ -147,5 +62,5 @@ def test_open_new_threads_tags_draft_calls_with_thread_id(monkeypatch):
 
     operations.open_new_threads(DummyCtx())
 
-    assert seen_entity == ["t9"]
+    assert seen_entity == ["+77010000009"]
     assert logctx.current_entity() is None, "entity не сброшена после джобы"

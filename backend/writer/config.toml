@@ -1,8 +1,5 @@
 # Единственное место конфигурации системы 2, по образцу collector/config.toml.
-# Пути относительны каталогу writer/, а не текущему: тот же конфиг читается и из
-# writer/ (uv run -m scripts.write), и из collector/ (uvicorn монтирует роутер).
-
-leads_db = "../collector/data/derived.db"
+# Лидов writer читает через research.public, своей базы лидов у него нет.
 
 [llm]
 # Та же модель, что у classify: проверена на русских текстах и дёшева.
