@@ -338,11 +338,12 @@ export function fetchStats() {
 
 /** Что требуется от человека сейчас. Порядок задаёт бэкенд — по срочности. */
 export type Task = {
-  /** backup — без компании и треда: company_id и thread_id пустые. */
+  /** backup — без компании и треда: company_id и channel пустые. */
   kind: "escalated" | "draft" | "stuck" | "backup";
   company_id: string;
   company_name: string;
-  thread_id: string;
+  /** Номер лида, на котором открыт тред. */
+  channel: string;
   our_number: string | null;
   why: string;
   at: string | null;
@@ -432,18 +433,20 @@ export const CHANNEL_LABELS: Record<string, string> = {
 };
 
 export type ThreadMessage = {
+  message_id: number;
   role: "outgoing" | "incoming";
   text: string;
   angle: string | null;
   sent_at: string | null;
-  message_id: number | null;
   /** Вид касания из outbox: cold | followup | reply. У входящих пуст. */
   kind: string | null;
 };
 
+/** Тред принадлежит компании (#36): `company_id` — его ключ, `channel` — номер
+ *  WhatsApp лида, на котором тред открыт; он не меняется. */
 export type Conversation = {
-  thread_id: string;
-  channel_kind: string;
+  company_id: string;
+  channel: string;
   /** Статус ведёт система 3; null — треда ещё нет, черновик будет первым. */
   status: string | null;
   /** Почему статус такой. null у тредов, чей статус ставили до того, как
@@ -452,7 +455,7 @@ export type Conversation = {
   /** Наш номер, с которого лид видит переписку. Один на тред. */
   our_number: string | null;
   messages: ThreadMessage[];
-  draft: { message_id: number; draft_text: string; angle: string | null } | null;
+  draft: { message_id: number; draft_text: string; angle: string | null; created_at: string } | null;
   /** Агент советует не писать: нового повода в данных нет. Решает оператор. */
   stop: boolean;
 };
@@ -470,12 +473,35 @@ export function addIncoming(companyId: string, text: string) {
   return post<Conversation>(`/api/threads/${encodeURIComponent(companyId)}/incoming`, { text });
 }
 
+/** Тексты ошибок переписки по `code`; неизвестный код — `detail` бэкенда. */
+const CONVERSATION_ERRORS: Record<string, string> = {
+  "errors.modelKeyMissing":
+    "Нет ключа модели: задайте OPENROUTER_API_KEY в backend/.env и перезапустите бэкенд.",
+  "errors.modelFailed": "Модель не ответила — ничего не записано, попробуйте ещё раз.",
+  "errors.companyRefused": "Компания в отказах — ей больше не пишем.",
+  "errors.noChannel": "Писать некуда: у компании нет номера WhatsApp.",
+  "errors.notALead": "Компания не лид: нет досье с подтверждённой зацепкой — исследуйте её заново.",
+  "errors.channelTaken": "Этот номер уже в переписке с другой компанией.",
+  "errors.noThread": "Переписки ещё не было — сначала черновик.",
+  "errors.agentClosed": "Агент решил не отвечать и передал тред дальше.",
+  "errors.outreachRunning": "Прогон уже идёт — дождитесь его или остановите.",
+  "errors.outreachNotRunning": "Прогон уже не идёт — останавливать нечего.",
+  "errors.companyNotFound": "Такой компании нет в базе.",
+};
+
+export function conversationError(failure: unknown) {
+  const code = failure instanceof ApiError ? failure.code : undefined;
+  return (
+    (code && CONVERSATION_ERRORS[code]) || (failure instanceof Error ? failure.message : String(failure))
+  );
+}
+
 // ---- Система 2: инбокс тредов ----
 
 export type ThreadSummary = {
-  thread_id: string;
   company_id: string;
   company_name: string;
+  channel: string;
   created_at: string;
   status: string;
   sent: number;
@@ -498,7 +524,7 @@ export type ColdDraft = {
   company_name: string;
   city: string | null;
   score: number;
-  thread_id: string;
+  channel: string;
   message_id: number;
   draft_text: string;
   angle: string | null;
@@ -527,6 +553,62 @@ export function setThreadOutcome(companyId: string, outcome: ThreadOutcome) {
       body: JSON.stringify({ outcome }),
     },
   );
+}
+
+// ---- «Черновики топ-N»: прогон первых писем новым лидам ----
+
+export type OutreachStatus = "running" | "done" | "stopped" | "failed";
+
+export type OutreachRun = {
+  run_id: number;
+  status: OutreachStatus;
+  /** Сколько новых лидов просили — «топ-N» из настроек на момент запуска. */
+  size: number;
+  /** Сколько нашлось с чем-то свежим, о чём написать. */
+  taken: number;
+  drafted: number;
+  /** Модель советует не писать: нового повода в данных нет. */
+  skipped: number;
+  stop_requested: boolean;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+};
+
+/** `null` — прогонов ещё не было. */
+export function fetchOutreach() {
+  return json<OutreachRun | null>("/api/threads/outreach/current");
+}
+
+export function startOutreach() {
+  return json<OutreachRun>("/api/threads/outreach", { method: "POST" });
+}
+
+export function stopOutreach() {
+  return json<OutreachRun>("/api/threads/outreach/current/stop", { method: "POST" });
+}
+
+export type OfferVariant = { id: string; text: string };
+
+export type ConversationSettings = {
+  model: string;
+  top_n: number;
+  pitchable: SignalType[];
+  max_age_days: number;
+  offer: string;
+  variants: OfferVariant[];
+};
+
+export function fetchConversationSettings() {
+  return json<ConversationSettings>("/api/threads/settings");
+}
+
+export function saveConversationSettings(settings: ConversationSettings) {
+  return json<ConversationSettings>("/api/threads/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
 }
 
 export type FunnelStep = { step: string; count: number };
@@ -612,13 +694,14 @@ export type QueueRow = {
   kind: string;
 };
 
-/** Кнопка оператора. Постановка в очередь живёт в системе 3: отправляет она же. */
-export function queueMessage(threadId: string, text: string) {
-  return post<QueueRow>("/api/sender/queue", { thread_id: threadId, text });
+/** Кнопка оператора. Постановка в очередь живёт в системе 3: отправляет она же.
+ *  Тред — компания (#36): в `thread_id` уходит её id, а не номер. */
+export function queueMessage(companyId: string, text: string) {
+  return post<QueueRow>("/api/sender/queue", { thread_id: companyId, text });
 }
 
-export function fetchQueue(threadId?: string) {
-  const query = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
+export function fetchQueue(companyId?: string) {
+  const query = companyId ? `?thread_id=${encodeURIComponent(companyId)}` : "";
   return json<{ queue: QueueRow[]; recent: QueueRow[] }>(`/api/sender/queue${query}`);
 }
 
@@ -692,8 +775,8 @@ export type SandboxBubble = {
 };
 
 export type SandboxChat = {
-  thread_id: string;
   company_id: string;
+  channel: string;
   stage: string;
   status: string;
   touch_no: number;

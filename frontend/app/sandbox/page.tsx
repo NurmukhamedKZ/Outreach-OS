@@ -326,7 +326,7 @@ export default function SandboxPage() {
         <div className="detail">
           <header className="cold-head">
             <b className="row-name">Чат с лидом</b>
-            {chat && <span className="ghost mono">{chat.thread_id}</span>}
+            {chat && <span className="ghost mono">{chat.channel}</span>}
           </header>
 
           <ol className="thread-log">
@@ -377,7 +377,7 @@ export default function SandboxPage() {
               <button
                 className={step === 2 ? "btn" : "btn-secondary"}
                 disabled={busy || !draft || !chat}
-                onClick={() => act(() => queueMessage(chat!.thread_id, draft!.text))}
+                onClick={() => act(() => queueMessage(chat!.company_id, draft!.text))}
               >
                 Поставить в очередь
               </button>

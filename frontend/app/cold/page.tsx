@@ -8,25 +8,18 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowLeftIcon, ArrowRightIcon } from "@phosphor-icons/react";
-import { channelLink, fetchCatalogue, fetchColdDrafts, type ColdDraft, type Pipeline } from "../api";
+import { channelLink, fetchColdDrafts, type ColdDraft } from "../api";
 import MessageComposer from "@/components/MessageComposer";
+import OutreachPanel from "@/components/OutreachPanel";
 import RefusalForm from "@/components/RefusalForm";
-import { PipelineActions } from "@/components/JobMonitor";
 import { useLive } from "@/components/live";
 
 export default function Cold() {
   const { refreshTick } = useLive();
   const [drafts, setDrafts] = useState<ColdDraft[] | null>(null);
   const [index, setIndex] = useState(0);
-  const [pipelines, setPipelines] = useState<Pipeline[]>([]);
   const [revision, setRevision] = useState(0);
   const [failure, setFailure] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetchCatalogue()
-      .then((c) => setPipelines(c.pipelines.filter((p) => p.kind === "write")))
-      .catch(() => undefined);
-  }, []);
 
   const reload = useCallback(() => setRevision((n) => n + 1), []);
 
@@ -61,14 +54,14 @@ export default function Cold() {
         </span>
       </header>
 
-      <PipelineActions pipelines={pipelines} />
+      <OutreachPanel onProgress={reload} />
       {failure && <div className="failure">{failure}</div>}
 
       <div className="split">
         <div className="roster">
           {(drafts ?? []).map((entry, position) => (
             <button
-              key={`${entry.thread_id}-${entry.message_id}`}
+              key={`${entry.company_id}-${entry.message_id}`}
               className="row"
               aria-current={position === index}
               onClick={() => setIndex(position)}
@@ -77,7 +70,7 @@ export default function Cold() {
               <span className="row-text">
                 <span className="row-name">{entry.company_name}</span>
                 <span className="row-sub mono">
-                  {[entry.city, entry.thread_id].filter(Boolean).join(" · ")}
+                  {[entry.city, entry.channel].filter(Boolean).join(" · ")}
                 </span>
               </span>
               <span className="intent mono">{entry.score.toFixed(1)}</span>
@@ -101,11 +94,11 @@ export default function Cold() {
                 </Link>
                 <a
                   className="ghost mono"
-                  href={channelLink({ kind: "whatsapp", handle: draft.thread_id })}
+                  href={channelLink({ kind: "whatsapp", handle: draft.channel })}
                   target="_blank"
                   rel="noreferrer"
                 >
-                  {draft.thread_id}
+                  {draft.channel}
                 </a>
                 <span className="cold-position mono">
                   {index + 1} из {drafts!.length}
@@ -121,7 +114,6 @@ export default function Cold() {
               <MessageComposer
                 companyId={draft.company_id}
                 messageId={draft.message_id}
-                threadId={draft.thread_id}
                 text={draft.draft_text}
                 angle={draft.angle}
                 model={draft.model}
@@ -132,7 +124,7 @@ export default function Cold() {
               />
 
               <RefusalForm
-                channel={{ kind: "whatsapp", handle: draft.thread_id }}
+                channel={{ kind: "whatsapp", handle: draft.channel }}
                 onDone={() => {
                   setIndex((i) => Math.max(0, i));
                   reload();
