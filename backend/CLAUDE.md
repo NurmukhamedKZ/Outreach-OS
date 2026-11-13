@@ -2,9 +2,9 @@
 
 Правила для кода FastAPI-бэкенда. Дополняют корневой `CLAUDE.md` (принципы кода, безопасность, работа с тикетами); при противоречии побеждает корневой. Основа — гайд «FastAPI Best Practices for AI Agents» в том виде, в каком он адаптирован в проекте GoCastMVP; что не зависит от выбора базы — перенесено, остальное ждёт редизайна.
 
-**Правила описывают новый код.** Существующие `collector/`, `writer/`, `sender/` написаны до них (функции, швы `use()`, папки `routes/`/`services/`/`db/`) и заменяются модулями предметной области по мере переписывания (#9–#13, затем #7), а не отдельной кампанией.
+**Правила описывают новый код.** Существующие `collector/`, `sender/` написаны до них (функции, швы `use()`, папки `routes/`/`services/`/`db/`) и заменяются модулями предметной области по мере переписывания (#9–#13, затем #7), а не отдельной кампанией.
 
-**Модули** лежат прямо в `backend/`, имена — из `GLOSSARY.md`: `companies`, `research`, `refusals`, позже `conversations`, `delivery`, `overview`. Общее ядро без бизнес-логики — `backend/core/` (не `platform`: это модуль стандартной библиотеки). Зависимости идут в одну сторону: `companies` → `research` → `conversations` → `delivery`; `refusals` зовут все. Состав и причины — #4.
+**Модули** лежат прямо в `backend/`, имена — из `GLOSSARY.md`: `companies`, `research`, `refusals`, `conversations`, позже `delivery`, `overview`. Общее ядро без бизнес-логики — `backend/core/` (не `platform`: это модуль стандартной библиотеки). Зависимости идут в одну сторону: `companies` → `research` → `conversations` → `delivery`; `refusals` зовут все. Состав и причины — #4.
 
 **База — одна SQLite без прогонов** (ADR 0002): `backend/data/state.db`, схема — Alembic, доступ — синхронный `sqlite3` (ADR 0004). Разделы «База данных», «Async», «Миграции» ниже.
 
@@ -41,7 +41,7 @@ from delivery import public as delivery
 delivery.enqueue(db, thread_id, now)
 ```
 
-Функции `public.py` тонкие и сами собирают сервис: чужой модуль не зависит от устройства чужих классов. `from x import *` и глубокие пути в чужие модули запрещены. Границы новых модулей сторожит import-linter (`pyproject.toml`, `[tool.importlinter]`): слои `research` → `companies` → `refusals | backup` → `core` (`refusals` и `backup` зовут все, друг друга не знают), чужой модуль — только через `public`, старые системы и `tasks`/`analytics` новому коду недоступны, журнал `activity` пишет только `backup`. Новый модуль вписывается в слои и получает свой контракт `protected` тем же PR. Миграции — не пакет, их сторожит `core/tests/test_import_graph.py`.
+Функции `public.py` тонкие и сами собирают сервис: чужой модуль не зависит от устройства чужих классов. `from x import *` и глубокие пути в чужие модули запрещены. Границы новых модулей сторожит import-linter (`pyproject.toml`, `[tool.importlinter]`): слои `conversations` → `research` → `companies` → `refusals | backup` → `core` (`refusals` и `backup` зовут все, друг друга не знают), чужой модуль — только через `public`, старые системы и `tasks`/`analytics` новому коду недоступны, журнал `activity` пишет только `backup`. Новый модуль вписывается в слои и получает свой контракт `protected` тем же PR. Миграции — не пакет, их сторожит `core/tests/test_import_graph.py`.
 
 ## Pydantic
 
@@ -95,7 +95,7 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 | `errors.py` | `DomainError` (`code`, `status_code`) и обработчик `{code, detail}`; подключён в `collector/api.py` |
 | `schemas.py` | общая база `Schema` (обрезка пробелов) и `Timestamp` (только с зоной, хранится в UTC); схемы ответа модели наследуют не её, а `llm_schema.LLMSchema` |
 | `pages.py` | адаптер сбора: `Pages` (Protocol, `get(url, *, cookies=None, headers=None)` — страница хранится по одному адресу), `ScraplingPages`, `FakePages` (пишет `requested` и `cookies`), `FetchError` и наследники (`HttpStatusError`, `BotCheckError`, `CertificateError` — негодный сертификат, для отката сайта на `http://`) |
-| `model.py` | адаптер модели: `Model` (Protocol), `OpenRouterModel`, `FakeModel`, `ModelError`, `ModelKeyMissingError`; `openrouter_client(api_key)` — клиент SDK для `ChatOpenRouter(client=...)` с общим сроком запроса |
+| `model.py` | адаптер модели: `Model` (Protocol), `OpenRouterModel` (`temperature` в конструкторе, по умолчанию 0), `FakeModel`, `ModelError`, `ModelKeyMissingError`; `openrouter_client(api_key)` — клиент SDK для `ChatOpenRouter(client=...)` с общим сроком запроса |
 | `phones.py` | каноническая форма телефона: `canonical(raw)` → `+7XXXXXXXXXX` без `+`, с `+` — 10–15 цифр как набраны (как `numbers.normalize`), иначе `ValueError("errors.phoneInvalid")`; `PHONE` — форма телефона, `WHATSAPP_LINK` — номер из ссылки `wa.me`/`api.whatsapp.com`. Старая копия `numbers.normalize` живёт до #7 |
 | `contacts.py` | каноническая форма контакта: `canonical(raw)` — телефон и ссылка WhatsApp на него → телефон, остальное — без пробелов по краям и в нижнем регистре; пустой, короче трёх символов или кривой телефон — `ValueError("errors.handleInvalid")` |
 
@@ -119,7 +119,8 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 
 ## Миграции
 
-- Схема новых модулей — одна история Alembic в `backend/migrations/` (ADR 0004). Таблицы `writer` и `sender` и старые таблицы `collector/db/schema.sql` (`jobs`, `threads`, `messages`) остаются вне Alembic до #7.
+- Схема новых модулей — одна история Alembic в `backend/migrations/` (ADR 0004); `threads`, `messages` и `outreach_runs` переехали в неё ревизией `0005` (#36), она же убрала представление `suppression`. Таблицы `sender` (`outbox`, `numbers`) и `collector/db/schema.sql` (`jobs`) остаются вне Alembic до #7.
+- Ревизия, забирающая таблицу у старого владельца, в `downgrade` отдаёт её в старой форме с данными (`0005`): откат не имеет права терять невосстановимый слой. Поэтому `downgrade base` оставляет `threads` и `messages` в форме до `0005`.
 - Новая ревизия: `uv run alembic revision -m "<что меняется>" --rev-id 0002` (следующий номер после `uv run alembic heads`) → файл `migrations/versions/<дата>_<slug>.py`, `down_revision` проставится текущей головой.
 - Операции — `op.*`, изменение таблицы — `with op.batch_alter_table(...)`: SQLite меняет таблицу только пересозданием. `downgrade` пишется всегда.
 - Каждая ревизия идёт своей транзакцией (`migrations/env.py`): упавшая откатывается целиком. Внешние ключи на время миграции выключены — пересоздание таблицы иначе каскадно удалило бы дочерние строки.
@@ -146,7 +147,7 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 ## Логи
 
 - Логгер модуля — `log = logging.getLogger(__name__)`. Никаких `print`, `logging.basicConfig`, своих хендлеров: формат задаёт `logging_setup.py`.
-- **В лог — идентификаторы, а не данные.** Телефоны, тексты сообщений, тела запросов и ключи не логируем. `thread_id` сейчас — телефон лида, поэтому новый код в лог его не пишет; чем его заменить, решает #7.
+- **В лог — идентификаторы, а не данные.** Телефоны, тексты сообщений, тела запросов и ключи не логируем. Тред называется `company_id` (#36): номер лида — его `channel`, и в лог он не идёт.
 - Уровни: `error` — надо разбираться человеку, `warning` — деградация без ошибки для оператора, `info` — редкие значимые события.
 - Необработанное исключение уже попадает в лог — не ловим его, чтобы залогировать. `log.exception` — только когда ошибку обработали и работа продолжается.
 
@@ -164,7 +165,7 @@ uv run python main.py                     # FastAPI, порт 8787
 uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run lint-imports && uv run pytest  # полная проверка
 ```
 
-Охват `ruff`, `mypy` (strict) и `import-linter` — новый код: `core`, `refusals`, `companies`, `research`, `backup`, `migrations` (`[tool.ruff] include`, `[tool.mypy] files` в `pyproject.toml`). Старые `collector`, `writer`, `sender`, `sandbox` и `backend/*.py` вне охвата — их переписывают #13 и #7; новый модуль добавляется в охват тем же PR, что его заводит. У тестов mypy не требует аннотаций сигнатур, тела проверяет. Заглушка — только с кодом правила и причиной: `# noqa: BLE001`, `# type: ignore[arg-type]  # причина`.
+Охват `ruff`, `mypy` (strict) и `import-linter` — новый код: `core`, `refusals`, `companies`, `research`, `conversations`, `backup`, `migrations` (`[tool.ruff] include`, `[tool.mypy] files` в `pyproject.toml`). Старые `collector`, `sender`, `sandbox` и `backend/*.py` вне охвата — их переписывает #7; новый модуль добавляется в охват тем же PR, что его заводит. У тестов mypy не требует аннотаций сигнатур, тела проверяет. Заглушка — только с кодом правила и причиной: `# noqa: BLE001`, `# type: ignore[arg-type]  # причина`.
 
 ## Анти-паттерны — проверяй в каждом диффе
 

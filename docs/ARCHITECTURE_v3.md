@@ -43,7 +43,7 @@
 ## 2. Модули и границы
 
 ```
-core  ←  companies  ←  research  ←  writer (#7: conversations)  ←  sender (#7: delivery)
+core  ←  companies  ←  research  ←  conversations (#36)  ←  sender (#7: delivery)
                  ↖────────── refusals (зовут все) ──────────↗
 ```
 
@@ -100,7 +100,7 @@ core  ←  companies  ←  research  ←  writer (#7: conversations)  ←  sende
 
 ## 5. Досье, сигналы, оценка, лид
 
-**Досье** (`Dossier`) — контракт с writer'ом: `summary`, `what_they_do`, `hooks`
+**Досье** (`Dossier`) — контракт с `conversations`: `summary`, `what_they_do`, `hooks`
 (угол, дословная цитата, ссылка, источник `reviews|site`, дата), `pains`
 (формулировка, доказательства, тяжесть), `approach`, `decision_maker_hint`.
 Хранится версиями (`dossiers`: модель, полный промпт, ответ, проверенное досье) —
@@ -136,10 +136,10 @@ core  ←  companies  ←  research  ←  writer (#7: conversations)  ←  sende
 
 ## 7. Граница с системой 2
 
-Writer читает лидов только через `research.public.leads` / `company`
-(`writer/db/leads_source.py`, #17); правила лида у него не дублируются. В seed треда
-идут досье и свежие зацепки и сигналы. `threads.company_id` — идентификатор
-компании из `companies`.
+`conversations` читает лидов только через `research.public.leads` / `company` (#17,
+#36); правила лида у него не дублируются. В seed треда идут досье и свежие зацепки и
+сигналы. Тред принадлежит компании: `threads.company_id` — ключ, идентификатор
+компании из `companies`; `channel` — номер, на котором тред открыт (#36).
 
 ## 8. Замер
 

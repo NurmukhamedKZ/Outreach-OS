@@ -30,7 +30,7 @@
 10:00–18:00 Asia/Almaty и режимы `autopilot` (`off | manual | replies | full`, файл-переключатель
 — kill switch; умолчание `manual` — уходит только поставленное оператором) реализованы; доставка по кнопке оператора и при `full` идёт через один
 путь (`sender/services/queue.py`). Входящие (вебхук с дедупом по `provider_id` и
-стоп-словами до модели), агент-продавец (`writer/services/seller.py`, четыре
+стоп-словами до модели), агент-продавец (`conversations`, один вызов со structured output, #36; три
 предохранителя в `sender/services/incoming.py`) и каденция follow-up
 (`[3, 7]` в `sender/config.toml`, текст рождается в момент срока) реализованы
 2026-08-30.
