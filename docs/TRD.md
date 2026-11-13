@@ -69,14 +69,15 @@ hh.kz, Serper, прогоны `derived.db`) — в истории git и `docs/l
 | `conversations/` | тред компании, сообщения, черновики модели, входящие, follow-up, «Черновики топ-N» (#36) | `thread`, `thread_on_channel`, `add_incoming`, `confirm_sent`, `bump_touch`, `followup_turn`/`write`, `reply_turn`/`sell`, `forget_interrupted` |
 
 Зависимости идут в одну сторону: `companies` → `research` → `conversations` →
-`delivery` (#37); `refusals` зовут все. Другие модули
+`delivery` (#37) → `overview` (#38); `refusals` зовут все. Другие модули
 импортируют только `public.py`; граф сторожат `*/tests/test_import_graph.py`.
 
 Модули верхнего уровня `backend/` (`config.py`, `clock.py`, `paths.py`,
-`activity.py`, `analytics.py`, `tasks.py`, `sqlite_tools.py`) — ядро до переезда в
-`core/` (#7). «Сегодня» (`tasks.py`) и «Аналитика» (`analytics.py`) берут имя и
-сегмент компании у `companies.public`, счётчики «Сбор лидов» (`GET /api/stats`) —
-у `companies`, `research` и `refusals`.
+`sqlite_tools.py`) — ядро до переезда в `core/`; журнал фоновой работы уже там
+(`core/activity.py`, #38). Сборщик приложения — `backend/main.py`. «Сегодня»,
+«Аналитика», счётчики (`GET /api/stats`) и «Процессы» — модуль `overview` (#38): только
+читает, через фасады владельцев, без своего SQL. Очереди джоб и SSE нет — страницы
+дашборда опрашивают API.
 
 ---
 
@@ -117,7 +118,7 @@ hh.kz, Serper, прогоны `derived.db`) — в истории git и `docs/l
 | Что | Где | Восстановимо |
 |---|---|---|
 | сегменты, компании, филиалы, контакты, партии, досье, сигналы, настройки, отказы | `backend/data/state.db`, Alembic | нет |
-| переписка, очередь, номера, джобы, журнал | `backend/data/state.db`, вне Alembic до #7 | нет |
+| переписка, очередь, номера, журнал фоновой работы | `backend/data/state.db`, Alembic (`0005`–`0007`) | нет |
 | скачанные страницы | `backend/data/pages/` (`core/pages.py`) | нет — страница меняется |
 | прогоны песочницы | `backend/data/sandbox/<run>.db` | да |
 | ключи сессий WhatsApp | `backend/sender/node/sessions/` | нет |

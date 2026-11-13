@@ -24,7 +24,6 @@ import {
   type ThreadSummary,
 } from "../api";
 import MessageComposer from "@/components/MessageComposer";
-import { useLive } from "@/components/live";
 import { threadStatus } from "../outcomes";
 
 const WHEN = new Intl.DateTimeFormat("ru", {
@@ -47,7 +46,6 @@ export default function Threads() {
 }
 
 function ThreadsPage() {
-  const { refreshTick } = useLive();
   const params = useSearchParams();
   const [threads, setThreads] = useState<ThreadSummary[] | null>(null);
   // Начальное значение, а не useEffect: ссылка с «Сегодня» открывает страницу
@@ -69,7 +67,7 @@ function ThreadsPage() {
     return () => {
       stale = true;
     };
-  }, [refreshTick]);
+  }, []);
 
   useEffect(() => {
     if (!selected) {

@@ -38,7 +38,6 @@ import {
   type SandboxRun,
   type SenderStatus,
 } from "../api";
-import { useLive } from "@/components/live";
 
 const WHEN = new Intl.DateTimeFormat("ru", {
   day: "2-digit",
@@ -162,7 +161,6 @@ const STEPS = [
 ];
 
 export default function SandboxPage() {
-  const { refreshTick } = useLive();
   const [runs, setRuns] = useState<SandboxRun[]>([]);
   const [leads, setLeads] = useState<ResearchLead[]>([]);
   const [chat, setChat] = useState<SandboxChat | null>(null);
@@ -206,7 +204,7 @@ export default function SandboxPage() {
     setFailure(error.message);
   }
 
-  useEffect(reload, [reload, refreshTick]);
+  useEffect(reload, [reload]);
 
   // Выдача читается один раз: пока идёт прогон, она не меняется.
   useEffect(() => {

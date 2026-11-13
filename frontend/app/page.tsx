@@ -3,17 +3,16 @@
 /** «Сегодня»: список задач оператора первым, три системы — ниже одним экраном.
  *  Счётчик отвечает на «сколько», задача — на «кто и почему»: `escalated: 3`
  *  не говорит, кто эти трое, и оператор шёл искать их руками. Запуск —
- *  контекстный (на «Лидах» и «Холодных»), монитор джобы — в полоске наверху
- *  и на «Процессах».
- *
- *  Полминуты. Ничего не крутится зря: если джоба идёт, её видно из любого
- *  места полоской наверху.
+ *  контекстный (на «Лидах» и «Холодных»). Задачи и счётчики — опросом раз в
+ *  полминуты, пока вкладка видна.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import Link from "next/link";
-import { fetchTasks, type Task } from "./api";
-import { useLive } from "@/components/live";
+import { fetchStats, fetchTasks, type DashboardStats, type Task } from "./api";
+import { usePoll } from "@/components/usePoll";
+
+const POLL_MS = 30_000;
 
 const TASK_LABEL: Record<Task["kind"], string> = {
   escalated: "ждёт вас",
@@ -54,19 +53,22 @@ function requires(n: number) {
 }
 
 export default function Overview() {
-  const { stats, refreshTick } = useLive();
+  const [stats, setStats] = useState<DashboardStats | null>(null);
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
 
-  useEffect(() => {
-    let stale = false;
+  const load = useCallback(() => {
     fetchTasks()
-      .then((data) => !stale && setTasks(data.tasks))
-      .catch((error: Error) => !stale && setFailure(error.message));
-    return () => {
-      stale = true;
-    };
-  }, [refreshTick]);
+      .then((data) => {
+        setTasks(data.tasks);
+        setFailure(null);
+      })
+      .catch((error: Error) => setFailure(error.message));
+    fetchStats()
+      .then(setStats)
+      .catch((error: Error) => setFailure(error.message));
+  }, []);
+  usePoll(load, POLL_MS);
 
   return (
     <>
@@ -247,7 +249,7 @@ function Guide() {
           отправки 10:00–18:00 Asia/Almaty, ответы уходят круглосуточно.
         </li>
         <li>
-          <b>Следить.</b> Сайдбар → <span className="ui">Процессы</span>: живой журнал всего,
+          <b>Следить.</b> Сайдбар → <span className="ui">Процессы</span>: журнал всего,
           что делают фоновые демоны, и когда каждый из них тикал в последний раз — молчащий
           подсвечен. На «Отправке» — «созрели, но стоят», «ждут ответа», «эскалировано».
           Ответы лидов на «Диалогах» помечены <span className="ui">↩</span>; эскалированный

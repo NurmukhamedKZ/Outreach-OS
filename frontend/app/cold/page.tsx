@@ -12,10 +12,8 @@ import { channelLink, fetchColdDrafts, type ColdDraft } from "../api";
 import MessageComposer from "@/components/MessageComposer";
 import OutreachPanel from "@/components/OutreachPanel";
 import RefusalForm from "@/components/RefusalForm";
-import { useLive } from "@/components/live";
 
 export default function Cold() {
-  const { refreshTick } = useLive();
   const [drafts, setDrafts] = useState<ColdDraft[] | null>(null);
   const [index, setIndex] = useState(0);
   const [revision, setRevision] = useState(0);
@@ -37,7 +35,7 @@ export default function Cold() {
     return () => {
       stale = true;
     };
-  }, [revision, refreshTick]);
+  }, [revision]);
 
   const draft = drafts?.[index] ?? null;
   const step = () => {

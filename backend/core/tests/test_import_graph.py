@@ -20,9 +20,7 @@ DOMAIN = (
     "research",
     "refusals",
     "backup",
-    "activity",
-    "analytics",
-    "tasks",
+    "overview",
 )
 
 

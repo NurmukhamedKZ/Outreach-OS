@@ -54,9 +54,8 @@ services:
     build:
       context: ./frontend
       args:
-        # Имя сервиса compose — только для next.config.ts rewrites() внутри
-        # сети контейнеров. NEXT_PUBLIC_API_ORIGIN (SSE) остаётся на дефолте
-        # Dockerfile — резолвится из браузера на хосте, не из контейнера.
+        # Имя сервиса compose — для next.config.ts rewrites() внутри сети
+        # контейнеров: браузер ходит в API только через Next.
         API_ORIGIN: http://backend:8787
     ports:
       - "3000:3000"
