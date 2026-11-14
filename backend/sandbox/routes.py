@@ -16,13 +16,13 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 
 import clock
 import paths
 import sqlite_tools
 from conversations import public as conversations
-from core.db import Db
+from core import db as core_db
+from core.schemas import Schema
 from delivery import public as delivery
 from research import public as research
 from sandbox import chat, faults, node, runs
@@ -42,24 +42,24 @@ WINDOW_SEARCH_DAYS = 8
 PERSONAL_JID = "@s.whatsapp.net"
 
 
-class NewRun(BaseModel):
+class NewRun(Schema):
     company_id: str
     warmed: bool = True
 
 
-class ClockMove(BaseModel):
+class ClockMove(Schema):
     seconds: int | None = None
     preset: str | None = None
 
 
-class NewFaults(BaseModel):
+class NewFaults(Schema):
     send: str | None = None
     delivery: str | None = None
     number: str | None = None
     has_whatsapp: bool | None = None
 
 
-class NewIncoming(BaseModel):
+class NewIncoming(Schema):
     text: str = ""
 
 
@@ -108,11 +108,13 @@ def activate_run(run_id: str) -> dict[str, Any]:
 
 
 @router.post("/clock")
-def move_clock(body: ClockMove, db: Db) -> dict[str, Any]:
+def move_clock(body: ClockMove) -> dict[str, Any]:
     # Прогон проверяется до разбора пресета: без него «непонятный сдвиг» —
     # не та причина отказа, которую надо показать оператору.
-    _require_scenario()
-    run = runs.shift(_seconds(body, db))
+    scenario = _require_scenario()
+    with closing(core_db.connect(scenario.path)) as db:
+        seconds = _seconds(body, db)
+    run = runs.shift(seconds)
     return {
         "offset_seconds": int(run.offset.total_seconds()),
         "now": clock.now().isoformat(timespec="seconds"),
@@ -133,15 +135,22 @@ def set_faults(body: NewFaults) -> dict[str, Any]:
 
 
 @router.get("/chat")
-def read_chat(db: Db) -> dict[str, Any]:
-    return chat.view(db, thread_of_active_run(db))
+def read_chat() -> dict[str, Any]:
+    run = _require_scenario()
+    # The run's own file, not paths.state_db(): a run switched in another tab
+    # between the two reads would otherwise look for this run's thread there.
+    with closing(core_db.connect(run.path)) as db:
+        return chat.view(db, _thread_of(db, run))
 
 
 @router.post("/incoming")
-def incoming(body: NewIncoming, db: Db) -> dict[str, bool]:
+def incoming(body: NewIncoming) -> dict[str, bool]:
     """Ответ лида уезжает в ту же ручку, что дёргает настоящий Node на
     messages.upsert: стоп-слова, дедуп и гашение расписания — боевые."""
-    channel = thread_of_active_run(db)["channel"]
+    run = _require_scenario()
+    # Closed before the webhook call: that request writes to this very file.
+    with closing(core_db.connect(run.path)) as db:
+        channel = _thread_of(db, run)["channel"]
     payload = {
         "kind": "incoming",
         "number": runs.SANDBOX_NUMBER,
@@ -151,6 +160,14 @@ def incoming(body: NewIncoming, db: Db) -> dict[str, bool]:
     }
     try:
         return {"handled": node.deliver(payload)}
+    except httpx.HTTPStatusError as error:
+        # The webhook was reached and said no: the address is right, the secret
+        # or the handler is not.
+        raise HTTPException(
+            502,
+            f"вебхук песочницы ответил {error.response.status_code}: на 401 проверьте"
+            " SENDER_WEBHOOK_SECRET, на 500 — журнал backend.log",
+        ) from None
     except httpx.HTTPError as error:
         # Песочница стучится сама в себя, и промах по адресу — единственная
         # причина этой ошибки. Трассировка назвала бы httpx, а не SANDBOX_SELF_URL,
@@ -197,13 +214,12 @@ def _require_scenario() -> runs.Run:
     return run
 
 
-def thread_of_active_run(db: sqlite3.Connection) -> conversations.ThreadState:
+def _thread_of(db: sqlite3.Connection, run: runs.Run) -> conversations.ThreadState:
     """Return the thread of the run's lead; 409 before its first draft.
 
     The run's company, not the first thread of the run's database: «Черновики
     топ-N» pressed in a run open threads of other leads there too.
     """
-    run = _require_scenario()
     thread = conversations.thread(db, run.company_id)
     if thread is None:
         raise HTTPException(409, "треда ещё нет: сначала черновик первого письма")

@@ -7,7 +7,7 @@ from fastapi import FastAPI
 
 import paths
 import sandbox
-from core.whatsapp import NodeWhatsApp
+from core.whatsapp import FakeWhatsApp, NodeWhatsApp
 from sandbox import runs
 
 SANDBOX_NODE = "http://127.0.0.1:8787/api/sandbox/node"
@@ -22,8 +22,8 @@ def sandbox_runs(tmp_path, monkeypatch):
     runs.deactivate()
 
 
-def _settings(sandbox_on: bool, node_url: str):
-    return SimpleNamespace(sandbox=sandbox_on, sender_node_url=node_url)
+def _settings(sandbox_on: bool, node_url: str, self_url: str = "http://127.0.0.1:8787"):
+    return SimpleNamespace(sandbox=sandbox_on, sender_node_url=node_url, sandbox_self_url=self_url)
 
 
 def _app(transport_url: str = SANDBOX_NODE) -> FastAPI:
@@ -64,10 +64,43 @@ def test_on_with_the_real_transport_refuses_to_start():
 
 
 def test_on_refuses_when_the_ticks_send_through_the_real_transport():
-    """The second wall: the setting says sandbox, but the client the daemons get does not."""
     with pytest.raises(sandbox.SandboxMisconfigured):
         sandbox.mount(_app("http://127.0.0.1:8788"), _settings(True, SANDBOX_NODE))
     assert paths.state_db() == paths.PRODUCTION_STATE
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://node.example.com/api/sandbox/node",
+        "http://127.0.0.1:8788/?to=/api/sandbox/node",
+        "http://127.0.0.1:8788/api/sandbox/node/send",
+    ],
+)
+def test_on_refuses_a_transport_that_only_mentions_the_sandbox_path(url):
+    with pytest.raises(sandbox.SandboxMisconfigured):
+        sandbox.mount(_app(), _settings(True, url))
+    with pytest.raises(sandbox.SandboxMisconfigured):
+        sandbox.mount(_app(url), _settings(True, SANDBOX_NODE))
+
+
+def test_on_refuses_a_client_it_cannot_read_the_address_of():
+    app = FastAPI()
+    with pytest.raises(sandbox.SandboxMisconfigured):
+        sandbox.mount(app, _settings(True, SANDBOX_NODE))
+    app.state.whatsapp = FakeWhatsApp()
+    with pytest.raises(sandbox.SandboxMisconfigured):
+        sandbox.mount(app, _settings(True, SANDBOX_NODE))
+
+
+def test_on_refuses_to_send_its_webhook_secret_off_this_machine():
+    with pytest.raises(sandbox.SandboxMisconfigured):
+        sandbox.mount(_app(), _settings(True, SANDBOX_NODE, "https://hooks.example.com"))
+
+
+def test_on_accepts_localhost_and_a_trailing_slash():
+    sandbox.mount(_app("http://localhost:8787/api/sandbox/node/"), _settings(True, SANDBOX_NODE))
+    assert paths.state_db() != paths.PRODUCTION_STATE
 
 
 def test_mount_points_the_backend_away_from_the_production_database():

@@ -42,7 +42,6 @@ async def test_startup_prepares_the_database_and_hands_the_journal_to_delivery(
 async def test_a_fresh_install_with_the_sandbox_migrates_both_databases(
     startup, tmp_path, monkeypatch
 ):
-    """The run's database and the production one: research reads the latter in the sandbox."""
     monkeypatch.setattr(runs, "RUNS_DIR", tmp_path / "data" / "sandbox")
     runs.activate_latest()
     try:

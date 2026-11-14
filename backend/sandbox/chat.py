@@ -26,7 +26,7 @@ def view(db: sqlite3.Connection, thread: conversations.ThreadState) -> dict[str,
     }
 
 
-def _bubble(db: sqlite3.Connection, message: dict[str, Any]) -> dict[str, Any]:
+def _bubble(db: sqlite3.Connection, message: conversations.MessageRow) -> dict[str, Any]:
     kind, text = _kind_and_text(message)
     outgoing = message["role"] == "outgoing"
     return {
@@ -39,7 +39,7 @@ def _bubble(db: sqlite3.Connection, message: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _kind_and_text(message: dict[str, Any]) -> tuple[str, str]:
+def _kind_and_text(message: conversations.MessageRow) -> tuple[str, str]:
     """Три состояния нашего сообщения — три разных факта: что предложила
     модель, что подтвердил оператор и что реально ушло. Показывается самое
     позднее из случившихся: правка оператора важнее черновика, который он

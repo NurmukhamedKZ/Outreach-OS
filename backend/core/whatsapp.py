@@ -104,7 +104,7 @@ class NodeWhatsApp:
 
     @property
     def base_url(self) -> str:
-        """Return where the client sends: the sandbox checks it is its own fake Node."""
+        """Return the address of the Node service the client sends to."""
         return self._base_url
 
     def send(self, number: str, to: str, text: str, key: str) -> Sent:

@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import clock
+from config import settings
 from main import app
 
 NOW = datetime(2026, 11, 12, 10, 0, tzinfo=UTC)
@@ -29,6 +30,18 @@ def test_a_new_refusal_is_created(client):
         "reason": "просил не писать",
         "refused_at": "2026-11-12T10:00:00Z",
     }
+
+
+def test_the_sandbox_refuses_a_refusal_typed_by_hand(client, monkeypatch, db):
+    monkeypatch.setattr(settings, "sandbox", True)
+
+    response = client.post(
+        "/api/refusals", json={"handle": "+77010000001", "reason": "просил не писать"}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "errors.sandboxRefusal"
+    assert db.execute("SELECT count(*) FROM refusals").fetchone()[0] == 0
 
 
 def test_a_repeat_returns_the_first_record_with_200(client):

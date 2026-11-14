@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -144,6 +145,36 @@ def test_incoming_goes_through_the_real_webhook(client, sent):
     assert sent[-1]["from"] == "77010000001@s.whatsapp.net"
     assert sent[-1]["text"] == "сколько стоит?"
     assert sent[-1]["provider_id"]
+
+
+def test_incoming_that_misses_the_process_blames_the_self_address(client, monkeypatch):
+    _run_with_thread(client)
+
+    def unreachable(payload):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(node, "deliver", unreachable)
+    response = client.post("/api/sandbox/incoming", json={"text": "привет"})
+
+    assert response.status_code == 502
+    assert "SANDBOX_SELF_URL" in response.json()["detail"]
+
+
+def test_incoming_the_webhook_refused_blames_the_secret(client, monkeypatch):
+    _run_with_thread(client)
+
+    def unsigned(payload):
+        request = httpx.Request("POST", "http://127.0.0.1:8787/api/sender/webhook")
+        raise httpx.HTTPStatusError(
+            "401", request=request, response=httpx.Response(401, request=request)
+        )
+
+    monkeypatch.setattr(node, "deliver", unsigned)
+    response = client.post("/api/sandbox/incoming", json={"text": "привет"})
+
+    assert response.status_code == 502
+    assert "401" in response.json()["detail"]
+    assert "SENDER_WEBHOOK_SECRET" in response.json()["detail"]
 
 
 def test_incoming_without_a_thread_is_a_409(client):
@@ -291,7 +322,7 @@ def test_the_run_drafts_its_lead_from_research_into_its_own_database(client):
 
 
 def test_the_chat_is_the_thread_of_the_run_s_lead(client):
-    """«Черновики топ-N» in a run open threads of other leads too; the chat is the run's own."""
+    # «Черновики топ-N» in a run open threads of other leads too.
     run = _start(client)
     _add_thread(runs.get(run["run_id"]).path, "c_one", "+77010000002")
     client.post("/api/threads/c_romashka/draft", json={"kind": "first"})
