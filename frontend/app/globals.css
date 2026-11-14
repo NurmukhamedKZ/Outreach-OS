@@ -1690,6 +1690,14 @@ a.nav-item:hover {
   overflow-wrap: anywhere;
 }
 
+/* На телефоне значение контакта — своей строкой во всю ширину, кнопки под ним:
+   рядом с подписью номеру оставалась пара символов. */
+@media (max-width: 640px) {
+  .channel .handle {
+    flex-basis: 100%;
+  }
+}
+
 .dossier h4 {
   margin: 16px 0 8px;
   font-size: 14px;

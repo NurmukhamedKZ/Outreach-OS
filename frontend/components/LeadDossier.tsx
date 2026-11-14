@@ -171,7 +171,7 @@ export default function LeadDossier({
       <h3>Попытки</h3>
       {card.attempts.length > 0 ? (
         <div className="settings-table">
-          <table className="table">
+          <table className="table stack-table">
             <thead>
               <tr>
                 <th>партия</th>
@@ -187,14 +187,14 @@ export default function LeadDossier({
                 const status = researchStatus(attempt.status);
                 return (
                   <tr key={attempt.batch_id}>
-                    <td className="mono">{attempt.batch_id}</td>
-                    <td>
+                    <td data-label="партия" className="mono">{attempt.batch_id}</td>
+                    <td data-label="статус">
                       <span className={`tone is-${status.tone}`}>{status.label}</span>
                     </td>
-                    <td className="mono">{attempt.attempt ?? "—"}</td>
-                    <td>{attempt.error ?? "—"}</td>
-                    <td className="mono">{attempt.rejected_quotes}</td>
-                    <td className="mono">{moment(attempt.finished_at)}</td>
+                    <td data-label="попытка" className="mono">{attempt.attempt ?? "—"}</td>
+                    <td data-label="причина">{attempt.error ?? "—"}</td>
+                    <td data-label="отброшено цитат" className="mono">{attempt.rejected_quotes}</td>
+                    <td data-label="закончена" className="mono">{moment(attempt.finished_at)}</td>
                   </tr>
                 );
               })}
