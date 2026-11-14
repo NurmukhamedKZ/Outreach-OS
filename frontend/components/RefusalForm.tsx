@@ -5,8 +5,8 @@
  *  запись будет некому. Вынесен из LeadCard: форма нужна и на «Холодных»,
  *  и в карточке лида. */
 
-import { useState } from "react";
-import { refuse, type Channel } from "@/app/api";
+import { useEffect, useState } from "react";
+import { fetchStats, refuse, type Channel } from "@/app/api";
 
 export default function RefusalForm({
   channel,
@@ -19,6 +19,15 @@ export default function RefusalForm({
   const [sending, setSending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [shown, setShown] = useState(channel?.handle ?? null);
+  // null — ещё не знаем. Карточка в песочнице показывает настоящую компанию из
+  // боевой базы, а отказ отсюда лёг бы в базу прогона и не закрыл бы её (F21).
+  // Бэкенд ответит 409 и сам; здесь — чтобы оператор не набирал причину зря.
+  const [sandbox, setSandbox] = useState<boolean | null>(null);
+  useEffect(() => {
+    fetchStats()
+      .then((stats) => setSandbox(stats.sandbox))
+      .catch(() => setSandbox(false));
+  }, []);
 
   // Конвейер «Холодных» переиспользует форму на следующей компании. Причина
   // отказа уходит в список отказов, который не очищается: перенести недописанный
@@ -29,7 +38,15 @@ export default function RefusalForm({
     setFailure(null);
   }
 
-  if (!channel) return null;
+  if (!channel || sandbox === null) return null;
+  if (sandbox) {
+    return (
+      <p className="note">
+        В песочнице отказ не оформляется: он лёг бы в базу прогона, а не в боевую. Настоящий
+        отказ оформляйте с выключенной песочницей.
+      </p>
+    );
+  }
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();

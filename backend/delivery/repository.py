@@ -183,6 +183,15 @@ class DeliveryRepository:
         )
         return {row[0] for row in rows}
 
+    def fate(self, message_id: int) -> dict[str, Any] | None:
+        # The freshest row, not the first: a row ended failed may be queued again.
+        row = self._db.execute(
+            "SELECT status, attempts, send_after, delivered_at, read_at, error FROM outbox"
+            " WHERE message_id = ? ORDER BY updated_at DESC, outbox_id DESC LIMIT 1",
+            (message_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
     def thread_of_send(self, provider_id: str) -> str | None:
         found = self._db.execute(
             "SELECT thread_id FROM outbox WHERE provider_id = ?", (provider_id,)

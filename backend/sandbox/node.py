@@ -11,6 +11,7 @@ settings.sender_node_url, и в песочнице этот адрес указ�
 import logging
 import threading
 import time
+from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -75,7 +76,7 @@ def forget_keys() -> None:
 
 
 @router.post("/send")
-def send(request: SendRequest) -> dict:
+def send(request: SendRequest) -> dict[str, Any]:
     if request.key and request.key in _sent_keys:
         log.info("повтор по ключу %s, второй отправки нет", request.key)
         return {"ok": True, "sent": True, "provider_id": _sent_keys[request.key]}
@@ -84,41 +85,46 @@ def send(request: SendRequest) -> dict:
         raise HTTPException(500, "транспорт не ответил: судьба отправки неизвестна")
     # Как в Node: на неподнятом сокете фрейм точно не ушёл — безопасный ретрай.
     if switch.send == "not_sent" or switch.number == "loggedOut":
-        return {"ok": False, "sent": False, "provider_id": None,
-                "error": "sandbox: фрейм в сокет не ушёл"}
+        return {
+            "ok": False,
+            "sent": False,
+            "provider_id": None,
+            "error": "sandbox: фрейм в сокет не ушёл",
+        }
     provider_id = f"SBX{uuid4().hex[:12].upper()}"
     if request.key:
         _sent_keys[request.key] = provider_id
     if switch.delivery != "silent":
         status = READ if switch.delivery == "read" else DELIVERED
-        thread = threading.Thread(target=_status_later,
-                                  args=(request.number, provider_id, status), daemon=True)
+        thread = threading.Thread(
+            target=_status_later, args=(request.number, provider_id, status), daemon=True
+        )
         _pending.add(thread)
         thread.start()
     return {"ok": True, "sent": True, "provider_id": provider_id}
 
 
-@router.post("/check")
-def check(request: CheckRequest):
+@router.post("/check", response_model=None)
+def check(request: CheckRequest) -> JSONResponse | dict[str, bool]:
     if faults.current().number == "loggedOut":
         return JSONResponse({"code": LOGGED_OUT, "error": "loggedOut"}, status_code=409)
     return {"has_whatsapp": faults.current().has_whatsapp}
 
 
 @router.post("/pair")
-def pair(request: NumberRequest) -> dict:
+def pair(request: NumberRequest) -> dict[str, str]:
     _fresh_session()
     return {"code": "SBX-0000"}
 
 
 @router.post("/qr")
-def qr(request: NumberRequest) -> dict:
+def qr(request: NumberRequest) -> dict[str, str]:
     _fresh_session()
     return {"qr": FAKE_QR}
 
 
 @router.get("/health")
-def health() -> dict:
+def health() -> dict[str, dict[str, Any]]:
     return {SANDBOX_NUMBER: {"state": faults.current().number, "reconnects": 0}}
 
 
@@ -138,14 +144,18 @@ def self_url() -> str:
     return settings.sandbox_self_url
 
 
-def deliver(payload: dict) -> bool:
+def deliver(payload: dict[str, Any]) -> bool:
     """Событие в свой же вебхук — тем же HTTP и с тем же заголовком, что у
     настоящего Node. Короткого пути (прямого вызова функции) здесь нет
     намеренно: он проверял бы не ту систему."""
-    headers = ({"x-sender-secret": settings.sender_webhook_secret}
-               if settings.sender_webhook_secret else {})
-    response = httpx.post(f"{self_url()}/api/sender/webhook", json=payload,
-                          headers=headers, timeout=30)
+    headers = (
+        {"x-sender-secret": settings.sender_webhook_secret}
+        if settings.sender_webhook_secret
+        else {}
+    )
+    response = httpx.post(
+        f"{self_url()}/api/sender/webhook", json=payload, headers=headers, timeout=30
+    )
     response.raise_for_status()
     return bool(response.json().get("handled"))
 
@@ -154,12 +164,16 @@ def _status_later(number: str, provider_id: str, status: int) -> None:
     for attempt in range(STATUS_ATTEMPTS):
         time.sleep(STATUS_PAUSE_SECONDS)
         try:
-            if deliver({"kind": "status", "number": number,
-                        "provider_id": provider_id, "status": status}):
+            if deliver(
+                {"kind": "status", "number": number, "provider_id": provider_id, "status": status}
+            ):
                 return
         except httpx.HTTPError as error:
-            log.warning("статус %s не доставлен (попытка %s): %s",
-                        provider_id, attempt + 1, error)
-    log.error("статус %s так и не нашёл строку очереди. Если вебхук вовсе не"
-              " отвечает, дело в SANDBOX_SELF_URL (%s): тумблер «доставлено»"
-              " тогда неотличим от «тишины»", provider_id, self_url())
+            log.warning("статус %s не доставлен (попытка %s): %s", provider_id, attempt + 1, error)
+    log.error(
+        "статус %s так и не нашёл строку очереди. Если вебхук вовсе не"
+        " отвечает, дело в SANDBOX_SELF_URL (%s): тумблер «доставлено»"
+        " тогда неотличим от «тишины»",
+        provider_id,
+        self_url(),
+    )

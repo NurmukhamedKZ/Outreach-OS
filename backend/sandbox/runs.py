@@ -10,11 +10,11 @@
 не копия DDL: база прогона обязана отличаться от боевой только содержимым.
 """
 
+import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-import sqlite3
 
 import clock
 import paths
@@ -60,15 +60,19 @@ _active: str | None = None
 
 
 def create(company_id: str, warmed: bool, moment: datetime) -> Run:
-    """Новый прогон: файл, три миграции, мета, один номер в пуле.
+    """Новый прогон: файл, миграции Alembic, мета, один номер в пуле.
 
     `warmed` — единственный параметр создания, и он не косметический: без
     прогретого номера первый же прогон упёрся бы в календарь прогрева и не
     отправил бы ничего, а без нового номера нельзя проверить сам прогрев.
     """
-    run = Run(run_id=f"{moment:%Y%m%d-%H%M%S}-{company_id}", company_id=company_id,
-              created_at=moment.isoformat(timespec="seconds"), warmed=warmed,
-              offset=timedelta())
+    run = Run(
+        run_id=f"{moment:%Y%m%d-%H%M%S}-{company_id}",
+        company_id=company_id,
+        created_at=moment.isoformat(timespec="seconds"),
+        warmed=warmed,
+        offset=timedelta(),
+    )
     # The id names the run's file: a company id with a path in it would put the
     # run outside RUNS_DIR. The route lets only research's companies here; this
     # is the second wall.
@@ -76,10 +80,16 @@ def create(company_id: str, warmed: bool, moment: datetime) -> Run:
         raise ValueError(f"id компании {company_id!r} не годится в имя файла прогона")
     if run.path.exists():
         raise RunExistsError(run.run_id)
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
-    _apply_schemas(run.path)
-    _write_meta(run.path, {"company_id": company_id, "created_at": run.created_at,
-                           "warmed": str(int(warmed)), "offset_seconds": "0"})
+    core_db.migrate(run.path)
+    _write_meta(
+        run.path,
+        {
+            "company_id": company_id,
+            "created_at": run.created_at,
+            "warmed": str(int(warmed)),
+            "offset_seconds": "0",
+        },
+    )
     with closing(core_db.connect(run.path)) as db:
         delivery.register_number(db, SANDBOX_NUMBER, moment, skip_warmup=warmed)
     return run
@@ -97,8 +107,11 @@ def all() -> list[Run]:
     # Файл без меты — прогон, чьё создание оборвалось между схемой и метой.
     # Пропускается, а не роняет список: иначе одна такая крошка навсегда
     # убила бы страницу, и починить её было бы нечем, кроме shell.
-    found = [run for run in (_read_or_none(path) for path in RUNS_DIR.glob("*.db"))
-             if run is not None and not run.run_id.startswith("_")]
+    found = [
+        run
+        for run in (_read_or_none(path) for path in RUNS_DIR.glob("*.db"))
+        if run is not None and not run.run_id.startswith("_")
+    ]
     return sorted(found, key=lambda run: run.run_id, reverse=True)
 
 
@@ -150,10 +163,8 @@ def _ensure_idle() -> Run:
     path = RUNS_DIR / f"{IDLE_RUN}.db"
     if path.exists():
         return _read(path)
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
-    _apply_schemas(path)
-    _write_meta(path, {"company_id": "", "created_at": "",
-                       "warmed": "1", "offset_seconds": "0"})
+    core_db.migrate(path)
+    _write_meta(path, {"company_id": "", "created_at": "", "warmed": "1", "offset_seconds": "0"})
     return _read(path)
 
 
@@ -178,28 +189,28 @@ def shift(seconds: int) -> Run:
     return get(run.run_id)
 
 
-def _apply_schemas(path: Path) -> None:
-    """Миграции Alembic — как при боевом старте процесса — и мета прогона."""
-    core_db.migrate(path)
+def _write_meta(path: Path, values: dict[str, str]) -> None:
+    """Write the run's own meta; the one table of a run outside Alembic, so made here."""
     with closing(sqlite3.connect(path)) as db:
         db.execute(META)
-        db.commit()
-
-
-def _write_meta(path: Path, values: dict[str, str]) -> None:
-    with closing(sqlite3.connect(path)) as db:
-        db.executemany("INSERT INTO sandbox_meta (key, value) VALUES (?, ?)"
-                       " ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-                       list(values.items()))
+        db.executemany(
+            "INSERT INTO sandbox_meta (key, value) VALUES (?, ?)"
+            " ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            list(values.items()),
+        )
         db.commit()
 
 
 def _read(path: Path) -> Run:
     with closing(sqlite3.connect(path)) as db:
         meta = dict(db.execute("SELECT key, value FROM sandbox_meta").fetchall())
-    return Run(run_id=path.stem, company_id=meta["company_id"],
-               created_at=meta["created_at"], warmed=meta["warmed"] == "1",
-               offset=timedelta(seconds=int(meta["offset_seconds"])))
+    return Run(
+        run_id=path.stem,
+        company_id=meta["company_id"],
+        created_at=meta["created_at"],
+        warmed=meta["warmed"] == "1",
+        offset=timedelta(seconds=int(meta["offset_seconds"])),
+    )
 
 
 def _read_or_none(path: Path) -> Run | None:

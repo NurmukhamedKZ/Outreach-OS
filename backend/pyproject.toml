@@ -37,17 +37,16 @@ asyncio_mode = "auto"
 # test_routes) — без importlib-режима pytest считает их одним модулем.
 addopts = "--import-mode=importlib"
 
-# Охват линтеров — новый код (#5): core, модули предметной области с миграциями
-# и сборщик main.py. sandbox и прочие модули верхнего уровня backend/*.py не
-# проверяются: их переписывает последняя часть #7. Новый модуль включается в
-# охват тем же PR, что его заводит.
+# Охват линтеров — новый код (#5): core, модули предметной области с миграциями,
+# песочница (#39) и сборщик main.py. Прочие модули верхнего уровня backend/*.py не
+# проверяются. Новый модуль включается в охват тем же PR, что его заводит.
 
 [tool.ruff]
 line-length = 100
 target-version = "py313"
 include = ["core/**/*.py", "refusals/**/*.py", "companies/**/*.py", "research/**/*.py",
            "conversations/**/*.py", "delivery/**/*.py", "backup/**/*.py", "overview/**/*.py",
-           "migrations/**/*.py", "main.py"]
+           "sandbox/**/*.py", "migrations/**/*.py", "main.py"]
 
 [tool.ruff.lint]
 extend-select = ["I", "UP", "B", "SIM", "RUF"]
@@ -61,11 +60,11 @@ ignore = ["RUF001", "RUF002", "RUF003", "PLC0414"]
 strict = true
 plugins = ["pydantic.mypy"]
 files = ["core", "refusals", "companies", "research", "conversations", "delivery", "backup",
-         "overview", "migrations", "main.py"]
+         "overview", "sandbox", "migrations", "main.py"]
 
 [tool.importlinter]
 root_packages = ["core", "refusals", "companies", "research", "conversations", "delivery",
-                 "backup", "overview"]
+                 "backup", "overview", "sandbox"]
 # Старые системы и модули верхнего уровня видны снаружи графа — одним узлом
 # на имя, этого хватает для запретов ниже.
 include_external_packages = true
@@ -94,7 +93,7 @@ unmatched_ignore_imports_alerting = "none"
 name = "Журнал activity пишут backup и delivery, читает overview"
 type = "forbidden"
 allow_indirect_imports = true
-source_modules = ["refusals", "companies", "research", "conversations"]
+source_modules = ["refusals", "companies", "research", "conversations", "sandbox"]
 forbidden_modules = ["core.activity"]
 ignore_imports = ["*.tests.** -> **"]
 unmatched_ignore_imports_alerting = "none"
@@ -158,7 +157,7 @@ unmatched_ignore_imports_alerting = "none"
 # Старые системы и модули верхнего уровня вне охвата: mypy читает их типы,
 # но не сообщает их ошибок. Модуль уходит из списка, когда его переписывают (#7).
 [[tool.mypy.overrides]]
-module = ["sandbox.*", "clock", "config", "logging_setup", "llm_schema", "observability",
+module = ["clock", "config", "logging_setup", "llm_schema", "observability",
           "paths", "sqlite_tools", "tests.*"]
 ignore_errors = true
 

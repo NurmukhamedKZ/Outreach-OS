@@ -5,7 +5,7 @@ from collections import Counter
 from collections.abc import Callable
 from datetime import datetime
 from threading import Event, Thread
-from typing import Any
+from typing import Any, TypedDict
 
 from conversations import public as conversation
 from core.activity import Journal
@@ -32,7 +32,9 @@ __all__ = [
     "JOURNAL_INTERVALS",
     "LONGEST_JITTER_MINUTES",
     "DeliverySettings",
+    "Fate",
     "delivered_messages",
+    "fate",
     "register_number",
     "settings",
     "start",
@@ -85,6 +87,26 @@ def stuck(db: sqlite3.Connection) -> list[dict[str, Any]]:
 def delivered_messages(db: sqlite3.Connection) -> set[int]:
     """Return the ids of messages a receipt confirmed delivered to the lead's phone."""
     return DeliveryRepository(db).delivered_messages()
+
+
+class Fate(TypedDict):
+    """What became of a message in the send queue."""
+
+    status: str
+    attempts: int
+    send_after: str
+    delivered_at: str | None
+    read_at: str | None
+    error: str | None
+
+
+def fate(db: sqlite3.Connection, message_id: int) -> Fate | None:
+    """Return the message's current row in the send queue, None when it was never queued.
+
+    A row ended in failed may be queued again, so the latest try is the one returned.
+    """
+    row = DeliveryRepository(db).fate(message_id)
+    return Fate(**row) if row is not None else None  # type: ignore[typeddict-item]  # the repository's columns
 
 
 def register_number(db: sqlite3.Connection, number: str, now: datetime, skip_warmup: bool) -> None:

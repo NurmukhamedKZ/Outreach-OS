@@ -43,7 +43,7 @@ def start_batch(
     # nothing, the next start marks the batch interrupted and resumes it.
     batch_id = service.start(clock.now())
     background.add_task(
-        run_in_background, paths.state_db(), pages, model, batch_id, clock.now, backups
+        run_in_background, paths.PRODUCTION_STATE, pages, model, batch_id, clock.now, backups
     )
     return service.batch(batch_id)
 
@@ -109,7 +109,7 @@ def research_again(
 ) -> BatchView:
     batch_id = service.start_one(company_id, clock.now())
     background.add_task(
-        run_in_background, paths.state_db(), pages, model, batch_id, clock.now, backups
+        run_in_background, paths.PRODUCTION_STATE, pages, model, batch_id, clock.now, backups
     )
     return service.batch(batch_id)
 

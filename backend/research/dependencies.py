@@ -9,7 +9,7 @@ from fastapi import Depends, Request
 from backup import public as backup
 from config import settings
 from core import db as core_db
-from core.db import Db
+from core.db import ProductionDb
 from core.model import Model, ModelKeyMissingError, OpenRouterModel
 from core.pages import Pages
 from research.service import ResearchService
@@ -31,7 +31,7 @@ def get_model() -> Model:
     return OpenRouterModel(settings.openrouter_api_key)
 
 
-def get_research_service(db: Db) -> ResearchService:
+def get_research_service(db: ProductionDb) -> ResearchService:
     return ResearchService(db)
 
 

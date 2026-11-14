@@ -102,6 +102,27 @@ def refused(db: sqlite3.Connection, company_id: str) -> bool:
     return refusals.is_refused(db, handles)
 
 
+class MessageRow(TypedDict):
+    """A message with all three of its texts: what the model offered, confirmed, went out."""
+
+    message_id: int
+    role: str
+    draft_text: str | None
+    queued_text: str | None
+    sent_text: str | None
+    created_at: str
+    sent_at: str | None
+
+
+def messages(db: sqlite3.Connection, company_id: str) -> list[MessageRow]:
+    """Return every message of the thread, oldest first, the unsent ones too.
+
+    The sandbox shows each of the three texts; the model's history is only what went out.
+    """
+    rows = ConversationRepository(db).messages(company_id)
+    return [MessageRow(**row) for row in rows]  # type: ignore[typeddict-item]  # the repository's columns
+
+
 def pending_message(db: sqlite3.Connection, company_id: str) -> int | None:
     """Return the id of the thread's latest unsent draft, None when there is none."""
     return ConversationRepository(db).pending_message(company_id)

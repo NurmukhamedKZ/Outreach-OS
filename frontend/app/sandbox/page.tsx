@@ -11,6 +11,7 @@
  словари ниже, — но не решает, что они значат.
  */
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import {
   AUTOPILOT_LABELS,
@@ -19,8 +20,8 @@ import {
   createSandboxRun,
   fetchActivity,
   fetchSandboxChat,
+  fetchResearchLeads,
   fetchSandboxFaults,
-  fetchSandboxLeads,
   fetchSandboxRuns,
   fetchSender,
   moveSandboxClock,
@@ -206,9 +207,10 @@ export default function SandboxPage() {
 
   useEffect(reload, [reload]);
 
-  // Выдача читается один раз: пока идёт прогон, она не меняется.
+  // Выдача читается один раз: пока идёт прогон, она не меняется. Research и в
+  // песочнице читает боевую базу — лид прогона настоящий.
   useEffect(() => {
-    fetchSandboxLeads()
+    fetchResearchLeads()
       .then((found) => setLeads(found.slice(0, LEADS_IN_PICKER)))
       .catch(report);
   }, []);
@@ -325,6 +327,15 @@ export default function SandboxPage() {
           <header className="cold-head">
             <b className="row-name">Чат с лидом</b>
             {chat && <span className="ghost mono">{chat.channel}</span>}
+            {active && (
+              <Link
+                className="ghost"
+                href={`/leads/${encodeURIComponent(active.company_id)}`}
+                target="_blank"
+              >
+                карточка лида
+              </Link>
+            )}
           </header>
 
           <ol className="thread-log">

@@ -6,6 +6,7 @@
 """
 
 from dataclasses import dataclass, replace
+from typing import Any
 
 SEND = ("ok", "not_sent", "unknown")
 DELIVERY = ("delivered", "read", "silent")
@@ -29,15 +30,26 @@ def current() -> Faults:
     return _current
 
 
-def update(**values: object) -> Faults:
-    """Частичное обновление: пульт шлёт только то, что переключили."""
+def update(
+    send: str | None = None,
+    delivery: str | None = None,
+    number: str | None = None,
+    has_whatsapp: bool | None = None,
+) -> Faults:
+    """Частичное обновление: пульт шлёт только то, что переключили.
+
+    Raises:
+        ValueError: a switch is set to a state it does not have.
+    """
     global _current
-    for field, allowed in _ALLOWED.items():
-        given = values.get(field)
-        if given is not None and given not in allowed:
-            raise ValueError(f"{field}: {given!r}, бывают {allowed}")
-    _current = replace(_current, **{key: value for key, value in values.items()
-                                    if value is not None})
+    switches = {"send": send, "delivery": delivery, "number": number}
+    for field, given in switches.items():
+        if given is not None and given not in _ALLOWED[field]:
+            raise ValueError(f"{field}: {given!r}, бывают {_ALLOWED[field]}")
+    changed: dict[str, Any] = {key: value for key, value in switches.items() if value is not None}
+    if has_whatsapp is not None:
+        changed["has_whatsapp"] = has_whatsapp
+    _current = replace(_current, **changed)
     return _current
 
 

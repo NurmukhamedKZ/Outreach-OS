@@ -102,6 +102,11 @@ class NodeWhatsApp:
         self._base_url = base_url.rstrip("/")
         self._client = client or httpx.Client()
 
+    @property
+    def base_url(self) -> str:
+        """Return the address of the Node service the client sends to."""
+        return self._base_url
+
     def send(self, number: str, to: str, text: str, key: str) -> Sent:
         body = self._call(
             "POST", "/send", {"number": number, "to": to, "text": text, "type": "text", "key": key}

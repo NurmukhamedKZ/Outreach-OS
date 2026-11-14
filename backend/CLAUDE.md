@@ -2,7 +2,7 @@
 
 Правила для кода FastAPI-бэкенда. Дополняют корневой `CLAUDE.md` (принципы кода, безопасность, работа с тикетами); при противоречии побеждает корневой. Основа — гайд «FastAPI Best Practices for AI Agents» в том виде, в каком он адаптирован в проекте GoCastMVP; что не зависит от выбора базы — перенесено, остальное ждёт редизайна.
 
-**Правила описывают новый код.** Вне них осталась только песочница (`sandbox/`, швы `use()`): её переписывает последняя часть #7, а не отдельная кампания. Сборщик приложения — `main.py` (#38).
+**Правила описывают новый код** — и песочницу (`sandbox/`, #39). Единственное исключение — её швы `paths.use_run` и `clock.use`: один переключатель базы и часов на процесс (корневой `CLAUDE.md`, «Песочница»). Сборщик приложения — `main.py` (#38).
 
 **Модули** лежат прямо в `backend/`, имена — из `GLOSSARY.md`: `companies`, `research`, `refusals`, `conversations`, `delivery`, `overview`. Общее ядро без бизнес-логики — `backend/core/` (не `platform`: это модуль стандартной библиотеки). Зависимости идут в одну сторону: `companies` → `research` → `conversations` → `delivery` → `overview`; `refusals` зовут все. Состав и причины — #4.
 
@@ -41,7 +41,7 @@ from delivery import public as delivery
 delivery.stats(db, now)
 ```
 
-Функции `public.py` тонкие и сами собирают сервис: чужой модуль не зависит от устройства чужих классов. `from x import *` и глубокие пути в чужие модули запрещены. Границы новых модулей сторожит import-linter (`pyproject.toml`, `[tool.importlinter]`): слои `overview` → `delivery` → `conversations` → `research` → `companies` → `refusals | backup` → `core` (`refusals` и `backup` зовут все, друг друга не знают), чужой модуль — только через `public`, песочница модулям недоступна, журнал `core.activity` пишут только `backup` и `delivery`, читает `overview`. Новый модуль вписывается в слои и получает свой контракт `protected` тем же PR. Миграции — не пакет, их сторожит `core/tests/test_import_graph.py`.
+Функции `public.py` тонкие и сами собирают сервис: чужой модуль не зависит от устройства чужих классов. `from x import *` и глубокие пути в чужие модули запрещены. Границы новых модулей сторожит import-linter (`pyproject.toml`, `[tool.importlinter]`): слои `overview` → `delivery` → `conversations` → `research` → `companies` → `refusals | backup` → `core` (`refusals` и `backup` зовут все, друг друга не знают), чужой модуль — только через `public` (и для песочницы), песочница модулям недоступна, журнал `core.activity` пишут только `backup` и `delivery`, читает `overview`. Новый модуль вписывается в слои и получает свой контракт `protected` тем же PR. Миграции — не пакет, их сторожит `core/tests/test_import_graph.py`.
 
 ## Pydantic
 
@@ -90,14 +90,14 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 
 | Файл | Что даёт |
 |---|---|
-| `db.py` | `connect(path)`, зависимость запроса `Db`, `migrate(path)` / `downgrade(path, revision)` |
+| `db.py` | `connect(path)`, зависимости запроса `Db` (база момента, `paths.state_db()`) и `ProductionDb` (боевая база на запись, и в песочнице — её берут `companies` и `research`), `migrate(path)` / `downgrade(path, revision)` |
 | `operator_settings.py` | `load(db, module, Schema)` и `save(db, module, values)` — настройки оператора (ADR 0003); `saved_section(db, module)` — раздел как сохранён, для правила, которого `load` не выражает (режим автопилота: неизвестное — `off`) |
 | `errors.py` | `DomainError` (`code`, `status_code`) и обработчик `{code, detail}`; подключён в `main.py` |
 | `schemas.py` | общая база `Schema` (обрезка пробелов) и `Timestamp` (только с зоной, хранится в UTC); схемы ответа модели наследуют не её, а `llm_schema.LLMSchema` |
 | `pages.py` | адаптер сбора: `Pages` (Protocol, `get(url, *, cookies=None, headers=None)` — страница хранится по одному адресу), `ScraplingPages`, `FakePages` (пишет `requested` и `cookies`), `FetchError` и наследники (`HttpStatusError`, `BotCheckError`, `CertificateError` — негодный сертификат, для отката сайта на `http://`) |
 | `model.py` | адаптер модели: `Model` (Protocol), `OpenRouterModel` (`temperature` в конструкторе, по умолчанию 0), `FakeModel`, `ModelError`, `ModelKeyMissingError`; `openrouter_client(api_key)` — клиент SDK для `ChatOpenRouter(client=...)` с общим сроком запроса |
 | `phones.py` | каноническая форма телефона: `canonical(raw)` → `+7XXXXXXXXXX` без `+`, с `+` — 10–15 цифр как набраны, иначе `ValueError("errors.phoneInvalid")`; `PHONE` — форма телефона, `WHATSAPP_LINK` — номер из ссылки `wa.me`/`api.whatsapp.com` |
-| `whatsapp.py` | адаптер WhatsApp: `WhatsApp` (Protocol: `send`, `check`, `pair`, `qr`, `health`), `NodeWhatsApp` (синхронный `httpx.Client` к Node-сервису, один на процесс — `app.state.whatsapp` в `main.py`), `FakeWhatsApp` (пишет `sends` и `checks`; `sessions`, `sent`, `has_whatsapp`, `error` меняются по ходу теста), `Sent`, `TransportError` (исход отправки неизвестен) и `SessionLoggedOutError` (`TransportError` и `DomainError`: 409 `errors.sessionLoggedOut`) |
+| `whatsapp.py` | адаптер WhatsApp: `WhatsApp` (Protocol: `send`, `check`, `pair`, `qr`, `health`), `NodeWhatsApp` (синхронный `httpx.Client` к Node-сервису, один на процесс — `app.state.whatsapp` в `main.py`; `base_url` — куда он шлёт, его проверяет песочница), `FakeWhatsApp` (пишет `sends` и `checks`; `sessions`, `sent`, `has_whatsapp`, `error` меняются по ходу теста), `Sent`, `TransportError` (исход отправки неизвестен) и `SessionLoggedOutError` (`TransportError` и `DomainError`: 409 `errors.sessionLoggedOut`) |
 | `activity.py` | журнал фоновой работы: `Journal(path)` (`path` — функция: прогон песочницы меняет базу на живом процессе; в сборщике — `Journal(paths.state_db)`, один на процесс, `app.state.journal`), `record`/`record_quietly`/`record_crash` — своим соединением вне транзакции вызывающего, повтор последней строки — `repeats`; `recent`, `workers`, `last_at(actor)` — пульс, `prune` — ретенция 14 дней; зависимость роута `JournalDep` |
 | `contacts.py` | каноническая форма контакта: `canonical(raw)` — телефон и ссылка WhatsApp на него → телефон, остальное — без пробелов по краям и в нижнем регистре; пустой, короче трёх символов или кривой телефон — `ValueError("errors.handleInvalid")` |
 
@@ -108,7 +108,7 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 
 ## База данных
 
-- Одна база `backend/data/state.db`; путь знает только `paths.py` (`paths.state_db()` — с учётом прогона песочницы).
+- Одна база `backend/data/state.db`; путь знает только `paths.py` (`paths.state_db()` — с учётом прогона песочницы, `paths.PRODUCTION_STATE` — всегда боевая). Модуль, который в песочнице обязан видеть настоящие компании и досье (`companies`, `research`), берёт `ProductionDb`, остальные — `Db`; кто только читает боевую базу (`overview`, `conversations`), открывает её `sqlite_tools.connect_readonly`.
 - Соединение — `core.db.connect(path)`: WAL, `foreign_keys=ON`, ожидание блокировки 10 с, `sqlite3.Row`. В роуте — зависимость `Db`: соединение на запрос, закрывается после ответа.
 - Транзакция — `with db:` в сервисе. В стандартном режиме `sqlite3` её неявно начинает первый DML, поэтому «прочитал, потом записал» не защищён — смена статуса только условным `UPDATE … WHERE status = :from`.
 - SQL — сырой, в `repository.py` модуля, параметрами `?`. ORM и SQLAlchemy Core в коде модулей не используются (ADR 0004).
@@ -167,7 +167,7 @@ uv run python main.py                     # FastAPI, порт 8787
 uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run lint-imports && uv run pytest  # полная проверка
 ```
 
-Охват `ruff`, `mypy` (strict) и `import-linter` — новый код: `core`, `refusals`, `companies`, `research`, `conversations`, `delivery`, `backup`, `overview`, `migrations` и сборщик `main.py` (`[tool.ruff] include`, `[tool.mypy] files` в `pyproject.toml`). `sandbox` и прочие `backend/*.py` вне охвата — их переписывает последняя часть #7; тесты модулей верхнего уровня — `backend/tests/`; новый модуль добавляется в охват тем же PR, что его заводит. У тестов mypy не требует аннотаций сигнатур, тела проверяет. Заглушка — только с кодом правила и причиной: `# noqa: BLE001`, `# type: ignore[arg-type]  # причина`.
+Охват `ruff`, `mypy` (strict) и `import-linter` — новый код: `core`, `refusals`, `companies`, `research`, `conversations`, `delivery`, `backup`, `overview`, `sandbox`, `migrations` и сборщик `main.py` (`[tool.ruff] include`, `[tool.mypy] files` в `pyproject.toml`). Прочие `backend/*.py` вне охвата; тесты модулей верхнего уровня — `backend/tests/`; новый модуль добавляется в охват тем же PR, что его заводит. У тестов mypy не требует аннотаций сигнатур, тела проверяет. Заглушка — только с кодом правила и причиной: `# noqa: BLE001`, `# type: ignore[arg-type]  # причина`.
 
 ## Анти-паттерны — проверяй в каждом диффе
 

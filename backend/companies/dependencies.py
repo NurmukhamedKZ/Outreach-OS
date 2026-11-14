@@ -9,7 +9,7 @@ from fastapi import Depends, Request
 from companies.schemas import Segment
 from companies.service import CompanyService
 from core import db as core_db
-from core.db import Db
+from core.db import ProductionDb
 from core.pages import Pages
 
 
@@ -19,7 +19,7 @@ def get_pages(request: Request) -> Pages:
     return pages
 
 
-def get_company_service(db: Db) -> CompanyService:
+def get_company_service(db: ProductionDb) -> CompanyService:
     return CompanyService(db)
 
 
