@@ -6,7 +6,6 @@ from itertools import count
 
 import pytest
 
-import activity
 from conversations import public as conversation
 from core.model import FakeModel
 from core.whatsapp import TransportError
@@ -20,6 +19,7 @@ from delivery.tests.conftest import (
     OURS,
     add_draft,
     add_number,
+    journal_of,
     number_of,
     open_thread,
     queued,
@@ -34,12 +34,12 @@ _ids = count(1000)
 
 @pytest.fixture
 def work(db, whatsapp, notes):
-    return worker.Worker(db, whatsapp, notes.append, FakeModel, random.Random(1))
+    return worker.Worker(db, whatsapp, notes.append, FakeModel, random.Random(1), journal_of(db))
 
 
 @pytest.fixture
 def service(db, whatsapp, notes):
-    return DeliveryService(db, whatsapp, notes.append)
+    return DeliveryService(db, whatsapp, notes.append, journal_of(db))
 
 
 def status(db, number=OURS):
@@ -100,13 +100,13 @@ def test_a_reconnect_spike_quarantines_and_is_not_announced_twice(db, work, what
     assert len(notes) == 1
 
 
-def test_a_healthy_or_unreported_number_is_left_alone(db, work, whatsapp, notes):
+def test_a_healthy_or_unreported_number_is_left_alone(db, work, whatsapp, notes, journal):
     add_number(db)
     add_number(db, OTHER)
     whatsapp.sessions[OURS] = "connected"
     assert work.monitor(INSIDE) == []
     assert (status(db), status(db, OTHER), notes) == ("active", "active", [])
-    assert activity.recent(actor=worker.MONITOR_ACTOR)[0]["outcome"] == "healthy"
+    assert journal.recent(actor=worker.MONITOR_ACTOR)[0]["outcome"] == "healthy"
 
 
 def test_a_banned_number_is_not_revived(db, work, whatsapp):
@@ -166,11 +166,11 @@ def test_a_silent_delivery_feed_quarantines_nobody(db, work, whatsapp):
     assert work.monitor(INSIDE) == []
 
 
-def test_a_silent_node_is_transport_down_not_a_crash(db, work, whatsapp):
+def test_a_silent_node_is_transport_down_not_a_crash(db, work, whatsapp, journal):
     add_number(db)
     whatsapp.error = TransportError("GET /health: ConnectError")
     assert work.monitor(INSIDE) == []
-    outcomes = {event["outcome"] for event in activity.recent(actor=worker.MONITOR_ACTOR)}
+    outcomes = {event["outcome"] for event in journal.recent(actor=worker.MONITOR_ACTOR)}
     assert outcomes == {"transport_down"}
 
 

@@ -6,13 +6,14 @@ the number, or a lookup by the number instead of the company, fails a test.
 
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-import activity
 from conversations import public as conversation
 from core import db as core_db
+from core.activity import Journal
 from core.model import FakeModel
 from core.whatsapp import FakeWhatsApp
 from delivery.repository import DeliveryRepository
@@ -29,9 +30,18 @@ OURS = "+77001112233"
 def state(tmp_path):
     path = tmp_path / "state.db"
     core_db.migrate(path)
-    activity.use(path)
-    yield path
-    activity.use(None)
+    return path
+
+
+@pytest.fixture
+def journal(state):
+    return Journal(lambda: state)
+
+
+def journal_of(db) -> Journal:
+    """The journal over the database of `db`, as the assembler builds it."""
+    path = Path(db.execute("PRAGMA database_list").fetchone()[2])
+    return Journal(lambda: path)
 
 
 @pytest.fixture

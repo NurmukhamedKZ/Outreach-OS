@@ -1,4 +1,4 @@
-"""Базовая схема ответа модели — общая для collector и writer (как config.py и
+"""Базовая схема ответа модели — общая для research и conversations (как config.py и
 observability.py, единственная копия для обеих систем).
 
 Даже под strict json_schema модель иногда шлёт null для поля, у которого в

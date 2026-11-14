@@ -2,9 +2,9 @@
 
 Правила для кода FastAPI-бэкенда. Дополняют корневой `CLAUDE.md` (принципы кода, безопасность, работа с тикетами); при противоречии побеждает корневой. Основа — гайд «FastAPI Best Practices for AI Agents» в том виде, в каком он адаптирован в проекте GoCastMVP; что не зависит от выбора базы — перенесено, остальное ждёт редизайна.
 
-**Правила описывают новый код.** Существующий `collector/` написан до них (функции, швы `use()`, папки `routes/`/`services/`/`db/`) и заменяется модулями предметной области по мере переписывания (#9–#13, затем #7), а не отдельной кампанией.
+**Правила описывают новый код.** Вне них осталась только песочница (`sandbox/`, швы `use()`): её переписывает последняя часть #7, а не отдельная кампания. Сборщик приложения — `main.py` (#38).
 
-**Модули** лежат прямо в `backend/`, имена — из `GLOSSARY.md`: `companies`, `research`, `refusals`, `conversations`, `delivery`, позже `overview`. Общее ядро без бизнес-логики — `backend/core/` (не `platform`: это модуль стандартной библиотеки). Зависимости идут в одну сторону: `companies` → `research` → `conversations` → `delivery`; `refusals` зовут все. Состав и причины — #4.
+**Модули** лежат прямо в `backend/`, имена — из `GLOSSARY.md`: `companies`, `research`, `refusals`, `conversations`, `delivery`, `overview`. Общее ядро без бизнес-логики — `backend/core/` (не `platform`: это модуль стандартной библиотеки). Зависимости идут в одну сторону: `companies` → `research` → `conversations` → `delivery` → `overview`; `refusals` зовут все. Состав и причины — #4.
 
 **База — одна SQLite без прогонов** (ADR 0002): `backend/data/state.db`, схема — Alembic, доступ — синхронный `sqlite3` (ADR 0004). Разделы «База данных», «Async», «Миграции» ниже.
 
@@ -41,7 +41,7 @@ from delivery import public as delivery
 delivery.stats(db, now)
 ```
 
-Функции `public.py` тонкие и сами собирают сервис: чужой модуль не зависит от устройства чужих классов. `from x import *` и глубокие пути в чужие модули запрещены. Границы новых модулей сторожит import-linter (`pyproject.toml`, `[tool.importlinter]`): слои `delivery` → `conversations` → `research` → `companies` → `refusals | backup` → `core` (`refusals` и `backup` зовут все, друг друга не знают), чужой модуль — только через `public`, старые системы и `tasks`/`analytics` новому коду недоступны, журнал `activity` пишут только `backup` и `delivery`. Новый модуль вписывается в слои и получает свой контракт `protected` тем же PR. Миграции — не пакет, их сторожит `core/tests/test_import_graph.py`.
+Функции `public.py` тонкие и сами собирают сервис: чужой модуль не зависит от устройства чужих классов. `from x import *` и глубокие пути в чужие модули запрещены. Границы новых модулей сторожит import-linter (`pyproject.toml`, `[tool.importlinter]`): слои `overview` → `delivery` → `conversations` → `research` → `companies` → `refusals | backup` → `core` (`refusals` и `backup` зовут все, друг друга не знают), чужой модуль — только через `public`, песочница модулям недоступна, журнал `core.activity` пишут только `backup` и `delivery`, читает `overview`. Новый модуль вписывается в слои и получает свой контракт `protected` тем же PR. Миграции — не пакет, их сторожит `core/tests/test_import_graph.py`.
 
 ## Pydantic
 
@@ -92,16 +92,17 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 |---|---|
 | `db.py` | `connect(path)`, зависимость запроса `Db`, `migrate(path)` / `downgrade(path, revision)` |
 | `operator_settings.py` | `load(db, module, Schema)` и `save(db, module, values)` — настройки оператора (ADR 0003); `saved_section(db, module)` — раздел как сохранён, для правила, которого `load` не выражает (режим автопилота: неизвестное — `off`) |
-| `errors.py` | `DomainError` (`code`, `status_code`) и обработчик `{code, detail}`; подключён в `collector/api.py` |
+| `errors.py` | `DomainError` (`code`, `status_code`) и обработчик `{code, detail}`; подключён в `main.py` |
 | `schemas.py` | общая база `Schema` (обрезка пробелов) и `Timestamp` (только с зоной, хранится в UTC); схемы ответа модели наследуют не её, а `llm_schema.LLMSchema` |
 | `pages.py` | адаптер сбора: `Pages` (Protocol, `get(url, *, cookies=None, headers=None)` — страница хранится по одному адресу), `ScraplingPages`, `FakePages` (пишет `requested` и `cookies`), `FetchError` и наследники (`HttpStatusError`, `BotCheckError`, `CertificateError` — негодный сертификат, для отката сайта на `http://`) |
 | `model.py` | адаптер модели: `Model` (Protocol), `OpenRouterModel` (`temperature` в конструкторе, по умолчанию 0), `FakeModel`, `ModelError`, `ModelKeyMissingError`; `openrouter_client(api_key)` — клиент SDK для `ChatOpenRouter(client=...)` с общим сроком запроса |
 | `phones.py` | каноническая форма телефона: `canonical(raw)` → `+7XXXXXXXXXX` без `+`, с `+` — 10–15 цифр как набраны, иначе `ValueError("errors.phoneInvalid")`; `PHONE` — форма телефона, `WHATSAPP_LINK` — номер из ссылки `wa.me`/`api.whatsapp.com` |
-| `whatsapp.py` | адаптер WhatsApp: `WhatsApp` (Protocol: `send`, `check`, `pair`, `qr`, `health`), `NodeWhatsApp` (синхронный `httpx.Client` к Node-сервису, один на процесс — `app.state.whatsapp` в `collector/api.py`), `FakeWhatsApp` (пишет `sends` и `checks`; `sessions`, `sent`, `has_whatsapp`, `error` меняются по ходу теста), `Sent`, `TransportError` (исход отправки неизвестен) и `SessionLoggedOutError` (`TransportError` и `DomainError`: 409 `errors.sessionLoggedOut`) |
+| `whatsapp.py` | адаптер WhatsApp: `WhatsApp` (Protocol: `send`, `check`, `pair`, `qr`, `health`), `NodeWhatsApp` (синхронный `httpx.Client` к Node-сервису, один на процесс — `app.state.whatsapp` в `main.py`), `FakeWhatsApp` (пишет `sends` и `checks`; `sessions`, `sent`, `has_whatsapp`, `error` меняются по ходу теста), `Sent`, `TransportError` (исход отправки неизвестен) и `SessionLoggedOutError` (`TransportError` и `DomainError`: 409 `errors.sessionLoggedOut`) |
+| `activity.py` | журнал фоновой работы: `Journal(path)` (`path` — функция: прогон песочницы меняет базу на живом процессе; в сборщике — `Journal(paths.state_db)`, один на процесс, `app.state.journal`), `record`/`record_quietly`/`record_crash` — своим соединением вне транзакции вызывающего, повтор последней строки — `repeats`; `recent`, `workers`, `last_at(actor)` — пульс, `prune` — ретенция 14 дней; зависимость роута `JournalDep` |
 | `contacts.py` | каноническая форма контакта: `canonical(raw)` — телефон и ссылка WhatsApp на него → телефон, остальное — без пробелов по краям и в нижнем регистре; пустой, короче трёх символов или кривой телефон — `ValueError("errors.handleInvalid")` |
 
 - **Настройки модуля** — Pydantic-схема с умолчаниями у каждого поля. `load` накладывает сохранённое на умолчания, неизвестные ключи игнорирует, значение, которое схема больше не принимает, заменяет умолчанием с предупреждением в логе. Кэша нет — правка действует со следующего вызова. `save` пишет раздел целиком и не коммитит: транзакцию держит сервис модуля.
-- **`ScraplingPages(paths.PAGES, now=clock.now)`** — один на процесс, собирается в сборщике приложения (`app.state.pages` в `collector/api.py`; модули получают его зависимостью, как `companies.dependencies.get_pages`, в тестах — `dependency_overrides` с `FakePages`): темп принадлежит хосту, и два экземпляра удвоили бы его. Повторный запрос в сеть не ходит, страница проверки робота и не-200 не сохраняются, любой сбой сети и кривой адрес — `FetchError`. Темпы по хостам — константы `HOST_INTERVALS` в `pages.py`. Откат на `http://` при ошибке сертификата — забота вызывающего (сайты компаний), не адаптера.
+- **`ScraplingPages(paths.PAGES, now=clock.now)`** — один на процесс, собирается в сборщике приложения (`app.state.pages` в `main.py`; модули получают его зависимостью, как `companies.dependencies.get_pages`, в тестах — `dependency_overrides` с `FakePages`): темп принадлежит хосту, и два экземпляра удвоили бы его. Повторный запрос в сеть не ходит, страница проверки робота и не-200 не сохраняются, любой сбой сети и кривой адрес — `FetchError`. Темпы по хостам — константы `HOST_INTERVALS` в `pages.py`. Откат на `http://` при ошибке сертификата — забота вызывающего (сайты компаний), не адаптера.
 - **`OpenRouterModel`** ретраит обрыв соединения и ответ мимо схемы (`TRANSPORT_RETRIES`), ретраи SDK выключены; каждый HTTP-запрос — не весь `answer()` с ретраями — ограничен общим сроком `CALL_DEADLINE_S` (180 с, `DeadlineTransport`; худший случай вызова — три срока, около 9 минут): таймаут httpx — пауза между байтами, а OpenRouter держит соединение пробелами (#27). Новый клиент `ChatOpenRouter` собирается только через `openrouter_client`; всё, что не дало валидного ответа, — `ModelError` с одним именем класса ошибки (текст SDK цитирует данные лида). `ModelError` и `FetchError` — не `DomainError`: сервис решает, что с ними делать, иначе роут ответит 500. Кэша ответов нет: запись об оплаченном вызове — досье. Адаптеры синхронные и блокируют поток.
 - **Fake-реализации** лежат в `core`, а не в тестах: ими пользуются тесты всех модулей.
 
@@ -116,16 +117,16 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 ## Async
 
 - **Асинхронный код не пишем** (ADR 0005): роуты — обычный `def`, FastAPI исполняет их в пуле потоков; фоновые демоны — потоки с синхронным циклом и флагом остановки, а не `asyncio`-задачи; внешние вызовы — синхронными клиентами (`httpx.Client`). Адаптеры сбора и модели синхронные (scrapling, LangChain).
-- Доставка синхронная с #37: транспорт — `httpx.Client`, три демона — потоки с общим `threading.Event` остановки (`delivery.public.start`, рядом с `backup.loop`), вебхук — `def`. Асинхронными остались очередь джоб и SSE `collector` — их удаляет #38; до этого в их `async def` новая работа с базой идёт только через `asyncio.to_thread`.
+- Доставка синхронная с #37: транспорт — `httpx.Client`, три демона — потоки с общим `threading.Event` остановки (`delivery.public.start`, рядом с `backup.loop`), вебхук — `def`. Очереди джоб и SSE больше нет (#38): `async` остался только у lifespan сборщика.
 
 ## Миграции
 
-- Схема новых модулей — одна история Alembic в `backend/migrations/` (ADR 0004); `threads`, `messages` и `outreach_runs` переехали в неё ревизией `0005` (#36), она же убрала представление `suppression`; `outbox` и `numbers` — ревизией `0006` (#37: `CHECK` статусов, вида и автора строки). Вне Alembic остаётся только `collector/db/schema.sql` (`jobs`) — до #38.
-- Ревизия, забирающая таблицу у старого владельца, в `downgrade` отдаёт её в старой форме с данными (`0005`): откат не имеет права терять невосстановимый слой. Поэтому `downgrade base` оставляет `threads` и `messages` в форме до `0005`, а `outbox` и `numbers` — в форме до `0006`.
+- Схема новых модулей — одна история Alembic в `backend/migrations/` (ADR 0004); `threads`, `messages` и `outreach_runs` переехали в неё ревизией `0005` (#36), она же убрала представление `suppression`; `outbox` и `numbers` — ревизией `0006` (#37: `CHECK` статусов, вида и автора строки); журнал `activity` — ревизией `0007` (#38), она же удалила старые `jobs` и `llm_answers`. Вне Alembic таблиц нет, кроме меты прогона песочницы (`sandbox_meta`).
+- Ревизия, забирающая таблицу у старого владельца, в `downgrade` отдаёт её в старой форме с данными (`0005`): откат не имеет права терять невосстановимый слой. Поэтому `downgrade base` оставляет `threads` и `messages` в форме до `0005`, `outbox` и `numbers` — в форме до `0006`, `activity` — в форме до `0007` (и пустые `jobs` с `llm_answers`).
 - Новая ревизия: `uv run alembic revision -m "<что меняется>" --rev-id 0002` (следующий номер после `uv run alembic heads`) → файл `migrations/versions/<дата>_<slug>.py`, `down_revision` проставится текущей головой.
 - Операции — `op.*`, изменение таблицы — `with op.batch_alter_table(...)`: SQLite меняет таблицу только пересозданием. `downgrade` пишется всегда.
 - Каждая ревизия идёт своей транзакцией (`migrations/env.py`): упавшая откатывается целиком. Внешние ключи на время миграции выключены — пересоздание таблицы иначе каскадно удалило бы дочерние строки.
-- Применяются программно: при старте приложения (`collector/api.py::prepare_database`) и при создании базы прогона песочницы. Отдельного шага деплоя нет.
+- Применяются программно: при старте приложения (`main.py::prepare_database`, боевая база и база прогона) и при создании базы прогона песочницы. Отдельного шага деплоя нет.
 - Миграцию одновременно добавляет один кодер. Перед пушем — свежий `main` и `uv run alembic heads`: голова одна.
 - Тест модуля с новой таблицей проверяет цикл upgrade → downgrade → upgrade (образец — `core/tests/test_db.py`).
 - Пересоздание таблицы в batch-режиме теряет её триггеры: ревизия, которая пересоздаёт `refusals`, создаёт заново `refusals_never_delete`, `refusals_never_update` и `refusals_keep_the_first` (`0002`), иначе тест схемы модуля упадёт.
@@ -133,8 +134,8 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 ## Фоновые задачи
 
 - `BackgroundTasks` — только для коротких необязательных дел после ответа. Задача умирает вместе с процессом и не ретраится — ничего, что нельзя потерять. Исключения — сбор сегментов `companies` и партия `research` (минуты): состояние сбора — строка `segments`, партии — `batches` и `batch_companies`; старт приложения возвращает «собирается» в «не собран», а идущую партию помечает прерванной (её доделывает следующий запуск), так что потеря задачи стоит одного повторного запуска.
-- Всё, что нельзя потерять, — строка состояния в таблице модуля и шаг тика, а не задача в памяти: очередь `outbox`, срок касания `threads.next_touch_at`, джобы `state.jobs`.
-- Демон не работает молча: исход каждого тика — запись в журнал `activity`.
+- Всё, что нельзя потерять, — строка состояния в таблице модуля и шаг тика, а не задача в памяти: очередь `outbox`, срок касания `threads.next_touch_at`.
+- Демон не работает молча: исход каждого тика — запись в журнал (`core.activity.Journal`, приходит параметром).
 
 ## Тесты
 
@@ -166,7 +167,7 @@ uv run python main.py                     # FastAPI, порт 8787
 uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run lint-imports && uv run pytest  # полная проверка
 ```
 
-Охват `ruff`, `mypy` (strict) и `import-linter` — новый код: `core`, `refusals`, `companies`, `research`, `conversations`, `delivery`, `backup`, `migrations` (`[tool.ruff] include`, `[tool.mypy] files` в `pyproject.toml`). Старые `collector`, `sandbox` и `backend/*.py` вне охвата — их переписывают следующие части #7; новый модуль добавляется в охват тем же PR, что его заводит. У тестов mypy не требует аннотаций сигнатур, тела проверяет. Заглушка — только с кодом правила и причиной: `# noqa: BLE001`, `# type: ignore[arg-type]  # причина`.
+Охват `ruff`, `mypy` (strict) и `import-linter` — новый код: `core`, `refusals`, `companies`, `research`, `conversations`, `delivery`, `backup`, `overview`, `migrations` и сборщик `main.py` (`[tool.ruff] include`, `[tool.mypy] files` в `pyproject.toml`). `sandbox` и прочие `backend/*.py` вне охвата — их переписывает последняя часть #7; тесты модулей верхнего уровня — `backend/tests/`; новый модуль добавляется в охват тем же PR, что его заводит. У тестов mypy не требует аннотаций сигнатур, тела проверяет. Заглушка — только с кодом правила и причиной: `# noqa: BLE001`, `# type: ignore[arg-type]  # причина`.
 
 ## Анти-паттерны — проверяй в каждом диффе
 

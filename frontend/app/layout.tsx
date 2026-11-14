@@ -2,8 +2,6 @@ import type { Metadata } from "next";
 import { Suspense } from "react";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
-import { LiveProvider } from "@/components/live";
-import RunBar from "@/components/RunBar";
 import Sidebar from "@/components/Sidebar";
 import Highlighter from "@/components/Highlighter";
 
@@ -21,7 +19,7 @@ const mono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: "Outreach OS",
-  description: "Лиды, персонализация и отправка: три системы, живые процессы",
+  description: "Лиды, персонализация и отправка: три системы",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
@@ -31,13 +29,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <Suspense fallback={null}>
           <Highlighter />
         </Suspense>
-        <LiveProvider>
-          <RunBar />
-          <div className="shell">
-            <Sidebar />
-            <main className="content">{children}</main>
-          </div>
-        </LiveProvider>
+        <div className="shell">
+          <Sidebar />
+          <main className="content">{children}</main>
+        </div>
       </body>
     </html>
   );

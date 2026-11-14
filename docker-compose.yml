@@ -16,7 +16,8 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8787:8787"
+      # Only the host's loopback: the API has no login and sends to live people.
+      - "127.0.0.1:8787:8787"
     env_file:
       - path: backend/.env
         required: false
@@ -25,7 +26,8 @@ services:
       # localhost (дефолт config.py) — контейнеры друг для друга хосты.
       SENDER_NODE_URL: http://sender-node:8788
       # Дефолт config.py (127.0.0.1) в контейнере недостижим снаружи — порт
-      # 8787 наружу пробрасывается только с wildcard-бинда.
+      # 8787 пробрасывается только с wildcard-бинда; на хосте он открыт лишь
+      # на 127.0.0.1 (ports выше).
       UVICORN_HOST: 0.0.0.0
     volumes:
       # Сырьё и базы — невосстановимые или производные слои (см. CLAUDE.md),
@@ -54,9 +56,8 @@ services:
     build:
       context: ./frontend
       args:
-        # Имя сервиса compose — только для next.config.ts rewrites() внутри
-        # сети контейнеров. NEXT_PUBLIC_API_ORIGIN (SSE) остаётся на дефолте
-        # Dockerfile — резолвится из браузера на хосте, не из контейнера.
+        # Имя сервиса compose — для next.config.ts rewrites() внутри сети
+        # контейнеров: браузер ходит в API только через Next.
         API_ORIGIN: http://backend:8787
     ports:
       - "3000:3000"

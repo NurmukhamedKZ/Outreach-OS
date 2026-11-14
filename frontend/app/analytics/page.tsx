@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { fetchAnalytics, type AnalyticsReport } from "../api";
-import { useLive } from "@/components/live";
 
 const DIAGNOSIS_LABELS: Record<string, string> = {
   ok: "Воронка в норме",
@@ -20,7 +19,6 @@ const STEP_LABELS: Record<string, string> = {
 };
 
 export default function AnalyticsPage() {
-  const { refreshTick } = useLive();
   const [report, setReport] = useState<AnalyticsReport | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
 
@@ -32,7 +30,7 @@ export default function AnalyticsPage() {
     return () => {
       stale = true;
     };
-  }, [refreshTick]);
+  }, []);
 
   if (failure) {
     return (

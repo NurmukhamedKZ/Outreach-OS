@@ -1,13 +1,12 @@
-"""#13: старый конвейер удалён целиком — никто не импортирует и не зовёт его."""
+"""#13 и #38: старый конвейер и сборщик collector удалены — никто не импортирует их."""
 
 import re
 from pathlib import Path
 
-BACKEND = Path(__file__).resolve().parents[2]
+BACKEND = Path(__file__).resolve().parents[1]
 RETIRED = re.compile(
-    r"collector\.services\.(store|storage|sources|resolve|enrich|score|fetch|leads)\b"
-    r"|collector\.services\.pipeline\.(analyze|collect|rebuild|export|llm|probe|dossier)\b"
-    r"|collector\.db\.lead\b|derived\.db|serper_api_key|LEGACY_STATE")
+    r"^\s*(from|import) (collector|logctx|tasks|analytics|activity)\b"
+    r"|derived\.db|serper_api_key|LEGACY_STATE")
 
 
 def test_no_code_reaches_the_retired_pipeline():

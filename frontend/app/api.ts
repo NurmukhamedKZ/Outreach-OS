@@ -260,73 +260,19 @@ export function saveSegments(settings: SegmentSettings) {
   });
 }
 
-// ---- Продуктовые операции: пайплайны, джобы, события ----
-
-export type Pipeline = { kind: string; title: string; steps: string[] };
-
-export type PipelineCatalogue = {
-  pipelines: Pipeline[];
-  operations: string[];
-};
-
-export function fetchCatalogue() {
-  return json<PipelineCatalogue>("/api/pipeline");
-}
-
-export type JobStep = {
-  name: string;
-  command: string;
-  stage: number;
-  lane: number;
-  status: "pending" | "running" | "done" | "failed" | "cancelled";
-  progress: { label?: string; current?: number; total?: number } | null;
-};
-
-export type Job = {
-  id: number;
-  kind: string;
-  title: string;
-  status: "queued" | "running" | "done" | "failed" | "cancelled";
-  step: number;
-  steps: JobStep[];
-  step_count: number;
-  log_lines: number;
-  error: string | null;
-  created_at: string;
-  started_at: string | null;
-  finished_at: string | null;
-};
-
-export type JobTail = { job: Job; lines: string[]; offset: number };
-
-export function startPipeline(kind: string) {
-  return json<{ job: Job }>(`/api/pipeline/${encodeURIComponent(kind)}`, { method: "POST" });
-}
-
-export function fetchJob(id: number, offset = 0) {
-  return json<JobTail>(`/api/jobs/${id}?offset=${offset}`);
-}
-
-export function cancelJob(id: number) {
-  return json<{ job: Job }>(`/api/jobs/${id}/cancel`, { method: "POST" });
-}
-
-/** Счётчики всех трёх систем одним ответом — живая шапка дашборда. */
+/** Счётчики всех трёх систем одним ответом — «Сегодня» и сайдбар. */
 export type DashboardStats = {
   /** «Сбор лидов»: каждое число считает свой модуль (companies, research, refusals). */
-  /** null — счётчики не посчитались (ошибка в логе бэкенда), остальное снапшота живо. */
+  /** null — счётчики не посчитались (ошибка в логе бэкенда), остальные числа живы. */
   sourcing: { companies: number; reachable: number; leads: number; refusals: number } | null;
   writer: { threads: number; drafts: number; sent: number; replies: number };
   sender: {
     status: string;
     numbers: Record<string, number>;
-    // Необязательные не для красоты: metrics.sender_stats отдаёт "queue": {}
-    // на базе без таблиц системы 3.
-    queue: { queued?: number; sent_today?: number; overdue?: number };
+    queue: { queued: number; sent_today: number; overdue: number };
     threads: { waiting: number; escalated: number };
     heartbeat: string | null;
   };
-  jobs: { active: Job | null; recent: Job[] };
   /** Режим стенда решает бэкенд: без него сайдбар рисовал бы «Песочницу»,
    *  ручек которой в приложении нет. */
   sandbox: boolean;
@@ -397,23 +343,6 @@ export function fetchActivity(limit = 200, actor?: string) {
   return json<{ events: ActivityEvent[]; workers: ActivityWorker[] }>(`/api/activity?${query}`);
 }
 
-/** Подписка на SSE. Сервер шлёт события snapshot | job | log | refresh | activity;
- * на refresh консьюмер обычно перезабирает fetchStats().
- *
- * Стрим ходит на API-оригин напрямую, минуя rewrite next: dev-прокси
- * отдаёт браузеру заголовки, но буферизует тело бесконечного ответа —
- * события до страницы не доезжают. JSON-эндпоинтам это не мешает. */
-const SSE_ORIGIN = process.env.NEXT_PUBLIC_API_ORIGIN ?? "";
-
-export function subscribeEvents(
-  onEvent: (event: MessageEvent) => void,
-): () => void {
-  const source = new EventSource(`${SSE_ORIGIN}/api/events`);
-  for (const type of ["snapshot", "job", "log", "refresh", "activity"] as const) {
-    source.addEventListener(type, onEvent as EventListener);
-  }
-  return () => source.close();
-}
 /** Ссылка, которой оператор реально открывает диалог. Текст не подставляем:
  *  первое сообщение пишется руками, в этом весь смысл ручной отправки в v1. */
 export function channelLink(channel: Channel): string {

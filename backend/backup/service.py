@@ -14,9 +14,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 
-import activity
 from backup.exceptions import BackupDisabledError, BackupFailedError, BackupRunningError
 from backup.schemas import BackupStatus, Snapshot
+from core.activity import Journal
 
 log = logging.getLogger(__name__)
 
@@ -34,11 +34,14 @@ MIRROR = "pages"
 class BackupService:
     """Writes snapshots into `target`; one per process, shared by the daemon and the route."""
 
-    def __init__(self, target: Path, database: Path, pages: Path, sessions: Path) -> None:
+    def __init__(
+        self, target: Path, database: Path, pages: Path, sessions: Path, journal: Journal
+    ) -> None:
         self.target = target
         self.database = database
         self.pages = pages
         self.sessions = sessions
+        self.journal = journal
         self._lock = Lock()
 
     def status(self) -> BackupStatus:
@@ -106,7 +109,7 @@ class BackupService:
         with self.running():
             if not self.status().enabled:
                 reason = f"нет каталога {self.target.parent}"
-                activity.record_quietly(ACTOR, "disabled", detail=reason)
+                self.journal.record_quietly(ACTOR, "disabled", detail=reason)
                 raise BackupDisabledError(f"бэкап выключен: {reason}")
             name = now.astimezone(UTC).strftime(NAME_FORMAT)
             if (self.target / name).exists():
@@ -115,7 +118,7 @@ class BackupService:
                 snapshot = Snapshot(name=name, taken_at=now, pages_added=self._write(name))
             except (OSError, sqlite3.Error, BackupFailedError) as error:
                 log.exception("backup %s failed", name)
-                activity.record_quietly(ACTOR, "failed", subject=name, detail=str(error))
+                self.journal.record_quietly(ACTOR, "failed", subject=name, detail=str(error))
                 # The reason is in the journal; the answer carries no paths.
                 raise BackupFailedError(
                     "бэкап не записан — причина в журнале «Процессов»"
@@ -126,7 +129,7 @@ class BackupService:
             except OSError as error:
                 log.warning("backup rotation failed: %s", error)
                 detail += f"; старые снимки не удалены: {error}"
-            activity.record_quietly(ACTOR, "done", subject=name, detail=detail)
+            self.journal.record_quietly(ACTOR, "done", subject=name, detail=detail)
             return snapshot
 
     def _write(self, name: str) -> int:
@@ -197,7 +200,7 @@ def tick(service: BackupService, now: datetime) -> None:
                 service.run(now)
     except Exception:
         log.exception("backup tick crashed")
-        activity.record_crash(ACTOR)
+        service.journal.record_crash(ACTOR)
 
 
 def _mirror(pages: Path, mirror: Path) -> int:

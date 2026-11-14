@@ -6,7 +6,7 @@
 воронка с инбоксом учились бы про тестовые треды забывать. Файл делает чистоту
 контекста физической: прошлого сценария нет, потому что его нет в базе.
 
-Схему наполняют её настоящие владельцы (Alembic, schema.sql), а
+Схему наполняет Alembic, а
 не копия DDL: база прогона обязана отличаться от боевой только содержимым.
 """
 
@@ -16,12 +16,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
 
-import activity
-import analytics
 import clock
 import paths
-import tasks
-from collector.services import jobs
 from core import db as core_db
 from delivery import public as delivery
 
@@ -118,7 +114,8 @@ def active() -> Run | None:
 
 
 def activate(run_id: str) -> Run:
-    """Переключить прогон целиком: база, журнал, аналитика, часы.
+    """Переключить прогон целиком: база и часы. Журнал, «Сегодня» и аналитика
+    спрашивают базу у paths на каждом обращении.
 
     Соединения везде короткие, поэтому живой процесс переключается без
     перезапуска — тик воркера на следующем обороте откроет уже новую базу.
@@ -129,9 +126,6 @@ def activate(run_id: str) -> Run:
     # catches up here; a run already at head costs one version check.
     core_db.migrate(run.path)
     paths.use_run(run.path)
-    activity.use(run.path)
-    analytics.use(run.path, paths.PRODUCTION_STATE)
-    tasks.use(run.path, paths.PRODUCTION_STATE)
     clock.use(run.offset)
     _active = run_id
     return run
@@ -169,9 +163,6 @@ def deactivate() -> None:
     global _active
     _active = None
     paths.use_run(None)
-    activity.use(paths.state_db())
-    analytics.use(paths.state_db(), paths.PRODUCTION_STATE)
-    tasks.use(paths.state_db(), paths.PRODUCTION_STATE)
     clock.use(None)
 
 
@@ -188,11 +179,9 @@ def shift(seconds: int) -> Run:
 
 
 def _apply_schemas(path: Path) -> None:
-    """Миграции Alembic (переписка и доставка тоже) и старый владелец jobs:
-    как и при боевом старте процесса."""
+    """Миграции Alembic — как при боевом старте процесса — и мета прогона."""
     core_db.migrate(path)
     with closing(sqlite3.connect(path)) as db:
-        db.executescript(jobs.state_schema())
         db.execute(META)
         db.commit()
 

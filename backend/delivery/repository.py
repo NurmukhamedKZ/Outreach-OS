@@ -170,6 +170,19 @@ class DeliveryRepository:
         )
         return cursor.rowcount == 1
 
+    def stuck(self) -> list[dict[str, Any]]:
+        rows = self._db.execute(
+            "SELECT thread_id, our_number, updated_at FROM outbox WHERE status = 'stuck'"
+        )
+        return [dict(row) for row in rows]
+
+    def delivered_messages(self) -> set[int]:
+        rows = self._db.execute(
+            "SELECT DISTINCT message_id FROM outbox"
+            " WHERE delivered_at IS NOT NULL AND message_id IS NOT NULL"
+        )
+        return {row[0] for row in rows}
+
     def thread_of_send(self, provider_id: str) -> str | None:
         found = self._db.execute(
             "SELECT thread_id FROM outbox WHERE provider_id = ?", (provider_id,)

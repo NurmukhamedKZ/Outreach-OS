@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import clock
-from collector.api import app
+from main import app
 
 NOW = datetime(2026, 11, 12, 10, 0, tzinfo=UTC)
 

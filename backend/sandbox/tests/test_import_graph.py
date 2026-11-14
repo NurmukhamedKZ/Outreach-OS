@@ -1,20 +1,17 @@
 """Граница песочницы: она знает про системы, системы про неё — нет.
 
-Тот же статический обход графа импортов, что сторожит отсутствие сети в
-rebuild.py. Единственное исключение — collector/api.py: он и есть
-место, где приложение собирается, и все швы живут там.
+Статический обход импортов модулей верхнего уровня. Единственное исключение —
+main.py: он и есть место, где приложение собирается.
 """
 
 import ast
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parent.parent.parent
-ASSEMBLER = "collector/api.py"
+ASSEMBLER = "main.py"
 
-# Обходятся старый collector и модули верхнего уровня, а не весь backend: rglob
-# по нему заодно прочёл бы .venv. Модули предметной области сторожит
-# import-linter (контракт «Новый код не знает старых систем»).
-ROOTS = ("collector",)
+# Обходятся модули верхнего уровня, а не весь backend: rglob по нему заодно
+# прочёл бы .venv. Модули предметной области сторожит import-linter.
 
 
 def imports(path: Path) -> set[str]:
@@ -29,10 +26,7 @@ def imports(path: Path) -> set[str]:
 
 
 def sources() -> list[Path]:
-    found = list(BACKEND.glob("*.py"))
-    for root in ROOTS:
-        found.extend((BACKEND / root).rglob("*.py"))
-    return sorted(found)
+    return sorted(BACKEND.glob("*.py"))
 
 
 def test_nobody_imports_the_sandbox():

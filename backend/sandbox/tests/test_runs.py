@@ -5,10 +5,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-import analytics
 import clock
 import paths
-import tasks
 from sandbox import runs
 
 MOMENT = datetime(2026, 9, 3, 9, 0, tzinfo=timezone.utc)
@@ -93,9 +91,6 @@ def test_activate_switches_every_seam():
     runs.activate(run.run_id)
     assert paths.state_db() == run.path
     assert runs.active().run_id == run.run_id
-    # «Сегодня» и аналитика читают треды прогона, компании — боевые.
-    assert (tasks._state, tasks._companies) == (run.path, paths.PRODUCTION_STATE)
-    assert (analytics._state, analytics._companies) == (run.path, paths.PRODUCTION_STATE)
 
 
 def test_deactivate_returns_the_production_database():
@@ -103,7 +98,6 @@ def test_deactivate_returns_the_production_database():
     runs.activate(run.run_id)
     runs.deactivate()
     assert paths.state_db() == paths.PRODUCTION_STATE
-    assert tasks._state == paths.PRODUCTION_STATE
     assert runs.active() is None
     assert clock.offset() == timedelta()
 

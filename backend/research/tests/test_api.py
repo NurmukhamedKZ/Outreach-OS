@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 import clock
 import config
 from backup import public as backup
-from collector.api import app
+from main import app
 from research import dependencies
 from research.service import ResearchService
 

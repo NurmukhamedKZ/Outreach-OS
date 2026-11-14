@@ -12,9 +12,9 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
-import activity
 from conversations import public as conversation
 from core import operator_settings, phones
+from core.activity import Journal
 from core.whatsapp import Session, SessionLoggedOutError, TransportError, WhatsApp
 from delivery import domain
 from delivery.exceptions import (
@@ -77,10 +77,13 @@ def tail(number: str) -> str:
 class DeliveryService:
     """The queue, the pool and the settings of delivery over one connection."""
 
-    def __init__(self, db: sqlite3.Connection, whatsapp: WhatsApp, notify: Notify) -> None:
+    def __init__(
+        self, db: sqlite3.Connection, whatsapp: WhatsApp, notify: Notify, journal: Journal
+    ) -> None:
         self._db = db
         self._whatsapp = whatsapp
         self._notify = notify
+        self._journal = journal
         self._repo = DeliveryRepository(db)
 
     # --- settings ------------------------------------------------------------------
@@ -433,7 +436,7 @@ class DeliveryService:
             ],
             queue=self.counters(now),
             threads=ThreadCounters(**conversation.counters(self._db)),
-            heartbeat=heartbeat(),
+            heartbeat=self._journal.last_at(TICK_ACTOR),
             warmup_calendar=domain.calendar(settings.daily_ceiling),
             warmup_log=[WarmupRow(**row) for row in self._repo.warmup_log(RECENT)],
         )
@@ -513,7 +516,7 @@ class DeliveryService:
                 self._settle(thread, message_id, now, refused, bool(body))
         except conversation.DuplicateIncomingError:
             log.info("incoming %s of company %s is a repeat", provider_id, company_id)
-            activity.record_quietly(WEBHOOK_ACTOR, "duplicate", subject=company_id)
+            self._journal.record_quietly(WEBHOOK_ACTOR, "duplicate", subject=company_id)
             if refused:
                 # The first delivery may have died between the commit and the refusal's
                 # own write (Node then repeats the event): recording is idempotent, so heal it.
@@ -523,10 +526,10 @@ class DeliveryService:
             # After the commit, before the journal: the refusal commits on its own and
             # must not wait for a journal that may fail; a repeat of the event heals it.
             refusals.record(self._db, channel, f"стоп-слово: {refused}", now)
-        activity.record(WEBHOOK_ACTOR, "incoming", subject=company_id)
+        self._journal.record(WEBHOOK_ACTOR, "incoming", subject=company_id)
         if refused:
             log.warning("company %s closed by a stopword", company_id)
-            activity.record(WEBHOOK_ACTOR, "refused", subject=company_id, detail=refused)
+            self._journal.record(WEBHOOK_ACTOR, "refused", subject=company_id, detail=refused)
         elif not body:
             self._notify(f"{channel} прислал медиа — текста нет, разбирай руками")
         elif thread["status"] == "escalated":
@@ -591,16 +594,3 @@ def load_settings(db: sqlite3.Connection) -> DeliverySettings:
     values = operator_settings.load(db, MODULE, DeliverySettings)
     saved = operator_settings.saved_section(db, MODULE).get("autopilot", Mode.MANUAL)
     return values.model_copy(update={"autopilot": domain.mode(saved)})
-
-
-def heartbeat() -> str | None:
-    """Return when the queue tick last left a trace in the journal; None before the first."""
-    try:
-        workers = activity.workers()
-    except activity.NotConfiguredError:
-        return None
-    for row in workers:
-        if row["actor"] == TICK_ACTOR:
-            last: str | None = row["last_at"]
-            return last
-    return None

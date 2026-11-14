@@ -2,12 +2,11 @@
 
 /** «Процессы»: всё, что система делает сама, — на одном экране.
 
- Полоска демонов отвечает на вопрос «кто жив», лента — «кто что делал».
- Первый экран поднимается запросом, дальше лента растёт из SSE (событие
- activity), склеенная с запросом и дедуплицированная по ключу строки журнала.
+ Полоска демонов отвечает на вопрос «кто жив», лента — «кто что делал». Журнал
+ и пульс перечитываются раз в 5 секунд, пока вкладка видна.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
   fetchActivity,
@@ -17,8 +16,9 @@ import {
   type ActivityWorker,
   type BackupStatus,
 } from "../api";
-import { JobMonitor } from "@/components/JobMonitor";
-import { useLive } from "@/components/live";
+import { usePoll } from "@/components/usePoll";
+
+const POLL_MS = 5_000;
 
 const WHEN = new Intl.DateTimeFormat("ru", {
   hour: "2-digit",
@@ -38,40 +38,32 @@ const ACTOR_LABELS: Record<string, string> = {
   "sender.tick": "Тик воркера",
   "sender.warmup": "Прогрев номеров",
   "sender.monitor": "Монитор здоровья",
-  jobs: "Воркер джоб",
   webhook: "Вебхук",
   backup: "Бэкап",
 };
 
 export default function ActivityPage() {
-  const { activityTail } = useLive();
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [workers, setWorkers] = useState<ActivityWorker[]>([]);
   const [actor, setActor] = useState("");
   const [failure, setFailure] = useState<string | null>(null);
 
+  // Ответ на прежний фильтр, доехавший после смены, ленту не затирает.
+  const current = useRef(actor);
   useEffect(() => {
+    current.current = actor;
+  }, [actor]);
+  const load = useCallback(() => {
     fetchActivity(200, actor || undefined)
       .then((data) => {
+        if (current.current !== actor) return;
         setEvents(data.events);
         setWorkers(data.workers);
         setFailure(null);
       })
       .catch((error: Error) => setFailure(error.message));
   }, [actor]);
-
-  // Лента = живое из SSE + первый экран запросом. Дедуп по ключу строки
-  // журнала: событие успевает приехать дважды — своим ходом и внутри ответа.
-  const feed = useMemo(() => {
-    const seen = new Set<string>();
-    return [...activityTail, ...events].filter((event) => {
-      if (actor && event.actor !== actor) return false;
-      const key = `${event.actor}|${event.outcome}|${event.subject}|${event.last_at}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }, [activityTail, events, actor]);
+  usePoll(load, POLL_MS);
 
   if (failure) {
     return (
@@ -110,8 +102,6 @@ export default function ActivityPage() {
 
       <BackupRow />
 
-      <JobMonitor />
-
       <div className="controls" style={{ margin: "16px 0 12px" }}>
         <select value={actor} onChange={(event) => setActor(event.target.value)}>
           <option value="">все демоны</option>
@@ -126,8 +116,8 @@ export default function ActivityPage() {
       <section className="card">
         <h3>Журнал фоновой работы</h3>
         <div className="feed">
-          {feed.length === 0 && <p className="note">событий пока нет</p>}
-          {feed.map((event, index) => (
+          {events.length === 0 && <p className="note">событий пока нет</p>}
+          {events.map((event, index) => (
             <div key={`${event.actor}-${event.last_at}-${event.outcome}-${event.subject}-${index}`} className="feed-row">
               <span className="feed-when mono" title={event.last_at}>
                 {isToday(event.last_at) ? WHEN.format(new Date(event.last_at)) : WHEN_DAY.format(new Date(event.last_at))}

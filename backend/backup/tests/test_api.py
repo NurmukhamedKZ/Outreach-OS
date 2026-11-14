@@ -9,7 +9,7 @@ from backup import public as backup
 from backup import service as backup_service
 from backup.dependencies import get_backup
 from backup.service import BackupService
-from collector.api import app
+from main import app
 
 NOW = datetime(2026, 11, 12, 9, 0, tzinfo=UTC)
 
@@ -48,9 +48,9 @@ def test_a_second_backup_while_one_runs_is_409(client, service):
     assert response.json()["code"] == "errors.backupRunning"
 
 
-def test_a_backup_without_icloud_is_503(client, sources, tmp_path):
+def test_a_backup_without_icloud_is_503(client, sources, tmp_path, journal):
     state, pages, sessions = sources
-    off = BackupService(tmp_path / "none" / "x", state, pages, sessions)
+    off = BackupService(tmp_path / "none" / "x", state, pages, sessions, journal)
     app.dependency_overrides[get_backup] = lambda: off
 
     response = client.post("/api/backup")
@@ -71,14 +71,10 @@ def test_a_broken_copy_is_500_without_paths(client, monkeypatch):
 
 
 def test_today_lists_the_backup_task(client, state, monkeypatch):
-    import tasks
+    import paths
 
-    monkeypatch.setattr(tasks, "_state", state)
-    app.state.backup, previous = app.dependency_overrides[get_backup](), app.state.backup
-    try:
-        rows = client.get("/api/tasks").json()["tasks"]
-    finally:
-        app.state.backup = previous
+    monkeypatch.setattr(paths, "PRODUCTION_STATE", state)
+    rows = client.get("/api/tasks").json()["tasks"]
 
     assert [(row["kind"], row["company_name"]) for row in rows] == [("backup", "Бэкап")]
     assert "ни разу" in rows[0]["why"]
