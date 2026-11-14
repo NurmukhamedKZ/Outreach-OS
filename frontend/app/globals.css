@@ -1510,6 +1510,37 @@ a.nav-item:hover {
   overflow-x: auto;
 }
 
+/* На телефоне строка таблицы — карточка: колонки и кнопки не уходят за край.
+   Подпись колонки — data-label ячейки. */
+@media (max-width: 640px) {
+  .stack-table thead {
+    display: none;
+  }
+
+  .stack-table,
+  .stack-table tbody,
+  .stack-table tr,
+  .stack-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .stack-table tr {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .stack-table td {
+    border: 0;
+    padding: 2px 0;
+  }
+
+  .stack-table td[data-label]::before {
+    content: attr(data-label) ": ";
+    color: var(--muted);
+  }
+}
+
 .settings-fields {
   display: flex;
   flex-direction: column;
@@ -1530,7 +1561,7 @@ a.nav-item:hover {
 
 @media (max-width: 640px) {
   .settings-field {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: 1fr;
   }
 
   .settings-field > span:first-child {
