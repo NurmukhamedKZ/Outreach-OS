@@ -16,7 +16,7 @@ ASSEMBLER = "main.py"
 
 def imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    found = set()
+    found: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found.update(name.name for name in node.names)
@@ -35,8 +35,7 @@ def test_nobody_imports_the_sandbox():
         rel = path.relative_to(BACKEND).as_posix()
         if rel == ASSEMBLER:
             continue
-        if any(module == "sandbox" or module.startswith("sandbox.")
-               for module in imports(path)):
+        if any(module == "sandbox" or module.startswith("sandbox.") for module in imports(path)):
             offenders.append(rel)
     assert offenders == [], f"песочницу импортирует не только сборщик: {offenders}"
 

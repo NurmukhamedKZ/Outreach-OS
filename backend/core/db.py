@@ -1,4 +1,4 @@
-"""The single SQLite database: connections, the request dependency, migrations.
+"""The single SQLite database: connections, the request dependencies, migrations.
 
 Access is synchronous (ADR 0004): routes that touch the database are plain
 `def` and FastAPI runs them in its threadpool.
@@ -39,7 +39,18 @@ def get_db() -> Iterator[sqlite3.Connection]:
         yield db
 
 
+def get_production_db() -> Iterator[sqlite3.Connection]:
+    """Yield the production database, in a sandbox run too.
+
+    companies and research send nothing, and their companies and dossiers are
+    real: the sandbox runs on them, never on an empty copy.
+    """
+    with closing(connect(paths.PRODUCTION_STATE)) as db:
+        yield db
+
+
 Db = Annotated[sqlite3.Connection, Depends(get_db)]
+ProductionDb = Annotated[sqlite3.Connection, Depends(get_production_db)]
 
 
 def migrate(path: Path) -> None:

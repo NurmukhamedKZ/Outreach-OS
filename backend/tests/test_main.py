@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import main
 import paths
 from core.errors import DomainError
+from sandbox import runs
 
 
 @pytest.fixture
@@ -35,6 +36,23 @@ async def test_startup_prepares_the_database_and_hands_the_journal_to_delivery(
     assert {"operator_settings", "threads", "messages", "activity"} <= tables
     assert not {"jobs", "llm_answers"} & tables
     assert startup[0][-1] is main.app.state.journal
+    assert startup[0][1] is main.app.state.whatsapp, "the ticks send through another transport"
+
+
+async def test_a_fresh_install_with_the_sandbox_migrates_both_databases(
+    startup, tmp_path, monkeypatch
+):
+    """The run's database and the production one: research reads the latter in the sandbox."""
+    monkeypatch.setattr(runs, "RUNS_DIR", tmp_path / "data" / "sandbox")
+    runs.activate_latest()
+    try:
+        async with main.lifespan(main.app):
+            leads = TestClient(main.app).get("/api/research/leads")
+    finally:
+        runs.deactivate()
+
+    assert leads.status_code == 200
+    assert leads.json() == []
 
 
 def test_domain_errors_reach_the_client_as_code_and_detail():

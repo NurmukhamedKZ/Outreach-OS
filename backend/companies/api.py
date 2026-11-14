@@ -48,5 +48,7 @@ def collect(
     # loses nothing: the next start forgets "collecting" and it can be run again.
     # The clock goes along, not a moment: each segment is stamped when it ends.
     if claimed := service.claim(clock.now()):
-        background.add_task(collect_in_background, paths.state_db(), pages, claimed, clock.now)
+        background.add_task(
+            collect_in_background, paths.PRODUCTION_STATE, pages, claimed, clock.now
+        )
     return service.segments_view()

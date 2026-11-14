@@ -220,6 +220,14 @@ class ConversationRepository:
         )
         return [dict(row) for row in rows]
 
+    def messages(self, company_id: str) -> list[dict[str, Any]]:
+        rows = self._db.execute(
+            "SELECT message_id, role, draft_text, queued_text, sent_text, created_at, sent_at"
+            " FROM messages WHERE company_id = ? ORDER BY message_id",
+            (company_id,),
+        )
+        return [dict(row) for row in rows]
+
     def pending_draft(self, company_id: str) -> sqlite3.Row | None:
         row: sqlite3.Row | None = self._db.execute(
             "SELECT message_id, draft_text, angle, created_at FROM messages"

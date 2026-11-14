@@ -6,56 +6,48 @@
 """
 
 import sqlite3
+from typing import Any
+
+from conversations import public as conversations
+from delivery import public as delivery
 
 
-class UnknownThreadError(Exception):
-    """Треда этой компании в базе прогона нет."""
+def view(db: sqlite3.Connection, thread: conversations.ThreadState) -> dict[str, Any]:
+    """Return the thread's state and its messages, each with its fate in the send queue."""
+    messages = conversations.messages(db, thread["company_id"])
+    return {
+        "company_id": thread["company_id"],
+        "channel": thread["channel"],
+        "stage": thread["stage"],
+        "status": thread["status"],
+        "touch_no": thread["touch_no"],
+        "next_touch_at": thread["next_touch_at"],
+        "bubbles": [_bubble(db, message) for message in messages],
+    }
 
 
-FIELDS = ("message_id, role, draft_text, queued_text, sent_text, created_at,"
-          " sent_at")
-
-FATE = ("status, attempts, send_after, delivered_at, read_at, error")
-
-
-def view(db: sqlite3.Connection, company_id: str) -> dict:
-    db.row_factory = sqlite3.Row
-    thread = db.execute(
-        "SELECT company_id, channel, stage, status, touch_no, next_touch_at"
-        " FROM threads WHERE company_id = ?", (company_id,)).fetchone()
-    if thread is None:
-        raise UnknownThreadError(company_id)
-    rows = db.execute(f"SELECT {FIELDS} FROM messages WHERE company_id = ?"
-                      " ORDER BY message_id", (company_id,)).fetchall()
-    return {**dict(thread),
-            "bubbles": [_bubble(db, row) for row in rows]}
+def _bubble(db: sqlite3.Connection, message: dict[str, Any]) -> dict[str, Any]:
+    kind, text = _kind_and_text(message)
+    outgoing = message["role"] == "outgoing"
+    return {
+        "message_id": message["message_id"],
+        "role": message["role"],
+        "kind": kind,
+        "text": text,
+        "at": message["sent_at"] or message["created_at"],
+        "fate": delivery.fate(db, message["message_id"]) if outgoing else None,
+    }
 
 
-def _bubble(db: sqlite3.Connection, row: sqlite3.Row) -> dict:
-    kind, text = _kind_and_text(row)
-    return {"message_id": row["message_id"], "role": row["role"], "kind": kind,
-            "text": text, "at": row["sent_at"] or row["created_at"],
-            "fate": _fate(db, row["message_id"]) if row["role"] == "outgoing" else None}
-
-
-def _kind_and_text(row: sqlite3.Row) -> tuple[str, str]:
+def _kind_and_text(message: dict[str, Any]) -> tuple[str, str]:
     """Три состояния нашего сообщения — три разных факта: что предложила
     модель, что подтвердил оператор и что реально ушло. Показывается самое
     позднее из случившихся: правка оператора важнее черновика, который он
     правил."""
-    if row["role"] == "incoming":
-        return "incoming", row["sent_text"] or ""
-    if row["sent_text"]:
-        return "sent", row["sent_text"]
-    if row["queued_text"]:
-        return "queued", row["queued_text"]
-    return "draft", row["draft_text"] or ""
-
-
-def _fate(db: sqlite3.Connection, message_id: int) -> dict | None:
-    """Свежая строка очереди, а не первая: кончившаяся в failed не запрещает
-    поставить сообщение заново, и в ленте нужна текущая попытка."""
-    row = db.execute(f"SELECT {FATE} FROM outbox WHERE message_id = ?"
-                     " ORDER BY updated_at DESC, outbox_id DESC LIMIT 1",
-                     (message_id,)).fetchone()
-    return dict(row) if row is not None else None
+    if message["role"] == "incoming":
+        return "incoming", message["sent_text"] or ""
+    if message["sent_text"]:
+        return "sent", message["sent_text"]
+    if message["queued_text"]:
+        return "queued", message["queued_text"]
+    return "draft", message["draft_text"] or ""

@@ -102,6 +102,16 @@ def refused(db: sqlite3.Connection, company_id: str) -> bool:
     return refusals.is_refused(db, handles)
 
 
+def messages(db: sqlite3.Connection, company_id: str) -> list[dict[str, Any]]:
+    """Return every message of the thread, oldest first, the unsent ones too.
+
+    message_id, role, draft_text, queued_text, sent_text, created_at, sent_at:
+    what the model offered, what the operator confirmed and what went out are
+    three facts, and the sandbox shows each. The model's history is only what went out.
+    """
+    return ConversationRepository(db).messages(company_id)
+
+
 def pending_message(db: sqlite3.Connection, company_id: str) -> int | None:
     """Return the id of the thread's latest unsent draft, None when there is none."""
     return ConversationRepository(db).pending_message(company_id)

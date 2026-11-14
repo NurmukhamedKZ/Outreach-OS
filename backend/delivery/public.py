@@ -33,6 +33,7 @@ __all__ = [
     "LONGEST_JITTER_MINUTES",
     "DeliverySettings",
     "delivered_messages",
+    "fate",
     "register_number",
     "settings",
     "start",
@@ -85,6 +86,15 @@ def stuck(db: sqlite3.Connection) -> list[dict[str, Any]]:
 def delivered_messages(db: sqlite3.Connection) -> set[int]:
     """Return the ids of messages a receipt confirmed delivered to the lead's phone."""
     return DeliveryRepository(db).delivered_messages()
+
+
+def fate(db: sqlite3.Connection, message_id: int) -> dict[str, Any] | None:
+    """Return the message's current row in the send queue, None when it was never queued.
+
+    status, attempts, send_after, delivered_at, read_at, error. A row ended in
+    failed may be queued again, so the latest try is the one returned.
+    """
+    return DeliveryRepository(db).fate(message_id)
 
 
 def register_number(db: sqlite3.Connection, number: str, now: datetime, skip_warmup: bool) -> None:
