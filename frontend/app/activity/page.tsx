@@ -17,6 +17,7 @@ import {
   type BackupStatus,
 } from "../api";
 import { usePoll } from "@/components/usePoll";
+import { tickOutcome } from "../outcomes";
 
 const POLL_MS = 5_000;
 
@@ -123,7 +124,7 @@ export default function ActivityPage() {
                 {isToday(event.last_at) ? WHEN.format(new Date(event.last_at)) : WHEN_DAY.format(new Date(event.last_at))}
               </span>
               <span className="feed-actor">{ACTOR_LABELS[event.actor] ?? event.actor}</span>
-              <span className="feed-outcome">{event.outcome}</span>
+              <span className="feed-outcome" title={event.outcome}>{tickOutcome(event.outcome).label}</span>
               {event.subject && <span className="feed-subject mono">{event.subject}</span>}
               {event.repeats > 1 && <span className="feed-repeats mono">×{event.repeats}</span>}
               {event.detail && <span className="feed-detail mono">{event.detail}</span>}

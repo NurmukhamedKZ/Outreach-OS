@@ -95,7 +95,9 @@ export default function Sender() {
     fetchQueue()
       .then((data) => {
         setQueue(data.queue);
-        setRecent(data.recent);
+        // A pending row is shown once, under «Ждут отправки».
+        const waiting = new Set(data.queue.map((row) => row.outbox_id));
+        setRecent(data.recent.filter((row) => !waiting.has(row.outbox_id)));
       })
       .catch(() => undefined);
   }, []);
@@ -191,7 +193,7 @@ export default function Sender() {
       <section className="card">
         <h2>Пул номеров</h2>
         <div className="settings-table">
-          <table className="table">
+          <table className="table stack-table">
             <thead>
               <tr>
                 <th>Номер</th><th>Статус</th><th>День</th><th>Фаза</th>
@@ -201,8 +203,8 @@ export default function Sender() {
             <tbody>
               {(status?.numbers ?? []).map((row) => (
                 <tr key={row.number}>
-                  <td className="mono">{row.number}</td>
-                  <td>
+                  <td data-label="Номер" className="mono">{row.number}</td>
+                  <td data-label="Статус">
                     {NUMBER_STATUS[row.status] ?? row.status}
                     {row.session === "loggedOut" && (
                       <div>
@@ -211,10 +213,10 @@ export default function Sender() {
                     )}
                     {row.note && <div className="page-sub">{row.note}</div>}
                   </td>
-                  <td>{row.day}</td>
-                  <td>{PHASE_LABEL[row.phase] ?? row.phase}</td>
-                  <td>{row.sent_today} / {row.daily_limit}</td>
-                  <td>{row.capacity}</td>
+                  <td data-label="День">{row.day}</td>
+                  <td data-label="Фаза">{PHASE_LABEL[row.phase] ?? row.phase}</td>
+                  <td data-label="Сегодня">{row.sent_today} / {row.daily_limit}</td>
+                  <td data-label="Осталось">{row.capacity}</td>
                   <td>
                     <div className="row-actions">
                       {row.status === "quarantined" && (
@@ -317,7 +319,7 @@ export default function Sender() {
 function QueueTable({ rows, act }: { rows: QueueRow[]; act?: (work: () => Promise<unknown>) => void }) {
   return (
     <div className="settings-table">
-      <table className="table">
+      <table className="table stack-table">
         <thead>
           <tr>
             <th>Тред</th><th>Вид</th><th>Автор</th><th>Номер</th><th>Статус</th><th>Не раньше</th>
@@ -327,15 +329,15 @@ function QueueTable({ rows, act }: { rows: QueueRow[]; act?: (work: () => Promis
         <tbody>
           {rows.map((row) => (
             <tr key={row.outbox_id}>
-              <td className="mono">{row.thread_id ?? "прогрев"}</td>
-              <td>{KIND_LABEL[row.kind] ?? row.kind}</td>
-              <td>{AUTHOR_LABEL[row.author] ?? row.author}</td>
-              <td className="mono">{row.our_number}</td>
-              <td>
+              <td data-label="Тред" className="mono">{row.thread_id ?? "прогрев"}</td>
+              <td data-label="Вид">{KIND_LABEL[row.kind] ?? row.kind}</td>
+              <td data-label="Автор">{AUTHOR_LABEL[row.author] ?? row.author}</td>
+              <td data-label="Номер" className="mono">{row.our_number}</td>
+              <td data-label="Статус">
                 {ROW_STATUS[row.status] ?? row.status}
                 {row.error && <div className="page-sub">{row.error}</div>}
               </td>
-              <td>{WHEN.format(new Date(row.send_after))}</td>
+              <td data-label="Не раньше">{WHEN.format(new Date(row.send_after))}</td>
               {act && (
                 <td>
                   {row.status === "pending" && (
