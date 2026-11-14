@@ -5,10 +5,11 @@ dashboard would give the operator two different answers.
 """
 
 from collections.abc import Callable, Iterable, Mapping
-from datetime import datetime
 from typing import Any
 
+from backup import public as backup
 from conversations.public import SentThread
+from delivery import public as delivery
 from overview.schemas import Diagnosis, Slice, Step, Task
 
 NO_REASON = "причина не сохранилась"
@@ -94,9 +95,7 @@ def funnel(threads: list[SentThread], delivered: set[int]) -> list[Step]:
     return [Step(step=step, count=counts[step]) for step in STEPS]
 
 
-def breakdown(
-    threads: list[SentThread], since: datetime, key: Callable[[SentThread], str | None]
-) -> list[Slice]:
+def breakdown(threads: list[SentThread], key: Callable[[SentThread], str | None]) -> list[Slice]:
     """Split the threads by their first message, the one leads answer.
 
     Counting every message would put a thread under its variant and under
@@ -104,8 +103,7 @@ def breakdown(
     to more than were sent. A thread whose first message is older than the
     period is left out.
     """
-    opened = [t for t in threads if datetime.fromisoformat(t["first_sent_at"]) >= since]
-    return _slices((key(t) or BEFORE_AB, t) for t in opened)
+    return _slices((key(t) or BEFORE_AB, t) for t in threads if t["opened_in_period"])
 
 
 def segments(threads: list[SentThread], labels: Mapping[str, str]) -> list[Slice]:
@@ -146,14 +144,8 @@ def _slices(keyed: Iterable[tuple[str, SentThread]]) -> list[Slice]:
 # happens on a locked database, three in a row happen for no harmless reason.
 SILENCE_FACTOR = 3
 DEFAULT_INTERVAL_SECONDS = 60
-INTERVALS = {
-    "sender.tick": 20,
-    "sender.warmup": 900,
-    "sender.monitor": 3600,
-    "webhook": 3600,
-    # Checks hourly, writes to the journal once a day, when it backs up.
-    "backup": 86400,
-}
+# How often each actor writes is its owner's: delivery's daemons and the backup.
+INTERVALS = dict([*delivery.JOURNAL_INTERVALS.items(), backup.JOURNAL_INTERVAL])
 
 
 def silent_after(actor: str) -> int:

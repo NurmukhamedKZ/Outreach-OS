@@ -81,6 +81,6 @@ class Daemon(Schema):
     silent_after_seconds: int
 
 
-class Journal(Schema):
+class JournalPage(Schema):
     events: list[Event]
     workers: list[Daemon]

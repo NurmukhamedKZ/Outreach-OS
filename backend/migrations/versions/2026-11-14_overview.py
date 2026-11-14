@@ -3,7 +3,8 @@
 Before this revision activity.py created the journal itself (CREATE TABLE IF NOT
 EXISTS on start); its rows move here as they are. jobs held the queue of the
 old dashboard, llm_answers the answers of the pipeline removed in #13: nothing
-reads either, and the snapshots of the backup keep them for 14 days.
+reads either (jobs held one log of a «Черновики топ-N» run before #36, whose
+drafts live in messages); the backup's snapshots, when it is on, keep them for 14 days.
 
 Revision ID: 0007
 Revises: 0006
@@ -87,7 +88,9 @@ def upgrade() -> None:
     # The old index goes with its table.
     op.execute("DROP TABLE IF EXISTS activity")
     op.rename_table("activity_v7", "activity")
-    op.create_index("activity_recent", "activity", ["last_at"])
+    op.execute("CREATE INDEX activity_recent ON activity (last_at DESC)")
+    # The worker of the job queue goes with it: «Процессы» would show it silent for two weeks.
+    op.execute("DELETE FROM activity WHERE actor = 'jobs'")
     op.execute("DROP TABLE IF EXISTS jobs")
     op.execute("DROP TABLE IF EXISTS llm_answers")
 

@@ -36,14 +36,20 @@ def test_record_keeps_what_happened(journal):
     ]
 
 
-def test_identical_events_in_a_row_collapse(journal):
+def test_identical_events_in_a_row_collapse_and_move_the_pulse(journal, monkeypatch):
     """A tick every 20 seconds would drown the one event that matters in 4300 rows a day."""
-    for _ in range(3):
-        journal.record("sender.tick", "idle")
+    from core import activity
 
-    [event] = journal.recent()
-    assert event["repeats"] == 3
-    assert event["last_at"] >= event["at"]
+    for stamp in ("2026-11-14T10:00:00+00:00", "2026-11-14T10:00:20+00:00"):
+        monkeypatch.setattr(activity, "_now", lambda stamp=stamp: stamp)
+        journal.record("sender.tick", "idle")
+    journal.record("sender.warmup", "idle")  # another actor's same outcome is a row of its own
+
+    assert [(e["actor"], e["repeats"], e["at"], e["last_at"]) for e in journal.recent()] == [
+        ("sender.warmup", 1, "2026-11-14T10:00:20+00:00", "2026-11-14T10:00:20+00:00"),
+        ("sender.tick", 2, "2026-11-14T10:00:00+00:00", "2026-11-14T10:00:20+00:00"),
+    ]
+    assert journal.last_at("sender.tick") == "2026-11-14T10:00:20+00:00"
 
 
 def test_alternating_outcomes_and_subjects_do_not_collapse(journal):
@@ -82,15 +88,19 @@ def test_workers_and_last_at_answer_whether_a_daemon_is_alive(journal):
     assert journal.last_at("backup") is None
 
 
-def test_prune_drops_only_the_old(journal, path):
+def test_prune_drops_what_was_last_seen_long_ago(journal, path):
+    """A row that began a month ago and still repeats is alive: the pulse reads it."""
     journal.record("sender.tick", "idle")
+    journal.record("sender.monitor", "healthy")
     stale = (datetime.now(UTC) - timedelta(days=30)).isoformat(timespec="seconds")
     with closing(sqlite3.connect(path)) as db, db:
-        db.execute("UPDATE activity SET at = ?, last_at = ?", (stale, stale))
-    journal.record("sender.tick", "sent", subject="+77001112233")
+        db.execute(
+            "UPDATE activity SET at = ?, last_at = ? WHERE actor = 'sender.tick'", (stale, stale)
+        )
+        db.execute("UPDATE activity SET at = ? WHERE actor = 'sender.monitor'", (stale,))
 
     assert journal.prune() == 1
-    assert [event["outcome"] for event in journal.recent()] == ["sent"]
+    assert [event["outcome"] for event in journal.recent()] == ["healthy"]
 
 
 def test_a_record_survives_the_rollback_of_the_callers_transaction(journal, path):
@@ -152,6 +162,15 @@ def test_revision_0007_keeps_the_journal_and_drops_the_old_queue(tmp_path):
             "INSERT INTO jobs (kind, title, status, steps, created_at)"
             " VALUES ('write', 'Черновики топ-N', 'done', '[]', '2026-10-01')"
         )
+        db.execute(
+            "INSERT INTO llm_answers (kind, subject, model, prompt, answer)"
+            " VALUES ('profile', 'x', 'm', 'p', '{}')"
+        )
+        db.execute("UPDATE activity SET id = 41")
+        db.execute(
+            "INSERT INTO activity (at, last_at, actor, outcome)"
+            " VALUES ('2026-10-01', '2026-10-01', 'jobs', 'finished')"
+        )
     journal = Journal(lambda: path)
 
     for _ in range(2):
@@ -160,6 +179,7 @@ def test_revision_0007_keeps_the_journal_and_drops_the_old_queue(tmp_path):
         assert (event["actor"], event["repeats"]) == ("sender.tick", 4)
         with closing(sqlite3.connect(path)) as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master")}
+            assert db.execute("SELECT id FROM activity").fetchall() == [(41,)]
         assert {"jobs", "llm_answers"}.isdisjoint(tables)
         assert "activity_recent" in tables
         core_db.downgrade(path, "0006")

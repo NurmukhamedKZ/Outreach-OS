@@ -104,6 +104,30 @@ def test_an_escalated_thread_is_a_task_with_its_reason_and_company(client, db):
     }
 
 
+def test_a_task_is_dated_by_the_last_handled_reply_the_stuck_send_and_the_draft(client, db):
+    repo = ConversationRepository(db)
+    thread(db, "c-escalated", "+77010000001")
+    with db:
+        for at in ("2026-11-12T09:30:00+00:00", "2026-11-12T09:00:00+00:00"):
+            message_id = repo.add_incoming("c-escalated", "ответ", None, NOW)
+            db.execute("UPDATE messages SET handled_at = ? WHERE message_id = ?", (at, message_id))
+    escalate(db, "c-escalated")
+    thread(db, "c-stuck", "+77010000002")
+    stuck_row(db, "c-stuck")
+    with db:
+        db.execute("UPDATE outbox SET updated_at = '2026-11-12T09:45:00+00:00'")
+    thread(db, "c-draft", "+77010000003")
+    draft(db, "c-draft")
+
+    rows = client.get("/api/tasks").json()["tasks"]
+
+    assert [(row["kind"], row["at"]) for row in rows] == [
+        ("escalated", "2026-11-12T09:30:00+00:00"),
+        ("stuck", "2026-11-12T09:45:00+00:00"),
+        ("draft", STAMP),
+    ]
+
+
 def test_a_company_research_does_not_know_is_named_by_its_id(client, db):
     thread(db, "2gis:gone", "+77010000002")
     with db:
@@ -158,19 +182,31 @@ def test_the_funnel_counts_threads_and_never_grows(client, db):
         replied=True,
         delivered=True,
     )
-    sent_thread(db, "c2", "+77010000002", stage="probing", replied=True, delivered=True)
-    sent_thread(db, "c3", "+77010000003", delivered=True)
-    sent(db, "c3")  # a second message of a thread is no second thread
+    sent_thread(
+        db,
+        "c2",
+        "+77010000002",
+        stage="offer",
+        outcome="meeting_agreed",
+        replied=True,
+        delivered=True,
+    )
+    sent_thread(db, "c3", "+77010000003", stage="probing", replied=True)
+    sent(db, "c3", delivered=True)  # a second message of a thread is no second thread
+    sent(db, "c3")
+    sent_thread(db, "c4", "+77010000004")
+    # Nothing sent in the period: not in the funnel at all.
+    sent_thread(db, "c5", "+77010000005", delivered=True, replied=True, at=NOW - timedelta(days=31))
 
     report = client.get("/api/analytics").json()
 
     steps = {row["step"]: row["count"] for row in report["funnel"]}
     assert steps == {
-        "sent": 3,
+        "sent": 4,
         "delivered": 3,
-        "replied": 2,
-        "dialog": 2,
-        "meeting_agreed": 1,
+        "replied": 3,
+        "dialog": 3,
+        "meeting_agreed": 2,
         "meeting_held": 1,
     }
     assert report["days"] == 30 and report["diagnosis"] == "ok"
@@ -247,9 +283,29 @@ def test_a_clean_install_has_an_empty_funnel(client):
     }
 
 
-@pytest.mark.parametrize("days", [0, 366])
-def test_a_period_out_of_range_is_refused(client, days):
-    assert client.get(f"/api/analytics?days={days}").status_code == 422
+@pytest.mark.parametrize(
+    ("path", "status"),
+    [
+        ("/api/analytics?days=0", 422),
+        ("/api/analytics?days=1", 200),
+        ("/api/analytics?days=365", 200),
+        ("/api/analytics?days=366", 422),
+        ("/api/tasks?limit=0", 422),
+        ("/api/tasks?limit=200", 200),
+        ("/api/tasks?limit=201", 422),
+        ("/api/activity?limit=0", 422),
+        ("/api/activity?limit=1001", 422),
+    ],
+)
+def test_a_period_or_limit_out_of_range_is_refused(client, path, status):
+    assert client.get(path).status_code == status
+
+
+def test_the_diagnosis_reaches_the_page(client, db):
+    for n in range(10):
+        sent_thread(db, f"c{n}", f"+770100000{n:02}", replied=True)
+
+    assert client.get("/api/analytics").json()["diagnosis"] == "icp_mismatch"
 
 
 # --- /api/stats -----------------------------------------------------------------------
@@ -272,6 +328,14 @@ def test_the_counters_come_from_the_owners_of_the_three_systems(client, db, jour
     assert body["sender"]["threads"] == {"waiting": 0, "escalated": 1}
     assert body["sender"]["heartbeat"] == journal.last_at("sender.tick")
     assert body["sandbox"] is False
+
+
+def test_the_sidebar_learns_the_sandbox_is_on(client, monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "sandbox", True)
+
+    assert client.get("/api/stats").json()["sandbox"] is True
 
 
 def test_a_failing_counter_of_leads_leaves_the_rest(client, monkeypatch):

@@ -6,7 +6,7 @@
  и пульс перечитываются раз в 5 секунд, пока вкладка видна.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ApiError,
   fetchActivity,
@@ -48,9 +48,15 @@ export default function ActivityPage() {
   const [actor, setActor] = useState("");
   const [failure, setFailure] = useState<string | null>(null);
 
+  // Ответ на прежний фильтр, доехавший после смены, ленту не затирает.
+  const current = useRef(actor);
+  useEffect(() => {
+    current.current = actor;
+  }, [actor]);
   const load = useCallback(() => {
     fetchActivity(200, actor || undefined)
       .then((data) => {
+        if (current.current !== actor) return;
         setEvents(data.events);
         setWorkers(data.workers);
         setFailure(null);

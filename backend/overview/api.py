@@ -7,7 +7,7 @@ from backup import public as backup
 from config import settings
 from core.activity import JournalDep
 from overview.dependencies import OverviewServiceDep
-from overview.schemas import Journal, Report, Stats, Tasks
+from overview.schemas import JournalPage, Report, Stats, Tasks
 from overview.service import journal_page
 
 router = APIRouter(prefix="/api", tags=["overview"])
@@ -55,5 +55,5 @@ def activity(
     journal: JournalDep,
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
     actor: str | None = None,
-) -> Journal:
+) -> JournalPage:
     return journal_page(journal, limit, actor)

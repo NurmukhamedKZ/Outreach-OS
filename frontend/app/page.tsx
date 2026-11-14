@@ -57,15 +57,14 @@ export default function Overview() {
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
 
+  // Один ответ на оба запроса: ошибка одного не гаснет от успеха другого.
   const load = useCallback(() => {
-    fetchTasks()
-      .then((data) => {
+    Promise.all([fetchTasks(), fetchStats()])
+      .then(([data, next]) => {
         setTasks(data.tasks);
+        setStats(next);
         setFailure(null);
       })
-      .catch((error: Error) => setFailure(error.message));
-    fetchStats()
-      .then(setStats)
       .catch((error: Error) => setFailure(error.message));
   }, []);
   usePoll(load, POLL_MS);

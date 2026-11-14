@@ -14,12 +14,22 @@ from core.whatsapp import WhatsApp
 from delivery import notify, worker
 from delivery.repository import DeliveryRepository
 from delivery.schemas import DeliverySettings
-from delivery.service import TICK_ACTOR, Notify, load_settings
+from delivery.service import TICK_ACTOR, WEBHOOK_ACTOR, Notify, load_settings
 
 # The longest pause between two sends of a number: whether a send still fits the window.
 LONGEST_JITTER_MINUTES = max(worker.JITTER_MINUTES)
+# How often each actor of delivery writes to the journal at the longest, in seconds:
+# «Процессы» calls a daemon silent after a few of them. The webhook writes when Node
+# sends, an hour without an event is ordinary.
+JOURNAL_INTERVALS = {
+    worker.TICK_ACTOR: worker.TICK_SECONDS,
+    worker.WARMUP_ACTOR: (worker.WARMUP_MINUTES + worker.WARMUP_JITTER_MINUTES) * 60,
+    worker.MONITOR_ACTOR: worker.MONITOR_SECONDS,
+    WEBHOOK_ACTOR: 3600,
+}
 
 __all__ = [
+    "JOURNAL_INTERVALS",
     "LONGEST_JITTER_MINUTES",
     "DeliverySettings",
     "delivered_messages",

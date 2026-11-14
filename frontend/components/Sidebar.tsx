@@ -49,7 +49,7 @@ export default function Sidebar() {
   // «Песочница» живёт только при SANDBOX=1: иначе страница встречала бы
   // оператора баннером «GET /api/sandbox/runs — 404» над пустым экраном.
   const nav = NAV.filter((item) => item.href !== "/sandbox" || stats?.sandbox);
-  // Бейдж — из тех же счётчиков /api/stats, что «Сегодня»: одно число, один источник.
+  // Бейдж — из счётчиков /api/stats, тех же, что на «Сегодня»: число не выдумывает страница.
   const waiting = (stats?.sender.threads.escalated ?? 0) + (stats?.writer.drafts ?? 0);
 
   return (

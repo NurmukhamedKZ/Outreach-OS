@@ -14,8 +14,7 @@ from conversations import public as conversations
 from core.activity import Journal
 from delivery import public as delivery
 from overview import domain
-from overview.schemas import Daemon, Event, Report, Sourcing, Stats, Task
-from overview.schemas import Journal as JournalPage
+from overview.schemas import Daemon, Event, JournalPage, Report, Sourcing, Stats, Task
 from refusals import public as refusals
 from research import public as research
 
@@ -50,8 +49,8 @@ class OverviewService:
         return Report(
             days=days,
             funnel=steps,
-            by_offer=domain.breakdown(threads, since, lambda t: t["offer_variant"]),
-            by_angle=domain.breakdown(threads, since, lambda t: t["angle"]),
+            by_offer=domain.breakdown(threads, lambda t: t["offer_variant"]),
+            by_angle=domain.breakdown(threads, lambda t: t["angle"]),
             by_segment=domain.segments(threads, labels),
             edited_share=domain.edited_share(threads),
             diagnosis=domain.diagnose(steps),

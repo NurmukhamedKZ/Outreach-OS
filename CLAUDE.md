@@ -237,7 +237,7 @@ ADR 0001–0005; устройство и причины — `docs/ARCHITECTURE_v
   живо), `conversations.public.stats`, `delivery.public.stats` (пульс тика — из журнала),
   флаг песочницы для сайдбара.
 - `GET /api/activity?limit=&actor=` — журнал и пульс демонов с порогом молчания
-  (`silent_after_seconds`: три интервала тика).
+  (`silent_after_seconds`: три интервала записи актора; интервалы — у владельцев, `delivery.public.JOURNAL_INTERVALS` и `backup.public.JOURNAL_INTERVAL`).
 
 **Журнал фоновой работы — `core/activity.py`.** `Journal` — объект над базой момента
 (`Journal(paths.state_db)`: прогон песочницы переключает её на живом процессе), один на
@@ -348,7 +348,7 @@ cd backend && uv run pytest conversations/tests/
 `backend/CLAUDE.md`, «Структура модуля»: очередь исходящих, гейты, пул номеров и
 прогрев, монитор здоровья, вебхук, ответ на входящее и автопилот. Слой import-linter —
 над `conversations`; снаружи — только `delivery.public` (сборщику — `start` и
-`telegram`, `overview` — `stats`, `stuck`, `delivered_messages`, песочнице — `settings`,
+`telegram`, `overview` — `stats`, `stuck`, `delivered_messages`, `JOURNAL_INTERVALS`, песочнице — `settings`,
 `register_number`, `LONGEST_JITTER_MINUTES`). Журнал (`core.activity.Journal`) приходит
 параметром: демонам — из `start`, сервису запроса — зависимостью.
 

@@ -7,9 +7,12 @@ from threading import Event
 import clock
 from backup.dependencies import get_backup
 from backup.exceptions import BackupDisabledError, BackupFailedError, BackupRunningError
-from backup.service import CHECK_SECONDS, BackupService, tick
+from backup.service import ACTOR, CHECK_SECONDS, BackupService, tick
 
-__all__ = ["BackupService", "back_up", "get_backup", "loop", "now"]
+__all__ = ["JOURNAL_INTERVAL", "BackupService", "back_up", "get_backup", "loop", "now"]
+
+# The backup checks hourly but writes to the journal once a day, when it backs up.
+JOURNAL_INTERVAL = (ACTOR, 86400)
 
 
 def now() -> datetime:

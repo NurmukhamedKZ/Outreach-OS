@@ -16,12 +16,11 @@ from typing import Annotated, Any
 
 from fastapi import Depends, Request
 
+from core import db as core_db
+
 log = logging.getLogger(__name__)
 
 RETENTION_DAYS = 14
-# The webhook, the tick and the operator's buttons write state.db at the same
-# time; without a wait the first meeting of two writes is "database is locked".
-BUSY_TIMEOUT_S = 5
 
 
 class Journal:
@@ -44,6 +43,8 @@ class Journal:
         """
         stamp = _now()
         with closing(self._connect()) as db, db:
+            # Two daemons writing at once must not both see the same last row.
+            db.execute("BEGIN IMMEDIATE")
             last = db.execute(
                 "SELECT id, actor, outcome, subject FROM activity ORDER BY id DESC LIMIT 1"
             ).fetchone()
@@ -100,10 +101,15 @@ class Journal:
 
     def last_at(self, actor: str) -> str | None:
         """Return when `actor` last wrote; None before its first record."""
-        return next((row["last_at"] for row in self.workers() if row["actor"] == actor), None)
+        with closing(self._connect()) as db:
+            found: str | None = db.execute(
+                "SELECT MAX(last_at) FROM activity WHERE actor = ?", (actor,)
+            ).fetchone()[0]
+        return found
 
     def prune(self, days: int = RETENTION_DAYS) -> int:
         """Delete events last seen `days` ago or earlier; return how many."""
+        # Real time, as the records are stamped (`_now`).
         cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat(timespec="seconds")
         # <=: the cutoff is rounded to seconds, an event of that very second is already old.
         with closing(self._connect()) as db, db:
@@ -111,9 +117,7 @@ class Journal:
         return deleted
 
     def _connect(self) -> sqlite3.Connection:
-        db = sqlite3.connect(self._path(), timeout=BUSY_TIMEOUT_S)
-        db.row_factory = sqlite3.Row
-        return db
+        return core_db.connect(self._path())
 
 
 def _now() -> str:
