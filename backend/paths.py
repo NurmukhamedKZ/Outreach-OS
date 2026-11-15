@@ -11,9 +11,11 @@
 
 from pathlib import Path
 
+from config import settings
+
 # One data directory for the product (#9): the database, downloaded pages and
-# sandbox run databases.
-DATA = Path(__file__).resolve().parent / "data"
+# sandbox run databases. A stand moves it (DATA_DIR, #51); the sessions stay Node's.
+DATA = settings.data_dir
 PRODUCTION_STATE = DATA / "state.db"
 PAGES = DATA / "pages"
 SANDBOX_RUNS = DATA / "sandbox"

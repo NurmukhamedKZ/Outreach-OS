@@ -82,3 +82,6 @@ backend/sender/autopilot.tmp
 
 # Worktree кодеров
 .claude/worktrees/
+
+# Стенд worktree (scripts/stand): база, логи и pid его процессов
+/.stand/

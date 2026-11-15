@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     # рядом с рабочим процессом — вебхуки Node лидят на первый, второй мёртв.
     # В Docker переопределяется на 0.0.0.0 (backend слушает контейнерный порт).
     uvicorn_host: str = "127.0.0.1"
+    # Not PORT: `next dev` reads that one, and a shell exporting it for the
+    # dashboard would move the backend too. A stand (scripts/stand) takes a free one.
+    uvicorn_port: int = 8787
+    # The irreplaceable layer's directory (paths.py derives the rest from it).
+    # Moved only by a stand: an empty directory in production is an empty base,
+    # refusals included.
+    data_dir: Path = Path(__file__).resolve().parent / "data"
     sender_webhook_secret: str | None = None
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
