@@ -63,6 +63,11 @@ uv run pytest                                    # тесты всех сист�
 uv run pytest companies/tests/test_domain.py     # один раздел — одним файлом
 ```
 
+Полный набор проверок обеих частей — одна команда из корня, `scripts/check`
+(`--all` — и фронт, даже если дифф его не трогает); её же зовёт хук `pre-push`,
+подключение — `git config core.hooksPath scripts/hooks` (`docs/agents/workflow.md`,
+«Проверки»).
+
 Веб — два процесса, браузеру нужен только порт 3000:
 
 ```bash
