@@ -25,6 +25,13 @@
 uv run pytest                            # тесты всех систем, без сети
 ```
 
+Полная проверка бэкенда и фронта — из корня репо, `scripts/check`. Хук `pre-push`
+не пустит красную ветку; подключается один раз на клон:
+
+```bash
+git config core.hooksPath scripts/hooks
+```
+
 Модель зовётся через OpenRouter: ключ `OPENROUTER_API_KEY` в `backend/.env`
 (шаблон — `backend/.env.example`), имя модели исследования — на «Настройках».
 
