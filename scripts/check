@@ -10,6 +10,10 @@ One line per check (ok / FAIL / skip and time), then the output of failed
 checks only. Exit code 1 if any check failed. Stdlib only.
 """
 
+# A GUI client may run the hook with macOS /usr/bin/python3 (3.9).
+from __future__ import annotations
+
+import argparse
 import os
 import shutil
 import subprocess
@@ -21,7 +25,6 @@ from pathlib import Path
 from typing import TextIO
 
 ROOT = Path(__file__).resolve().parent.parent
-ZERO_SHA = "0" * 40
 # git hands the hook GIT_DIR and friends; children must find the repo by cwd,
 # or pytest's temporary repos would act on this one.
 ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -58,7 +61,8 @@ CHECKS = [
 
 
 def git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=root, env=ENV, capture_output=True, text=True)
+    return subprocess.run(["git", "-c", "core.quotepath=off", *args], cwd=root, env=ENV,
+                          capture_output=True, text=True)
 
 
 def changed_files(root: Path) -> list[str] | None:
@@ -66,8 +70,8 @@ def changed_files(root: Path) -> list[str] | None:
     base = git(root, "merge-base", "origin/main", "HEAD")
     if base.returncode:
         return None
-    diff = git(root, "diff", "--name-only", base.stdout.strip()).stdout.split()
-    untracked = git(root, "ls-files", "--others", "--exclude-standard").stdout.split()
+    diff = git(root, "diff", "--name-only", base.stdout.strip()).stdout.splitlines()
+    untracked = git(root, "ls-files", "--others", "--exclude-standard").stdout.splitlines()
     return diff + untracked
 
 
@@ -89,7 +93,12 @@ def execute(c: Check, root: Path) -> tuple[bool, str]:
     for command in c.commands:
         if shutil.which(command[0]) is None:
             return False, f"нет {command[0]} в PATH"
-        done = subprocess.run(command, cwd=cwd, env=ENV, capture_output=True, text=True)
+        try:
+            # No stdin: an `npx` install prompt would otherwise hang the push.
+            done = subprocess.run(command, cwd=cwd, env=ENV, stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, errors="replace")
+        except OSError as error:
+            return False, "".join(output) + f"{command[0]}: {error}"
         output.append(done.stdout + done.stderr)
         if done.returncode:
             return False, "".join(output)
@@ -106,15 +115,14 @@ def run(chosen: list[tuple[Check, str | None]], root: Path) -> int:
     """Run the selected checks in parallel, print the report, return the exit code."""
     to_run = [c for c, why in chosen if why is None]
     with ThreadPoolExecutor(max_workers=len(to_run) or 1) as pool:
-        results = dict(zip([c.name for c in to_run], pool.map(lambda c: timed(c, root), to_run),
-                           strict=True))
+        results = iter(list(pool.map(lambda c: timed(c, root), to_run)))
     width = max(len(c.name) for c, _ in chosen)
     failed = []
     for c, why in chosen:
         if why is not None:
             print(f"skip {c.name:<{width}}  {why}")
             continue
-        passed, output, seconds = results[c.name]
+        passed, output, seconds = next(results)
         print(f"{'ok  ' if passed else 'FAIL'} {c.name:<{width}}  {seconds:.1f}s")
         if not passed:
             failed.append((c.name, output))
@@ -124,15 +132,28 @@ def run(chosen: list[tuple[Check, str | None]], root: Path) -> int:
 
 
 def main(argv: list[str], stdin: TextIO, root: Path, checks: list[Check]) -> int:
-    if "--pre-push" in argv:
-        pushed = [line.split() for line in stdin if line.strip()]
-        if all(len(ref) > 1 and ref[1] == ZERO_SHA for ref in pushed):
-            return 0  # only branch deletions: nothing to check
+    parser = argparse.ArgumentParser(prog="scripts/check", allow_abbrev=False)
+    parser.add_argument("--all", action="store_true", help="run every check regardless of the diff")
+    parser.add_argument("--pre-push", action="store_true", help="hook mode, reads the pre-push stdin")
+    args = parser.parse_args(argv)
+    if args.pre_push:
+        # Hook stdin: "<local ref> <local sha> <remote ref> <remote sha>" per pushed ref;
+        # the local sha is all zeros for a deletion. No lines means nothing is pushed.
+        shas = [line.split()[1] for line in stdin if len(line.split()) > 1]
+        pushed = [sha for sha in shas if sha.strip("0")]
+        if not pushed:
+            return 0
+        head = git(root, "rev-parse", "HEAD").stdout.strip()
+        if any(git(root, "rev-parse", f"{sha}^{{commit}}").stdout.strip() != head
+               for sha in pushed):
+            # Checks run on this tree; another commit would be pushed unchecked.
+            print("push отклонён: уходит не HEAD этого дерева — пушьте ветку из её worktree")
+            return 1
         if git(root, "status", "--porcelain", "--untracked-files=no").stdout.strip():
             # Checks run on the working tree: an uncommitted fix would pass what is pushed red.
             print("push отклонён: в дереве незакоммиченные правки — закоммитьте или уберите их")
             return 1
-    changed = None if "--all" in argv else changed_files(root)
+    changed = None if args.all else changed_files(root)
     return run(select(checks, changed), root)
 
 
