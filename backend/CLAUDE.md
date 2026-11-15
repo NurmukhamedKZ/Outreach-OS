@@ -163,7 +163,7 @@ DeliveryServiceDep = Annotated[DeliveryService, Depends(get_delivery_service)]
 uv sync                                   # зависимости (uv.lock коммитится)
 uv run pytest                             # все тесты, без сети
 uv run pytest delivery/tests/test_domain.py  # один раздел — одним файлом
-uv run python main.py                     # FastAPI, порт 8787
+uv run python main.py                     # FastAPI, порт UVICORN_PORT (8787)
 uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run lint-imports && uv run pytest  # полная проверка
 ```
 

@@ -86,7 +86,7 @@ def up(webpack: bool) -> int:
         _stop(state)  # what a crashed stand left half-running
     subprocess.run(["uv", "sync"], cwd=ROOT / "backend", check=True)
     if not (ROOT / "frontend" / "node_modules").is_dir():
-        subprocess.run(["npm", "ci"], cwd=ROOT / "frontend", check=True)
+        subprocess.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=ROOT / "frontend", check=True)
     (STAND / "data").mkdir(parents=True, exist_ok=True)
 
     backend_port, frontend_port = _free_ports(2)
