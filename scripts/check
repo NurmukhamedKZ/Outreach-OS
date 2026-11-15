@@ -10,6 +10,7 @@ One line per check (ok / FAIL / skip and time), then the output of failed
 checks only. Exit code 1 if any check failed. Stdlib only.
 """
 
+import os
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,9 @@ from typing import TextIO
 
 ROOT = Path(__file__).resolve().parent.parent
 ZERO_SHA = "0" * 40
+# git hands the hook GIT_DIR and friends; children must find the repo by cwd,
+# or pytest's temporary repos would act on this one.
+ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
 
 @dataclass(frozen=True)
@@ -54,7 +58,7 @@ CHECKS = [
 
 
 def git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
+    return subprocess.run(["git", *args], cwd=root, env=ENV, capture_output=True, text=True)
 
 
 def changed_files(root: Path) -> list[str] | None:
@@ -85,7 +89,7 @@ def execute(c: Check, root: Path) -> tuple[bool, str]:
     for command in c.commands:
         if shutil.which(command[0]) is None:
             return False, f"нет {command[0]} в PATH"
-        done = subprocess.run(command, cwd=cwd, capture_output=True, text=True)
+        done = subprocess.run(command, cwd=cwd, env=ENV, capture_output=True, text=True)
         output.append(done.stdout + done.stderr)
         if done.returncode:
             return False, "".join(output)
