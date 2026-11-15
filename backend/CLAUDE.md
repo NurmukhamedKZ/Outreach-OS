@@ -164,7 +164,7 @@ uv sync                                   # зависимости (uv.lock ко
 uv run pytest                             # все тесты, без сети
 uv run pytest delivery/tests/test_domain.py  # один раздел — одним файлом
 uv run python main.py                     # FastAPI, порт UVICORN_PORT (8787)
-uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run lint-imports && uv run pytest  # полная проверка
+../scripts/check                          # полная проверка: ruff, mypy, lint-imports, pytest (и фронт, если дифф его трогает)
 ```
 
 Охват `ruff`, `mypy` (strict) и `import-linter` — новый код: `core`, `refusals`, `companies`, `research`, `conversations`, `delivery`, `backup`, `overview`, `sandbox`, `migrations` и сборщик `main.py` (`[tool.ruff] include`, `[tool.mypy] files` в `pyproject.toml`). Прочие `backend/*.py` вне охвата; тесты модулей верхнего уровня — `backend/tests/`; новый модуль добавляется в охват тем же PR, что его заводит. У тестов mypy не требует аннотаций сигнатур, тела проверяет. Заглушка — только с кодом правила и причиной: `# noqa: BLE001`, `# type: ignore[arg-type]  # причина`.

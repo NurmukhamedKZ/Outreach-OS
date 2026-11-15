@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Run the repo checks in one command (#50).
+
+    scripts/check             backend always, frontend only if the diff against
+                              origin/main touches frontend/
+    scripts/check --all       everything regardless of the diff
+    scripts/check --pre-push  hook mode: reads the pre-push stdin
+
+One line per check (ok / FAIL / skip and time), then the output of failed
+checks only. Exit code 1 if any check failed. Stdlib only.
+"""
+
+# A GUI client may run the hook with macOS /usr/bin/python3 (3.9).
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TextIO
+
+ROOT = Path(__file__).resolve().parent.parent
+# git hands the hook GIT_DIR and friends; children must find the repo by cwd,
+# or pytest's temporary repos would act on this one.
+ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+@dataclass(frozen=True)
+class Check:
+    """A named check: commands run in order inside `cwd`, the first failure stops it.
+
+    `triggers` — path prefixes that select the check; empty means always.
+    `needs` — a directory inside `cwd` without which the check cannot run;
+    `hint` — what to run to get it.
+    """
+
+    name: str
+    cwd: str
+    commands: list[list[str]]
+    triggers: tuple[str, ...] = ()
+    needs: str = ""
+    hint: str = ""
+
+
+# A new check (#54 e2e, #55 Node transport) is one more entry here.
+CHECKS = [
+    Check("ruff", "backend", [["uv", "run", "ruff", "check", "."],
+                              ["uv", "run", "ruff", "format", "--check", "."]]),
+    Check("mypy", "backend", [["uv", "run", "mypy"]]),
+    Check("lint-imports", "backend", [["uv", "run", "lint-imports"]]),
+    Check("pytest", "backend", [["uv", "run", "pytest", "-q"]]),
+    # Build before tsc: a stale .next/types/validator.ts fails tsc, the build regenerates it.
+    Check("frontend", "frontend", [["npm", "run", "build"], ["npx", "tsc", "--noEmit"]],
+          triggers=("frontend/",), needs="node_modules", hint="cd frontend && npm ci"),
+]
+
+
+def git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", "-c", "core.quotepath=off", *args], cwd=root, env=ENV,
+                          capture_output=True, text=True)
+
+
+def changed_files(root: Path) -> list[str] | None:
+    """Return files changed against origin/main, untracked included; None without origin/main."""
+    base = git(root, "merge-base", "origin/main", "HEAD")
+    if base.returncode:
+        return None
+    diff = git(root, "diff", "--name-only", base.stdout.strip()).stdout.splitlines()
+    untracked = git(root, "ls-files", "--others", "--exclude-standard").stdout.splitlines()
+    return diff + untracked
+
+
+def select(checks: list[Check], changed: list[str] | None) -> list[tuple[Check, str | None]]:
+    """Pair each check with the reason to skip it, None to run; `changed=None` runs all."""
+    chosen: list[tuple[Check, str | None]] = []
+    for c in checks:
+        hit = changed is None or not c.triggers or any(
+            path.startswith(c.triggers) for path in changed)
+        chosen.append((c, None if hit else f"дифф не трогает {', '.join(c.triggers)}"))
+    return chosen
+
+
+def execute(c: Check, root: Path) -> tuple[bool, str]:
+    cwd = root / c.cwd
+    if c.needs and not (cwd / c.needs).is_dir():
+        return False, f"нет {Path(c.cwd, c.needs).as_posix()}: `{c.hint}`"
+    output = []
+    for command in c.commands:
+        if shutil.which(command[0]) is None:
+            return False, f"нет {command[0]} в PATH"
+        try:
+            # No stdin: an `npx` install prompt would otherwise hang the push.
+            done = subprocess.run(command, cwd=cwd, env=ENV, stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, errors="replace")
+        except OSError as error:
+            return False, "".join(output) + f"{command[0]}: {error}"
+        output.append(done.stdout + done.stderr)
+        if done.returncode:
+            return False, "".join(output)
+    return True, ""
+
+
+def timed(c: Check, root: Path) -> tuple[bool, str, float]:
+    start = time.monotonic()
+    passed, output = execute(c, root)
+    return passed, output, time.monotonic() - start
+
+
+def run(chosen: list[tuple[Check, str | None]], root: Path) -> int:
+    """Run the selected checks in parallel, print the report, return the exit code."""
+    to_run = [c for c, why in chosen if why is None]
+    with ThreadPoolExecutor(max_workers=len(to_run) or 1) as pool:
+        results = iter(list(pool.map(lambda c: timed(c, root), to_run)))
+    width = max(len(c.name) for c, _ in chosen)
+    failed = []
+    for c, why in chosen:
+        if why is not None:
+            print(f"skip {c.name:<{width}}  {why}")
+            continue
+        passed, output, seconds = next(results)
+        print(f"{'ok  ' if passed else 'FAIL'} {c.name:<{width}}  {seconds:.1f}s")
+        if not passed:
+            failed.append((c.name, output))
+    for name, output in failed:
+        print(f"\n--- {name} ---\n{output.rstrip()}")
+    return 1 if failed else 0
+
+
+def main(argv: list[str], stdin: TextIO, root: Path, checks: list[Check]) -> int:
+    parser = argparse.ArgumentParser(prog="scripts/check", allow_abbrev=False)
+    parser.add_argument("--all", action="store_true", help="run every check regardless of the diff")
+    parser.add_argument("--pre-push", action="store_true", help="hook mode, reads the pre-push stdin")
+    args = parser.parse_args(argv)
+    if args.pre_push:
+        # Hook stdin: "<local ref> <local sha> <remote ref> <remote sha>" per pushed ref;
+        # the local sha is all zeros for a deletion. No lines means nothing is pushed.
+        shas = [line.split()[1] for line in stdin if len(line.split()) > 1]
+        pushed = [sha for sha in shas if sha.strip("0")]
+        if not pushed:
+            return 0
+        head = git(root, "rev-parse", "HEAD").stdout.strip()
+        if any(git(root, "rev-parse", f"{sha}^{{commit}}").stdout.strip() != head
+               for sha in pushed):
+            # Checks run on this tree; another commit would be pushed unchecked.
+            print("push отклонён: уходит не HEAD этого дерева — пушьте ветку из её worktree")
+            return 1
+        if git(root, "status", "--porcelain", "--untracked-files=no").stdout.strip():
+            # Checks run on the working tree: an uncommitted fix would pass what is pushed red.
+            print("push отклонён: в дереве незакоммиченные правки — закоммитьте или уберите их")
+            return 1
+    changed = None if args.all else changed_files(root)
+    return run(select(checks, changed), root)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:], sys.stdin, ROOT, CHECKS))
