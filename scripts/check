@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Run the repo checks in one command (#50).
+
+    scripts/check             backend always, frontend only if the diff against
+                              origin/main touches frontend/
+    scripts/check --all       everything regardless of the diff
+    scripts/check --pre-push  hook mode: reads the pre-push stdin
+
+One line per check (ok / FAIL / skip and time), then the output of failed
+checks only. Exit code 1 if any check failed. Stdlib only.
+"""
+
+import shutil
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TextIO
+
+ROOT = Path(__file__).resolve().parent.parent
+ZERO_SHA = "0" * 40
+
+
+@dataclass(frozen=True)
+class Check:
+    """A named check: commands run in order inside `cwd`, the first failure stops it.
+
+    `triggers` — path prefixes that select the check; empty means always.
+    `needs` — a directory inside `cwd` without which the check cannot run;
+    `hint` — what to run to get it.
+    """
+
+    name: str
+    cwd: str
+    commands: list[list[str]]
+    triggers: tuple[str, ...] = ()
+    needs: str = ""
+    hint: str = ""
+
+
+# A new check (#54 e2e, #55 Node transport) is one more entry here.
+CHECKS = [
+    Check("ruff", "backend", [["uv", "run", "ruff", "check", "."],
+                              ["uv", "run", "ruff", "format", "--check", "."]]),
+    Check("mypy", "backend", [["uv", "run", "mypy"]]),
+    Check("lint-imports", "backend", [["uv", "run", "lint-imports"]]),
+    Check("pytest", "backend", [["uv", "run", "pytest", "-q"]]),
+    # Build before tsc: a stale .next/types/validator.ts fails tsc, the build regenerates it.
+    Check("frontend", "frontend", [["npm", "run", "build"], ["npx", "tsc", "--noEmit"]],
+          triggers=("frontend/",), needs="node_modules", hint="cd frontend && npm ci"),
+]
+
+
+def git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
+
+
+def changed_files(root: Path) -> list[str] | None:
+    """Return files changed against origin/main, untracked included; None without origin/main."""
+    base = git(root, "merge-base", "origin/main", "HEAD")
+    if base.returncode:
+        return None
+    diff = git(root, "diff", "--name-only", base.stdout.strip()).stdout.split()
+    untracked = git(root, "ls-files", "--others", "--exclude-standard").stdout.split()
+    return diff + untracked
+
+
+def select(checks: list[Check], changed: list[str] | None) -> list[tuple[Check, str | None]]:
+    """Pair each check with the reason to skip it, None to run; `changed=None` runs all."""
+    chosen: list[tuple[Check, str | None]] = []
+    for c in checks:
+        hit = changed is None or not c.triggers or any(
+            path.startswith(c.triggers) for path in changed)
+        chosen.append((c, None if hit else f"дифф не трогает {', '.join(c.triggers)}"))
+    return chosen
+
+
+def execute(c: Check, root: Path) -> tuple[bool, str]:
+    cwd = root / c.cwd
+    if c.needs and not (cwd / c.needs).is_dir():
+        return False, f"нет {Path(c.cwd, c.needs).as_posix()}: `{c.hint}`"
+    output = []
+    for command in c.commands:
+        if shutil.which(command[0]) is None:
+            return False, f"нет {command[0]} в PATH"
+        done = subprocess.run(command, cwd=cwd, capture_output=True, text=True)
+        output.append(done.stdout + done.stderr)
+        if done.returncode:
+            return False, "".join(output)
+    return True, ""
+
+
+def timed(c: Check, root: Path) -> tuple[bool, str, float]:
+    start = time.monotonic()
+    passed, output = execute(c, root)
+    return passed, output, time.monotonic() - start
+
+
+def run(chosen: list[tuple[Check, str | None]], root: Path) -> int:
+    """Run the selected checks in parallel, print the report, return the exit code."""
+    to_run = [c for c, why in chosen if why is None]
+    with ThreadPoolExecutor(max_workers=len(to_run) or 1) as pool:
+        results = dict(zip([c.name for c in to_run], pool.map(lambda c: timed(c, root), to_run),
+                           strict=True))
+    width = max(len(c.name) for c, _ in chosen)
+    failed = []
+    for c, why in chosen:
+        if why is not None:
+            print(f"skip {c.name:<{width}}  {why}")
+            continue
+        passed, output, seconds = results[c.name]
+        print(f"{'ok  ' if passed else 'FAIL'} {c.name:<{width}}  {seconds:.1f}s")
+        if not passed:
+            failed.append((c.name, output))
+    for name, output in failed:
+        print(f"\n--- {name} ---\n{output.rstrip()}")
+    return 1 if failed else 0
+
+
+def main(argv: list[str], stdin: TextIO, root: Path, checks: list[Check]) -> int:
+    if "--pre-push" in argv:
+        pushed = [line.split() for line in stdin if line.strip()]
+        if all(len(ref) > 1 and ref[1] == ZERO_SHA for ref in pushed):
+            return 0  # only branch deletions: nothing to check
+        if git(root, "status", "--porcelain", "--untracked-files=no").stdout.strip():
+            # Checks run on the working tree: an uncommitted fix would pass what is pushed red.
+            print("push отклонён: в дереве незакоммиченные правки — закоммитьте или уберите их")
+            return 1
+    changed = None if "--all" in argv else changed_files(root)
+    return run(select(checks, changed), root)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:], sys.stdin, ROOT, CHECKS))
