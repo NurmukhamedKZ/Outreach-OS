@@ -105,7 +105,7 @@ def up(webpack: bool) -> int:
         STATE.unlink(missing_ok=True)
         if not isinstance(error, NotReady):
             raise
-        _explain(error, webpack)
+        _explain(error)
         return 1
     _print(state)
     return 0
@@ -220,15 +220,21 @@ def _wait(name: str, process: subprocess.Popen[bytes], url: str, deadline: float
         time.sleep(0.5)
 
 
-def _explain(error: NotReady, webpack: bool) -> None:
+# Google Fonts answered with a /l/font?kit=…&skey=… address, which Turbopack's
+# next/font cannot take, and keeps the answer in its cache (docs/agents/bugs.md, #24, #63).
+GOOGLE_FONT_FAILURE = "next/font/google queries have exactly one entry"
+
+
+def _explain(error: NotReady) -> None:
     log = STAND / f"{error.name}.log"
-    tail = log.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
+    text = log.read_text(encoding="utf-8", errors="replace")
     print(f"stand: {error}; both processes are stopped", file=sys.stderr)
     print(f"--- the end of {log}", file=sys.stderr)
-    print("\n".join(tail), file=sys.stderr)
-    if error.name == "frontend" and not webpack:
+    print("\n".join(text.splitlines()[-40:]), file=sys.stderr)
+    if GOOGLE_FONT_FAILURE in text:
         print(
-            "--- next/font under Turbopack (docs/agents/bugs.md, #24)? Try: scripts/stand up --webpack",
+            "--- Turbopack and Google Fonts (docs/agents/bugs.md, #24): the failure stays in"
+            " its cache. Run: rm -rf frontend/.next && scripts/stand up --webpack",
             file=sys.stderr,
         )
 
