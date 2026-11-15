@@ -109,6 +109,11 @@ def test_real_table_builds_frontend_before_tsc_and_only_on_its_diff():
     front = by_name.pop("frontend")
     assert front.triggers == FRONT_TRIGGER and front.needs == "node_modules"
     assert [cmd[:2] for cmd in front.commands] == [["npm", "run"], ["npx", "tsc"]]
+    node = by_name.pop("node")
+    assert (node.cwd, node.commands, node.triggers) == (
+        "backend/sender/node", [["npm", "test"]], ("backend/sender/node/",))
+    # server.js imports no package: the tests run without npm ci.
+    assert not node.needs
     assert set(by_name) == {"ruff", "mypy", "lint-imports", "pytest"}
     assert all(not c.triggers for c in by_name.values())
 

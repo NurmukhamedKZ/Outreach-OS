@@ -1,0 +1,110 @@
+{
+  "about": "The contract of Node with Python (core/whatsapp.py), checked against server.js (test/contract.test.js), the sandbox's fake Node (backend/sandbox/tests/test_node.py) and the webhook (backend/delivery/tests/test_api.py). A case: the socket of `number` is `given` (connected | loggedOut | socketDown), the request is made, `status` must match, every field of `body` must equal what Python reads (a missing field reads as null, fields not listed are not compared), every field in `strings` must be a non-empty string. `events` are the webhook payloads exactly as Node sends them.",
+  "number": "+77000000001",
+  "cases": [
+    {
+      "name": "send on a connected socket is sent with a provider id",
+      "given": "connected",
+      "request": {"method": "POST", "path": "/send", "body": {"number": "+77000000001", "to": "+77010000001", "text": "привет", "type": "text", "key": "outbox-1"}},
+      "status": 200,
+      "body": {"sent": true},
+      "strings": ["provider_id"]
+    },
+    {
+      "name": "send on a logged out session is an honest not sent",
+      "given": "loggedOut",
+      "request": {"method": "POST", "path": "/send", "body": {"number": "+77000000001", "to": "+77010000001", "text": "привет", "type": "text", "key": "outbox-1"}},
+      "status": 200,
+      "body": {"sent": false, "provider_id": null},
+      "strings": ["error"]
+    },
+    {
+      "name": "send on a socket that is down is an honest not sent",
+      "given": "socketDown",
+      "request": {"method": "POST", "path": "/send", "body": {"number": "+77000000001", "to": "+77010000001", "text": "привет", "type": "text", "key": "outbox-1"}},
+      "status": 200,
+      "body": {"sent": false, "provider_id": null},
+      "strings": ["error"]
+    },
+    {
+      "name": "send from a number out of canonical form is refused",
+      "given": "connected",
+      "request": {"method": "POST", "path": "/send", "body": {"number": "../x", "to": "+77010000001", "text": "привет", "type": "text", "key": "outbox-1"}},
+      "status": 422,
+      "body": {"code": "numberInvalid"},
+      "strings": ["error"]
+    },
+    {
+      "name": "check on a connected socket answers whether the lead has WhatsApp",
+      "given": "connected",
+      "request": {"method": "POST", "path": "/check", "body": {"number": "+77000000001", "to": "+77010000001"}},
+      "status": 200,
+      "body": {"has_whatsapp": true}
+    },
+    {
+      "name": "check on a logged out session is refused with its code",
+      "given": "loggedOut",
+      "request": {"method": "POST", "path": "/check", "body": {"number": "+77000000001", "to": "+77010000001"}},
+      "status": 409,
+      "body": {"code": "sessionLoggedOut"},
+      "strings": ["error"]
+    },
+    {
+      "name": "check from a number out of canonical form is refused",
+      "given": "connected",
+      "request": {"method": "POST", "path": "/check", "body": {"number": "77000000001", "to": "+77010000001"}},
+      "status": 422,
+      "body": {"code": "numberInvalid"},
+      "strings": ["error"]
+    },
+    {
+      "name": "pair on a logged out session gives a code of a fresh one",
+      "given": "loggedOut",
+      "request": {"method": "POST", "path": "/pair", "body": {"number": "+77000000001"}},
+      "status": 200,
+      "strings": ["code"]
+    },
+    {
+      "name": "pair for a number out of canonical form is refused",
+      "given": "connected",
+      "request": {"method": "POST", "path": "/pair", "body": {"number": "+7 700 000 00 01"}},
+      "status": 422,
+      "body": {"code": "numberInvalid"},
+      "strings": ["error"]
+    },
+    {
+      "name": "qr on a logged out session gives a QR of a fresh one",
+      "given": "loggedOut",
+      "request": {"method": "POST", "path": "/qr", "body": {"number": "+77000000001"}},
+      "status": 200,
+      "strings": ["qr"]
+    },
+    {
+      "name": "qr for a number out of canonical form is refused",
+      "given": "connected",
+      "request": {"method": "POST", "path": "/qr", "body": {"number": "../x"}},
+      "status": 422,
+      "body": {"code": "numberInvalid"},
+      "strings": ["error"]
+    },
+    {
+      "name": "health reports a connected socket",
+      "given": "connected",
+      "request": {"method": "GET", "path": "/health"},
+      "status": 200,
+      "body": {"+77000000001": {"state": "connected", "reconnects": 0}}
+    },
+    {
+      "name": "health reports a logged out session",
+      "given": "loggedOut",
+      "request": {"method": "GET", "path": "/health"},
+      "status": 200,
+      "body": {"+77000000001": {"state": "loggedOut", "reconnects": 0}}
+    }
+  ],
+  "events": {
+    "connection": {"kind": "connection", "number": "+77000000001", "state": "connected"},
+    "incoming": {"kind": "incoming", "number": "+77000000001", "from": "77010000001@s.whatsapp.net", "provider_id": "3EB0INCOMING", "text": "сколько это стоит?"},
+    "status": {"kind": "status", "number": "+77000000001", "provider_id": "3EB0SENT", "status": 3}
+  }
+}

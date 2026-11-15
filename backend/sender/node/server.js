@@ -1,0 +1,318 @@
+// Тупая труба к WhatsApp: сокеты Baileys и пять ручек. Здесь нет ни лидов,
+// ни тредов, ни лимитов, ни расписания — всё это решает Python.
+//
+// createServer builds the server without listening and without importing a package:
+// Baileys, pino, qrcode and fetch come as `deps`, so test/ runs it on fakes and
+// index.js, the entry point, on the real ones.
+
+import fs from "node:fs/promises";
+import http from "node:http";
+import path from "node:path";
+
+const WEBHOOK_RETRY_MS = 5000;
+const WEBHOOK_LOG_INTERVAL_MS = 60000;
+const WEBHOOK_MAX_ATTEMPTS = 12;      // ~час с учётом backoff, потом событие теряется
+const RECONNECT_BASE_MS = 5000;
+const RECONNECT_MAX_MS = 300000;      // пять минут между попытками — потолок
+const RECONNECT_MAX_ATTEMPTS = 12;    // дальше молчим: связь чинит человек
+const QR_WAIT_MS = 15000;             // первый QR приходит за пару секунд
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+// Ошибка ручки с кодом: Python ветвится по `code`, а не по тексту. Отвязанная
+// сессия — 409 sessionLoggedOut, а не 500: её чинит новая привязка, а не повтор.
+class RouteError extends Error {
+  constructor(status, code, message) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+// Счётчик реконнектов суточный, а не за всё время работы процесса: Python
+// сравнивает его с health.reconnects_per_day_alert, и накопительный счётчик
+// отправил бы в карантин весь пул за один длинный аптайм.
+function countReconnect(entry) {
+  const day = today();
+  return entry.day === day
+    ? { day, reconnects: entry.reconnects + 1 }
+    : { day, reconnects: 1 };
+}
+
+const jid = (number) => `${number.replace(/\D/g, "")}@s.whatsapp.net`;
+
+export function createServer({
+  makeSocket,     // makeWASocket of Baileys
+  authState,      // useMultiFileAuthState of Baileys: directory -> {state, saveCreds}
+  loggedOutCode,  // DisconnectReason.loggedOut of Baileys
+  toDataURL,      // QRCode.toDataURL
+  fetch,
+  log,            // pino
+  sessions,       // the directory of session directories
+  pythonUrl,
+  webhookSecret,
+}) {
+  // number -> {sock, state, reconnects, day, attempts, qr}
+  const sockets = new Map();
+  // key идемпотентности -> provider_id уже отправленного сообщения
+  const sentKeys = new Map();
+  let lastWebhookLog = 0;
+
+  const loggedOut = (number) => sockets.get(number)?.state === "loggedOut";
+
+  async function connect(number) {
+    const { state, saveCreds } = await authState(path.join(sessions, number));
+    const sock = makeSocket({ auth: state, logger: log.child({ number }) });
+    const entry = sockets.get(number) ?? { reconnects: 0, day: today(), attempts: 0 };
+    sockets.set(number, { ...entry, sock, state: "connecting" });
+
+    sock.ev.on("creds.update", saveCreds);
+
+    sock.ev.on("connection.update", async (update) => {
+      // Сокет, который уже заменили новым (отложенная сессия), молчит: его close
+      // иначе перезаписал бы состояние нового сокета и запустил бы реконнект.
+      if (sockets.get(number)?.sock !== sock) return;
+      const current = sockets.get(number);
+      // QR-логин и pairing-code — два взаимоисключающих способа привязать один
+      // и тот же неавторизованный сокет: Baileys шлёт `qr`, пока ничей код не
+      // запрошен, поэтому кадр просто копится в записи номера, а /qr его читает.
+      if (update.qr) {
+        sockets.set(number, { ...sockets.get(number), qr: await toDataURL(update.qr) });
+      }
+      if (update.connection === "open") {
+        sockets.set(number, { ...sockets.get(number), state: "connected", attempts: 0, qr: null });
+      }
+      if (update.connection === "close") {
+        const code = update.lastDisconnect?.error?.output?.statusCode;
+        const loggedOut = code === loggedOutCode;
+        // loggedOut не переподключается: сессия мертва, номер требует телефона.
+        if (loggedOut) {
+          sockets.set(number, { ...sockets.get(number), state: "loggedOut", qr: null });
+        } else {
+          const attempts = current.attempts + 1;
+          const exhausted = attempts > RECONNECT_MAX_ATTEMPTS;
+          sockets.set(number, {
+            ...sockets.get(number),
+            ...countReconnect(current),
+            state: exhausted ? "stalled" : "reconnecting",
+            attempts,
+            qr: null,
+          });
+          // Экспоненциальный backoff с потолком и капом попыток. Плоские пять
+          // секунд давали бы ~17k подключений в сутки с одного адреса на номер,
+          // которому не ввели pairing code, — само по себе повод для бана.
+          if (exhausted) {
+            log.error({ number, attempts }, "сокет не поднимается, дальше — руками");
+          } else {
+            const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempts - 1), RECONNECT_MAX_MS);
+            setTimeout(() => connect(number), delay);
+          }
+        }
+      }
+      await notify({ kind: "connection", number, state: sockets.get(number).state });
+    });
+
+    sock.ev.on("messages.upsert", async ({ messages, type }) => {
+      if (type !== "notify") return;
+      for (const message of messages) {
+        if (message.key.fromMe) continue;
+        await notify({
+          kind: "incoming",
+          number,
+          from: message.key.remoteJid,
+          provider_id: message.key.id,
+          text: message.message?.conversation
+            ?? message.message?.extendedTextMessage?.text
+            ?? "",
+        });
+      }
+    });
+
+    sock.ev.on("messages.update", async (updates) => {
+      for (const update of updates) {
+        await notify({
+          kind: "status",
+          number,
+          provider_id: update.key.id,
+          status: update.update?.status ?? null,
+        });
+      }
+    });
+
+    return sock;
+  }
+
+  // Вебхук повторяется, пока Python не ответит 2xx: событие, потерянное
+  // из-за перезапуска бэкенда, — это номер, навсегда оставшийся без метрики.
+  // Лог — один раз в минуту, а не на каждый несостоявшийся повтор: до того,
+  // как в Python приедет ручка /api/sender/webhook, каждый повтор падал бы
+  // 404-строкой и утопил бы реальные события.
+  async function notify(payload, attempt = 1) {
+    try {
+      const response = await fetch(`${pythonUrl}/api/sender/webhook`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(webhookSecret ? { "x-sender-secret": webhookSecret } : {}),
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      const now = Date.now();
+      if (now - lastWebhookLog > WEBHOOK_LOG_INTERVAL_MS) {
+        log.warn({ error: String(error), kind: payload.kind }, "вебхук не доставлен, повтор");
+        lastWebhookLog = now;
+      }
+      if (attempt >= WEBHOOK_MAX_ATTEMPTS) {
+        log.error({ kind: payload.kind }, "вебхук так и не доставлен, событие потеряно");
+        return;
+      }
+      const delay = Math.min(WEBHOOK_RETRY_MS * 2 ** (attempt - 1), RECONNECT_MAX_MS);
+      setTimeout(() => notify(payload, attempt + 1), delay);
+    }
+  }
+
+  async function socketOf(number) {
+    if (!sockets.get(number)?.sock) await connect(number);
+    return sockets.get(number).sock;
+  }
+
+  // WhatsApp отвязал сессию (loggedOut): по старым ключам Baileys больше не войдёт,
+  // и QR на мёртвом сокете не придёт никогда. Каталог сессии откладывается, а не
+  // удаляется — это невосстановимый слой, — и открывается новый неавторизованный
+  // сокет, который и выдаст QR или код привязки.
+  // Двойной клик по QR не должен открыть два сокета на один номер: замена сессии
+  // идёт под замком номера, второй запрос ждёт первый.
+  const replacing = new Map();
+
+  function freshSession(number) {
+    if (!replacing.has(number)) {
+      replacing.set(
+        number,
+        replaceSession(number).finally(() => replacing.delete(number)),
+      );
+    }
+    return replacing.get(number);
+  }
+
+  async function replaceSession(number) {
+    if (!loggedOut(number)) return;
+    const { sock } = sockets.get(number);
+    sockets.delete(number);
+    try {
+      sock.end(undefined);
+    } catch {
+      // мёртвый сокет закрывать нечего
+    }
+    const dir = path.join(sessions, number);
+    const aside = `${dir}.bak.${Math.floor(Date.now() / 1000)}`;
+    try {
+      await fs.rename(dir, aside);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    log.warn({ number, aside: path.basename(aside) }, "отвязанная сессия отложена, новый сокет");
+    await connect(number);
+  }
+
+  async function waitForQr(number) {
+    const start = Date.now();
+    while (Date.now() - start < QR_WAIT_MS) {
+      const qr = sockets.get(number)?.qr;
+      if (qr) return qr;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
+    return null;
+  }
+
+  const routes = {
+    // type=text — единственный вид боевой отправки; audio/image нужны прогреву,
+    // которому требуется разнообразный контент. Медиа приезжает как путь к файлу
+    // внутри node/media/, потому что Python не должен гонять байты через ручку.
+    "POST /send": async ({ number, to, text, type = "text", key }) => {
+      // Ключ идемпотентности: повтор с тем же key не отправляет второе сообщение,
+      // а возвращает id первого. Дубликат в холодном аутриче — прямой повод
+      // нажать Report, и защита от него не может жить только на стороне Python.
+      if (key && sentKeys.has(key)) {
+        log.info({ number, key }, "повтор по ключу, второй отправки нет");
+        return { ok: true, sent: true, provider_id: sentKeys.get(key) };
+      }
+      // Отвязанная сессия: фрейм точно не уйдёт — честное sent:false, а не 500.
+      if (loggedOut(number)) return { ok: false, sent: false, error: "loggedOut" };
+      const sock = await socketOf(number);
+      const content = {
+        text: { text },
+        image: { image: { url: text }, caption: "" },
+        audio: { audio: { url: text }, ptt: true },
+      }[type];
+      if (!content) return { ok: false, sent: false, error: `unknown type ${type}` };
+      try {
+        const sent = await sock.sendMessage(jid(to), content);
+        if (key) sentKeys.set(key, sent.key.id);
+        log.info({ number, key }, "отправлено");
+        return { ok: true, sent: true, provider_id: sent.key.id };
+      } catch (error) {
+        // sent:false — обещание «фрейм в сокет не ушёл», на нём Python строит
+        // безопасный ретрай. Дать его можно, только когда сокет и не был поднят;
+        // ошибка на живом сокете (например, таймаут подтверждения) означает
+        // «неизвестно», и это 500 -> TransportError -> разбирается человеком.
+        if (sockets.get(number)?.state !== "connected") {
+          return { ok: false, sent: false, error: String(error) };
+        }
+        throw error;
+      }
+    },
+    "POST /check": async ({ number, to }) => {
+      if (loggedOut(number)) throw new RouteError(409, "sessionLoggedOut", "сессия отвязана");
+      const sock = await socketOf(number);
+      const [found] = await sock.onWhatsApp(jid(to));
+      return { has_whatsapp: Boolean(found?.exists) };
+    },
+    "POST /pair": async ({ number }) => {
+      await freshSession(number);
+      const sock = await socketOf(number);
+      return { code: await sock.requestPairingCode(number.replace(/\D/g, "")) };
+    },
+    "POST /qr": async ({ number }) => {
+      await freshSession(number);
+      await socketOf(number);
+      const qr = await waitForQr(number);
+      if (!qr) throw new RouteError(504, "qrTimeout", "QR не пришёл вовремя");
+      return { qr };
+    },
+  };
+
+  function healthReport() {
+    const report = {};
+    for (const [number, entry] of sockets) {
+      report[number] = { state: entry.state, reconnects: entry.reconnects };
+    }
+    return report;
+  }
+
+  return http.createServer(async (request, response) => {
+    const route = `${request.method} ${request.url}`;
+    const reply = (code, body) => {
+      response.writeHead(code, { "content-type": "application/json" });
+      response.end(JSON.stringify(body));
+    };
+    if (route === "GET /health") return reply(200, healthReport());
+    const handler = routes[route];
+    if (!handler) return reply(404, { error: "no such route" });
+    try {
+      const chunks = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+      // Номер строит путь к каталогу сессии: Python присылает только канонический,
+      // а прямой вызов Node не должен выйти из sessions/.
+      if (body.number !== undefined && !/^\+\d{10,15}$/.test(body.number)) {
+        throw new RouteError(422, "numberInvalid", "номер не в канонической форме");
+      }
+      reply(200, await handler(body));
+    } catch (error) {
+      log.error({ error: String(error), route }, "ручка упала");
+      reply(error.status ?? 500, { code: error.code ?? "nodeError", error: String(error.message ?? error) });
+    }
+  });
+}

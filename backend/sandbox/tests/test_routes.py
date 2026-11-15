@@ -24,6 +24,7 @@ from core import db as core_db
 from core.model import FakeModel
 from delivery.schemas import DeliverySettings, Window
 from sandbox import faults, node, routes, runs
+from sandbox.tests.test_node import CONTRACT
 
 MOMENT = datetime(2026, 9, 3, 9, 0, tzinfo=UTC)
 LEADS = ("c_romashka", "c_one", "c_two")
@@ -145,6 +146,7 @@ def test_incoming_goes_through_the_real_webhook(client, sent):
     assert sent[-1]["from"] == "77010000001@s.whatsapp.net"
     assert sent[-1]["text"] == "сколько стоит?"
     assert sent[-1]["provider_id"]
+    assert set(sent[-1]) == set(CONTRACT["events"]["incoming"])
 
 
 def test_incoming_that_misses_the_process_blames_the_self_address(client, monkeypatch):
