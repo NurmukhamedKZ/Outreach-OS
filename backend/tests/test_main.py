@@ -1,13 +1,17 @@
 """The assembler: the start, the shared error format, and no job queue or SSE left."""
 
+import runpy
 import sqlite3
 from contextlib import closing
+from pathlib import Path
 
 import pytest
+import uvicorn
 from fastapi.testclient import TestClient
 
 import main
 import paths
+from config import Settings, settings
 from core.errors import DomainError
 from sandbox import runs
 
@@ -74,3 +78,21 @@ def test_domain_errors_reach_the_client_as_code_and_detail():
 @pytest.mark.parametrize("path", ["/api/events", "/api/jobs", "/api/pipeline"])
 def test_the_job_queue_and_its_stream_are_gone(path):
     assert TestClient(main.app).get(path).status_code == 404
+
+
+def test_the_port_is_a_setting_and_8787_by_default(monkeypatch):
+    monkeypatch.delenv("UVICORN_PORT", raising=False)
+    assert Settings(_env_file=None).uvicorn_port == 8787
+    monkeypatch.setenv("UVICORN_PORT", "9123")
+    assert Settings(_env_file=None).uvicorn_port == 9123
+
+
+def test_the_entry_point_listens_on_the_port_setting(monkeypatch):
+    """#51: a stand runs `python main.py` on a free port; a hardcoded one would collide."""
+    served = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app, **where: served.update(where))
+    monkeypatch.setattr(settings, "uvicorn_port", 9123)
+    # The entry point mounts the sandbox from the developer's .env: not here.
+    monkeypatch.setattr(settings, "sandbox", False)
+    runpy.run_path(str(Path(main.__file__)), run_name="__main__")
+    assert served == {"host": settings.uvicorn_host, "port": 9123}

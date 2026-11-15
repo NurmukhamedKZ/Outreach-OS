@@ -25,27 +25,32 @@ def mount(app: FastAPI, settings: Settings) -> None:
 
     Not "if the flag, do not work" but "without the flag there are no routes":
     impossibility, not discipline. Before the routers, every address the sandbox
-    talks to must lead to this machine: the transport setting, the client the
-    delivery daemons get from `app.state.whatsapp` (so set it before the call),
-    and the self address the fake Node posts its webhook and secret to.
+    talks to must lead to this very backend, its host and its port: the
+    transport setting, the client the delivery daemons get from
+    `app.state.whatsapp` (so set it before the call), and the self address the
+    fake Node posts its webhook and secret to. Another port on this machine is
+    another backend: the live Node, or another stand with its own database.
 
     Raises:
         SandboxMisconfigured: the sandbox is on and an address leads elsewhere.
     """
     if not settings.sandbox:
         return
+    port = settings.uvicorn_port
     transport = getattr(app.state, "whatsapp", None)
     node_urls = [settings.sender_node_url, _url_of(transport)]
-    if not all(_is_local(url, SANDBOX_NODE_PATH) for url in node_urls):
+    if not all(_is_ours(url, port, SANDBOX_NODE_PATH) for url in node_urls):
         raise SandboxMisconfigured(
-            f"SANDBOX=1, but the transport leads to {node_urls}, not to the fake Node:"
-            " messages would reach real people. Set SENDER_NODE_URL to"
-            f" http://127.0.0.1:8787{SANDBOX_NODE_PATH} or turn the sandbox off."
+            f"SANDBOX=1, but the transport leads to {node_urls}, not to this backend's"
+            " fake Node: messages would reach real people. Set SENDER_NODE_URL to"
+            f" http://127.0.0.1:{port}{SANDBOX_NODE_PATH} (UVICORN_PORT={port})"
+            " or turn the sandbox off."
         )
-    if not _is_local(settings.sandbox_self_url, ""):
+    if not _is_ours(settings.sandbox_self_url, port, ""):
         raise SandboxMisconfigured(
             f"SANDBOX=1, but SANDBOX_SELF_URL={settings.sandbox_self_url} is not this"
-            " machine: the fake Node would post the webhook secret there."
+            f" backend (http://127.0.0.1:{port}, UVICORN_PORT={port}): the fake Node would"
+            " post the webhook secret there."
         )
     # Imported here so that without the flag not even the routes' modules load.
     from sandbox import node, routes, runs
@@ -63,6 +68,11 @@ def _url_of(transport: object) -> str:
     return transport.base_url if isinstance(transport, NodeWhatsApp) else ""
 
 
-def _is_local(url: str, path: str) -> bool:
+def _is_ours(url: str, port: int, path: str) -> bool:
+    """Return True when `url` is exactly `path` on this machine's `port`; a URL without one never is."""
     parts = urlsplit(url)
-    return parts.hostname in LOOPBACK and parts.path.rstrip("/") == path
+    try:
+        url_port = parts.port
+    except ValueError:  # not a number or out of range
+        return False
+    return parts.hostname in LOOPBACK and url_port == port and parts.path.rstrip("/") == path

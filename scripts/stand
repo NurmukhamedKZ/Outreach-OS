@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""The stand: this worktree's backend and dashboard on free ports, in the sandbox, with its own data.
+
+    scripts/stand up [--webpack]   start both in the background, wait until they answer, print where
+    scripts/stand status           print where; exit 1 when the stand is not up
+    scripts/stand down             stop both; the data stays in .stand/data (rm -rf .stand wipes it)
+
+The backend gets no live Node, no Telegram and no backup, and its data directory
+is .stand/data: nothing outside .stand/ is written. Stdlib only: it runs before
+`uv sync`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+STAND = ROOT / ".stand"
+STATE = STAND / "stand.json"
+HOST = "127.0.0.1"
+READY_SECONDS = 120
+STOP_SECONDS = 10
+# Its parent is a device file, so the folder can never be created: the backup reads as disabled.
+NO_BACKUP = "/dev/null/backup"
+# No http_proxy for the stand's own addresses.
+_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+class NotReady(Exception):
+    """A stand's process exited or did not answer 200 in time."""
+
+    def __init__(self, name: str, reason: str) -> None:
+        super().__init__(f"{name}: {reason}")
+        self.name = name
+
+
+def backend_env(root: Path, port: int) -> dict[str, str]:
+    """Return the variables the stand's backend runs with, over the caller's environment.
+
+    Variables beat backend/.env, so a worktree's production .env cannot point the
+    stand at the live Node, the operator's Telegram or iCloud Drive.
+    """
+    url = f"http://{HOST}:{port}"
+    return {
+        "UVICORN_HOST": HOST,
+        "UVICORN_PORT": str(port),
+        "DATA_DIR": str(root / ".stand" / "data"),
+        "SANDBOX": "1",
+        "SENDER_NODE_URL": f"{url}/api/sandbox/node",
+        "SANDBOX_SELF_URL": url,
+        "BACKUP_DIR": NO_BACKUP,
+        "TELEGRAM_BOT_TOKEN": "",
+        "TELEGRAM_CHAT_ID": "",
+    }
+
+
+def owns(cwds: str, root: Path) -> bool:
+    """Return True when a process in `lsof -d cwd -Fn` output works in `root`'s backend or frontend.
+
+    The working directory, not the command line: next-server renames itself and
+    outlives a killed `next dev`. A pgid from a stale state file (after a reboot)
+    may be someone else's group now, and then it is not ours to kill.
+    """
+    ours = {f"n{root / 'backend'}", f"n{root / 'frontend'}"}
+    return any(line in ours for line in cwds.splitlines())
+
+
+def up(webpack: bool) -> int:
+    state = _read()
+    if state is not None:
+        if all(_alive(entry["pgid"]) for entry in state.values()):
+            if webpack:
+                print("stand: already up; --webpack applies after scripts/stand down", file=sys.stderr)
+            _print(state)
+            return 0
+        _stop(state)  # what a crashed stand left half-running
+    _install()
+    (STAND / "data").mkdir(parents=True, exist_ok=True)
+    backend_port, frontend_port = _free_ports(2)
+    state = {}
+    processes = {}
+    try:
+        for name, port, command, env in _commands(backend_port, frontend_port, webpack):
+            processes[name] = _start(name, command, env)
+            # pid is the group's id: start_new_session. Written at once, so an `up`
+            # killed from here on leaves its groups to `down`.
+            state[name] = {"pgid": processes[name].pid, "port": port}
+            _write(state)
+        deadline = time.monotonic() + READY_SECONDS
+        _wait("backend", processes["backend"], f"http://{HOST}:{backend_port}/api/stats", deadline)
+        _wait("frontend", processes["frontend"], f"http://{HOST}:{frontend_port}/", deadline)
+    except BaseException as error:  # Ctrl-C included: nothing is left running
+        _stop(state)
+        STATE.unlink(missing_ok=True)
+        if not isinstance(error, NotReady):
+            raise
+        _explain(error)
+        return 1
+    _print(state)
+    return 0
+
+
+def status() -> int:
+    state = _read()
+    if state is None:
+        print("the stand is not up")
+        return 1
+    _print(state)
+    alive = {name: _alive(entry["pgid"]) for name, entry in state.items()}
+    for name, running in alive.items():
+        print(f"{name:<10} {'running' if running else 'NOT RUNNING'}")
+    return 0 if all(alive.values()) else 1
+
+
+def down() -> int:
+    state = _read()
+    if state is not None:
+        _stop(state)
+        STATE.unlink(missing_ok=True)
+    print(f"the stand is down; its data stays in {STAND / 'data'}")
+    return 0
+
+
+def _read() -> dict[str, dict[str, int]] | None:
+    return json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else None
+
+
+def _write(state: dict[str, dict[str, int]]) -> None:
+    """Replace the state file whole: a torn one would lock `down` out of the stand."""
+    draft = STATE.with_suffix(".tmp")
+    draft.write_text(json.dumps(state), encoding="utf-8")
+    draft.replace(STATE)
+
+
+def _install() -> None:
+    """Install what the worktree lacks; `uv sync` is a no-op when nothing changed."""
+    subprocess.run(["uv", "sync"], cwd=ROOT / "backend", check=True)
+    if not (ROOT / "frontend" / "node_modules").is_dir():
+        subprocess.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=ROOT / "frontend", check=True)
+
+
+def _commands(
+    backend_port: int, frontend_port: int, webpack: bool
+) -> list[tuple[str, int, list[str], dict[str, str]]]:
+    """Return what to start: the name (also its folder and log), port, command and variables."""
+    backend = ["uv", "run", "python", str(ROOT / "backend" / "main.py")]
+    # Without --hostname next dev listens on every interface, and the dashboard has no login.
+    frontend = [str(ROOT / "frontend" / "node_modules" / ".bin" / "next"), "dev"]
+    frontend += ["--hostname", HOST, "--port", str(frontend_port)]
+    if webpack:
+        frontend.append("--webpack")
+    return [
+        ("backend", backend_port, backend, {**backend_env(ROOT, backend_port), "PYTHONUNBUFFERED": "1"}),
+        ("frontend", frontend_port, frontend, {"API_ORIGIN": f"http://{HOST}:{backend_port}"}),
+    ]
+
+
+def _print(state: dict[str, dict[str, int]]) -> None:
+    print(f"dashboard  http://{HOST}:{state['frontend']['port']}")
+    print(f"api        http://{HOST}:{state['backend']['port']}")
+    print(f"data       {STAND / 'data'}")
+    print(f"logs       {STAND / 'backend.log'}")
+    print(f"           {STAND / 'frontend.log'}")
+
+
+def _free_ports(count: int) -> list[int]:
+    """Return ports free right now; bound together, so they differ."""
+    sockets = [socket.socket() for _ in range(count)]
+    try:
+        for each in sockets:
+            each.bind((HOST, 0))
+        return [each.getsockname()[1] for each in sockets]
+    finally:
+        for each in sockets:
+            each.close()
+
+
+def _start(name: str, command: list[str], env: dict[str, str]) -> subprocess.Popen[bytes]:
+    """Start `command` in a process group of its own, its output into .stand/<name>.log."""
+    with (STAND / f"{name}.log").open("wb") as log:
+        return subprocess.Popen(
+            command,
+            cwd=ROOT / name,
+            env={**os.environ, **env},
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+
+def _wait(name: str, process: subprocess.Popen[bytes], url: str, deadline: float) -> None:
+    """Return once `url` answers 200; an exit or any other answer fails at once."""
+    while True:
+        if process.poll() is not None:
+            raise NotReady(name, f"exited with code {process.returncode}")
+        try:
+            with _HTTP.open(url, timeout=30) as response:
+                if response.status == 200:
+                    return
+                raise NotReady(name, f"{url} answered {response.status}")
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise NotReady(name, f"{url} answered {error.code}") from None
+        except OSError:
+            pass  # not listening yet
+        if time.monotonic() > deadline:
+            raise NotReady(name, f"{url} did not answer in {READY_SECONDS} s")
+        time.sleep(0.5)
+
+
+# Google Fonts answered with a /l/font?kit=…&skey=… address, which Turbopack's
+# next/font cannot take, and keeps the answer in its cache (docs/agents/bugs.md, #24, #63).
+GOOGLE_FONT_FAILURE = "next/font/google queries have exactly one entry"
+
+
+def _explain(error: NotReady) -> None:
+    log = STAND / f"{error.name}.log"
+    text = log.read_text(encoding="utf-8", errors="replace")
+    print(f"stand: {error}; both processes are stopped", file=sys.stderr)
+    print(f"--- the end of {log}", file=sys.stderr)
+    print("\n".join(text.splitlines()[-40:]), file=sys.stderr)
+    if GOOGLE_FONT_FAILURE in text:
+        print(
+            "--- Turbopack and Google Fonts (docs/agents/bugs.md, #24): the failure stays in"
+            " its cache. Run: rm -rf frontend/.next && scripts/stand up --webpack",
+            file=sys.stderr,
+        )
+
+
+def _alive(pgid: int) -> bool:
+    # lsof exits 1 when no process of the group is left: an answer, not a failure.
+    cwds = subprocess.run(
+        ["lsof", "-a", "-g", str(pgid), "-d", "cwd", "-Fn"], capture_output=True, text=True
+    ).stdout
+    return owns(cwds, ROOT)
+
+
+def _stop(state: dict[str, dict[str, int]]) -> None:
+    """Stop the stand's process groups: SIGTERM, then SIGKILL for what outlives STOP_SECONDS."""
+    groups = [entry["pgid"] for entry in state.values() if _alive(entry["pgid"])]
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for group in groups:
+            try:
+                os.killpg(group, sig)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + STOP_SECONDS
+        while groups and time.monotonic() < deadline:
+            time.sleep(0.2)
+            groups = [group for group in groups if _alive(group)]
+        if not groups:
+            return
+    raise SystemExit(f"stand: process groups {groups} outlived SIGKILL")
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="scripts/stand", description=__doc__.splitlines()[0])
+    commands = parser.add_subparsers(dest="command", required=True)
+    start = commands.add_parser("up", help="start the stand, or print where the running one is")
+    start.add_argument(
+        "--webpack", action="store_true", help="next dev without Turbopack (docs/agents/bugs.md, #24)"
+    )
+    commands.add_parser("status", help="print where the stand is; exit 1 when it is not up")
+    commands.add_parser("down", help="stop the stand; its data stays")
+    args = parser.parse_args(argv)
+    STAND.mkdir(exist_ok=True)
+    try:
+        with (STAND / "lock").open("w") as lock:
+            # One command at a time per worktree: a second `up` waits for the first
+            # instead of reading a stand that is not ready yet, or starting another.
+            # The children do not inherit the lock (Popen closes their descriptors).
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if args.command == "up":
+                return up(args.webpack)
+            return status() if args.command == "status" else down()
+    except subprocess.CalledProcessError as error:
+        print(f"stand: {' '.join(map(str, error.cmd))} failed with code {error.returncode}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

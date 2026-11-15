@@ -22,8 +22,12 @@ def sandbox_runs(tmp_path, monkeypatch):
     runs.deactivate()
 
 
-def _settings(sandbox_on: bool, node_url: str, self_url: str = "http://127.0.0.1:8787"):
-    return SimpleNamespace(sandbox=sandbox_on, sender_node_url=node_url, sandbox_self_url=self_url)
+def _settings(
+    sandbox_on: bool, node_url: str, self_url: str = "http://127.0.0.1:8787", port: int = 8787
+):
+    return SimpleNamespace(
+        sandbox=sandbox_on, sender_node_url=node_url, sandbox_self_url=self_url, uvicorn_port=port
+    )
 
 
 def _app(transport_url: str = SANDBOX_NODE) -> FastAPI:
@@ -75,6 +79,9 @@ def test_on_refuses_when_the_ticks_send_through_the_real_transport():
         "https://node.example.com/api/sandbox/node",
         "http://127.0.0.1:8788/?to=/api/sandbox/node",
         "http://127.0.0.1:8788/api/sandbox/node/send",
+        # No port is port 80, not this backend's.
+        "http://127.0.0.1/api/sandbox/node",
+        "http://127.0.0.1:notaport/api/sandbox/node",
     ],
 )
 def test_on_refuses_a_transport_that_only_mentions_the_sandbox_path(url):
@@ -115,4 +122,32 @@ def test_mount_points_the_backend_away_from_the_production_database():
 
 def test_mount_without_the_flag_leaves_the_production_database():
     sandbox.mount(FastAPI(), _settings(False, "http://127.0.0.1:8788"))
+    assert paths.state_db() == paths.PRODUCTION_STATE
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "[::1]"])
+def test_on_a_port_of_its_own_mounts(host):
+    """The stand runs the backend on a free port: its fake Node is on that port."""
+    node = f"http://{host}:9123/api/sandbox/node"
+    sandbox.mount(_app(node), _settings(True, node, f"http://{host}:9123", port=9123))
+    assert runs.active() is not None
+
+
+@pytest.mark.parametrize(
+    ("node_url", "transport_url", "self_url"),
+    [
+        (SANDBOX_NODE, "http://127.0.0.1:9123/api/sandbox/node", "http://127.0.0.1:9123"),
+        ("http://127.0.0.1:9123/api/sandbox/node", SANDBOX_NODE, "http://127.0.0.1:9123"),
+        (
+            "http://127.0.0.1:9123/api/sandbox/node",
+            "http://127.0.0.1:9123/api/sandbox/node",
+            "http://127.0.0.1:8787",
+        ),
+    ],
+)
+def test_on_refuses_another_backends_port(node_url, transport_url, self_url):
+    """Port 8787 is another stand's backend: its fake Node and its database would get our sends."""
+    with pytest.raises(sandbox.SandboxMisconfigured) as failure:
+        sandbox.mount(_app(transport_url), _settings(True, node_url, self_url, port=9123))
+    assert "UVICORN_PORT=9123" in str(failure.value), "the error names this backend's port"
     assert paths.state_db() == paths.PRODUCTION_STATE

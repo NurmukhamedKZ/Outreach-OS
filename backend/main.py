@@ -6,6 +6,9 @@ place where the systems see each other.
 Run from backend/:
   uv run python main.py
   uv run uvicorn main:app --port 8787 --reload
+
+The port is UVICORN_PORT (8787 by default): --port must match it, the sandbox
+checks its addresses against the setting.
 """
 
 import sys
@@ -104,4 +107,4 @@ sandbox.mount(app, settings)
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host=settings.uvicorn_host, port=8787)
+    uvicorn.run(app, host=settings.uvicorn_host, port=settings.uvicorn_port)
