@@ -5,6 +5,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 import paths
 from config import Settings, settings
 
@@ -53,7 +56,11 @@ def test_data_dir_moves_the_whole_data_layer_but_not_the_sessions(tmp_path):
     )
     env = {"PATH": "", "DATA_DIR": str(tmp_path / "data")}
     output = subprocess.run(
-        [sys.executable, "-c", probe], cwd=BACKEND, env=env, capture_output=True, text=True,
+        [sys.executable, "-c", probe],
+        cwd=BACKEND,
+        env=env,
+        capture_output=True,
+        text=True,
         check=True,
     ).stdout
     state, pages, runs, sessions = map(Path, json.loads(output))
@@ -61,3 +68,11 @@ def test_data_dir_moves_the_whole_data_layer_but_not_the_sessions(tmp_path):
     assert pages == tmp_path / "data" / "pages"
     assert runs == tmp_path / "data" / "sandbox"
     assert sessions == paths.SESSIONS
+
+
+@pytest.mark.parametrize("value", ["", "data", "../data"])
+def test_data_dir_is_absolute_or_the_backend_does_not_start(value, monkeypatch):
+    """An empty DATA_DIR is the cwd and a relative one depends on it: an empty base, refusals too."""
+    monkeypatch.setenv("DATA_DIR", value)
+    with pytest.raises(ValidationError, match="DATA_DIR"):
+        Settings(_env_file=None)

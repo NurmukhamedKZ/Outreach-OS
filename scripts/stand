@@ -13,6 +13,7 @@ is .stand/data: nothing outside .stand/ is written. Stdlib only: it runs before
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import signal
@@ -64,60 +65,41 @@ def backend_env(root: Path, port: int) -> dict[str, str]:
     }
 
 
-def owns(listing: str, pgid: int, root: Path) -> bool:
-    """Return True when a process of group `pgid` in `ps -o pgid=,command=` runs `root`'s code.
+def owns(cwds: str, root: Path) -> bool:
+    """Return True when a process in `lsof -d cwd -Fn` output works in `root`'s backend or frontend.
 
-    A pid from a stale state file (after a reboot) may be someone else's group now.
+    The working directory, not the command line: next-server renames itself and
+    outlives a killed `next dev`. A pgid from a stale state file (after a reboot)
+    may be someone else's group now, and then it is not ours to kill.
     """
-    marks = (f"{root}/backend/", f"{root}/frontend/")
-    for line in listing.splitlines():
-        group, _, command = line.strip().partition(" ")
-        if group == str(pgid) and any(mark in command for mark in marks):
-            return True
-    return False
+    ours = {f"n{root / 'backend'}", f"n{root / 'frontend'}"}
+    return any(line in ours for line in cwds.splitlines())
 
 
 def up(webpack: bool) -> int:
     state = _read()
     if state is not None:
-        if all(_alive(entry["pid"]) for entry in state.values()):
+        if all(_alive(entry["pgid"]) for entry in state.values()):
+            if webpack:
+                print("stand: already up; --webpack applies after scripts/stand down", file=sys.stderr)
             _print(state)
             return 0
         _stop(state)  # what a crashed stand left half-running
-    subprocess.run(["uv", "sync"], cwd=ROOT / "backend", check=True)
-    if not (ROOT / "frontend" / "node_modules").is_dir():
-        subprocess.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=ROOT / "frontend", check=True)
+    _install()
     (STAND / "data").mkdir(parents=True, exist_ok=True)
-
     backend_port, frontend_port = _free_ports(2)
-    backend = _start(
-        "backend",
-        ["uv", "run", "python", str(ROOT / "backend" / "main.py")],
-        {**backend_env(ROOT, backend_port), "PYTHONUNBUFFERED": "1"},
-    )
-    frontend = _start(
-        "frontend",
-        [
-            str(ROOT / "frontend" / "node_modules" / ".bin" / "next"),
-            "dev",
-            "--hostname",  # without it next dev listens on every interface, and the dashboard has no login
-            HOST,
-            "--port",
-            str(frontend_port),
-            *(["--webpack"] if webpack else []),
-        ],
-        {"API_ORIGIN": f"http://{HOST}:{backend_port}"},
-    )
-    state = {
-        "backend": {"pid": backend.pid, "port": backend_port},
-        "frontend": {"pid": frontend.pid, "port": frontend_port},
-    }
-    # Written before the wait: an `up` killed while waiting leaves something for `down`.
-    STATE.write_text(json.dumps(state), encoding="utf-8")
+    state = {}
+    processes = {}
     try:
+        for name, port, command, env in _commands(backend_port, frontend_port, webpack):
+            processes[name] = _start(name, command, env)
+            # pid is the group's id: start_new_session. Written at once, so an `up`
+            # killed from here on leaves its groups to `down`.
+            state[name] = {"pgid": processes[name].pid, "port": port}
+            _write(state)
         deadline = time.monotonic() + READY_SECONDS
-        _wait("backend", backend, f"http://{HOST}:{backend_port}/api/stats", deadline)
-        _wait("frontend", frontend, f"http://{HOST}:{frontend_port}/", deadline)
+        _wait("backend", processes["backend"], f"http://{HOST}:{backend_port}/api/stats", deadline)
+        _wait("frontend", processes["frontend"], f"http://{HOST}:{frontend_port}/", deadline)
     except BaseException as error:  # Ctrl-C included: nothing is left running
         _stop(state)
         STATE.unlink(missing_ok=True)
@@ -135,7 +117,7 @@ def status() -> int:
         print("the stand is not up")
         return 1
     _print(state)
-    alive = {name: _alive(entry["pid"]) for name, entry in state.items()}
+    alive = {name: _alive(entry["pgid"]) for name, entry in state.items()}
     for name, running in alive.items():
         print(f"{name:<10} {'running' if running else 'NOT RUNNING'}")
     return 0 if all(alive.values()) else 1
@@ -145,13 +127,43 @@ def down() -> int:
     state = _read()
     if state is not None:
         _stop(state)
-        STATE.unlink()
+        STATE.unlink(missing_ok=True)
     print(f"the stand is down; its data stays in {STAND / 'data'}")
     return 0
 
 
 def _read() -> dict[str, dict[str, int]] | None:
     return json.loads(STATE.read_text(encoding="utf-8")) if STATE.exists() else None
+
+
+def _write(state: dict[str, dict[str, int]]) -> None:
+    """Replace the state file whole: a torn one would lock `down` out of the stand."""
+    draft = STATE.with_suffix(".tmp")
+    draft.write_text(json.dumps(state), encoding="utf-8")
+    draft.replace(STATE)
+
+
+def _install() -> None:
+    """Install what the worktree lacks; `uv sync` is a no-op when nothing changed."""
+    subprocess.run(["uv", "sync"], cwd=ROOT / "backend", check=True)
+    if not (ROOT / "frontend" / "node_modules").is_dir():
+        subprocess.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=ROOT / "frontend", check=True)
+
+
+def _commands(
+    backend_port: int, frontend_port: int, webpack: bool
+) -> list[tuple[str, int, list[str], dict[str, str]]]:
+    """Return what to start: the name (also its folder and log), port, command and variables."""
+    backend = ["uv", "run", "python", str(ROOT / "backend" / "main.py")]
+    # Without --hostname next dev listens on every interface, and the dashboard has no login.
+    frontend = [str(ROOT / "frontend" / "node_modules" / ".bin" / "next"), "dev"]
+    frontend += ["--hostname", HOST, "--port", str(frontend_port)]
+    if webpack:
+        frontend.append("--webpack")
+    return [
+        ("backend", backend_port, backend, {**backend_env(ROOT, backend_port), "PYTHONUNBUFFERED": "1"}),
+        ("frontend", frontend_port, frontend, {"API_ORIGIN": f"http://{HOST}:{backend_port}"}),
+    ]
 
 
 def _print(state: dict[str, dict[str, int]]) -> None:
@@ -222,15 +234,16 @@ def _explain(error: NotReady, webpack: bool) -> None:
 
 
 def _alive(pgid: int) -> bool:
-    listing = subprocess.run(
-        ["ps", "-A", "-ww", "-o", "pgid=,command="], capture_output=True, text=True, check=True
+    # lsof exits 1 when no process of the group is left: an answer, not a failure.
+    cwds = subprocess.run(
+        ["lsof", "-a", "-g", str(pgid), "-d", "cwd", "-Fn"], capture_output=True, text=True
     ).stdout
-    return owns(listing, pgid, ROOT)
+    return owns(cwds, ROOT)
 
 
 def _stop(state: dict[str, dict[str, int]]) -> None:
     """Stop the stand's process groups: SIGTERM, then SIGKILL for what outlives STOP_SECONDS."""
-    groups = [entry["pid"] for entry in state.values() if _alive(entry["pid"])]
+    groups = [entry["pgid"] for entry in state.values() if _alive(entry["pgid"])]
     for sig in (signal.SIGTERM, signal.SIGKILL):
         for group in groups:
             try:
@@ -256,10 +269,16 @@ def main(argv: list[str]) -> int:
     commands.add_parser("status", help="print where the stand is; exit 1 when it is not up")
     commands.add_parser("down", help="stop the stand; its data stays")
     args = parser.parse_args(argv)
+    STAND.mkdir(exist_ok=True)
     try:
-        if args.command == "up":
-            return up(args.webpack)
-        return status() if args.command == "status" else down()
+        with (STAND / "lock").open("w") as lock:
+            # One command at a time per worktree: a second `up` waits for the first
+            # instead of reading a stand that is not ready yet, or starting another.
+            # The children do not inherit the lock (Popen closes their descriptors).
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if args.command == "up":
+                return up(args.webpack)
+            return status() if args.command == "status" else down()
     except subprocess.CalledProcessError as error:
         print(f"stand: {' '.join(map(str, error.cmd))} failed with code {error.returncode}", file=sys.stderr)
         return 1

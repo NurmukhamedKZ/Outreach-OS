@@ -125,10 +125,11 @@ def test_mount_without_the_flag_leaves_the_production_database():
     assert paths.state_db() == paths.PRODUCTION_STATE
 
 
-def test_on_a_port_of_its_own_mounts():
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "[::1]"])
+def test_on_a_port_of_its_own_mounts(host):
     """The stand runs the backend on a free port: its fake Node is on that port."""
-    node = "http://127.0.0.1:9123/api/sandbox/node"
-    sandbox.mount(_app(node), _settings(True, node, "http://127.0.0.1:9123", port=9123))
+    node = f"http://{host}:9123/api/sandbox/node"
+    sandbox.mount(_app(node), _settings(True, node, f"http://{host}:9123", port=9123))
     assert runs.active() is not None
 
 
@@ -148,5 +149,5 @@ def test_on_refuses_another_backends_port(node_url, transport_url, self_url):
     """Port 8787 is another stand's backend: its fake Node and its database would get our sends."""
     with pytest.raises(sandbox.SandboxMisconfigured) as failure:
         sandbox.mount(_app(transport_url), _settings(True, node_url, self_url, port=9123))
-    assert "9123" in str(failure.value), "the error names the port this backend listens on"
+    assert "UVICORN_PORT=9123" in str(failure.value), "the error names this backend's port"
     assert paths.state_db() == paths.PRODUCTION_STATE

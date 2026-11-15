@@ -69,7 +69,7 @@ def _url_of(transport: object) -> str:
 
 
 def _is_ours(url: str, port: int, path: str) -> bool:
-    """Return True when `url` is exactly `path` on this machine's `port`; no port is 80."""
+    """Return True when `url` is exactly `path` on this machine's `port`; a URL without one never is."""
     parts = urlsplit(url)
     try:
         url_port = parts.port

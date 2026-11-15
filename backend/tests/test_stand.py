@@ -78,17 +78,18 @@ def test_the_stand_keeps_its_data_inside_its_directory(stand_settings, tmp_path)
     assert stand_settings.data_dir == tmp_path / "worktree" / ".stand" / "data"
 
 
-def test_a_process_group_is_the_stands_only_when_it_runs_from_this_worktree():
-    """A pid from a stale state file may now belong to someone else: down must not kill it."""
+def _cwds(*folders: str) -> str:
+    """What `lsof -a -g <pgid> -d cwd -Fn` prints for a group whose processes work in `folders`."""
+    return "".join(f"p{500 + i}\nfcwd\nn{folder}\n" for i, folder in enumerate(folders))
+
+
+def test_a_process_group_is_the_stands_only_when_it_works_in_this_worktree():
+    """A pgid from a stale state file may now belong to someone else: down must not kill it."""
     root = Path("/w/tree")
-    listing = (
-        "  501 /w/tree/backend/.venv/bin/python /w/tree/backend/main.py\n"
-        "  502 node /w/tree-2/frontend/node_modules/.bin/next dev\n"
-        "  503 node /w/tree/.claude/worktrees/x/frontend/node_modules/.bin/next dev\n"
-        "  504 /bin/zsh -l\n"
-    )
-    assert stand.owns(listing, 501, root)
-    assert not stand.owns(listing, 502, root), "another worktree's prefix"
-    assert not stand.owns(listing, 503, root), "a worktree nested under this tree"
-    assert not stand.owns(listing, 504, root), "a reused pid"
-    assert not stand.owns(listing, 999, root)
+    assert stand.owns(_cwds("/w/tree/backend", "/w/tree/backend"), root), "uv and python"
+    assert stand.owns(_cwds("/w/tree/frontend"), root), "next-server: renamed, its parent gone"
+    assert not stand.owns(_cwds("/w/tree-2/frontend"), root), "another worktree's prefix"
+    assert not stand.owns(_cwds("/w/tree/.claude/worktrees/x/backend"), root), "a nested worktree"
+    assert not stand.owns(_cwds("/w/tree/backend/migrations"), root), "a shell in a subfolder"
+    assert not stand.owns(_cwds("/Users/someone"), root), "a reused pid"
+    assert not stand.owns("", root), "the group is gone"

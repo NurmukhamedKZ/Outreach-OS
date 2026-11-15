@@ -5,6 +5,7 @@ os.environ напрямую.
 
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,6 +44,15 @@ class Settings(BaseSettings):
     # родителя (Docker, не Mac) — бэкап выключен, и это видно на «Процессах».
     backup_dir: Path = (Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
                         / "Outreach-OS-backup")
+
+    @field_validator("data_dir")
+    @classmethod
+    def _data_dir_is_absolute(cls, value: Path) -> Path:
+        # An empty DATA_DIR is the cwd, a relative one depends on it: either is
+        # a database nobody meant, without the refusals. Refused, not guessed.
+        if not value.is_absolute():
+            raise ValueError(f"DATA_DIR must be an absolute path, got {str(value)!r}")
+        return value
 
 
 settings = Settings()
