@@ -14,10 +14,17 @@ from core.whatsapp import NodeWhatsApp
 SANDBOX_NODE_PATH = "/api/sandbox/node"
 # The fake Node is this very process, so whatever the sandbox talks to is on this machine.
 LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
+# The folder scripts/stand keeps a worktree's data in; the offline mode starts under it
+# only. backend/tests/test_stand.py keeps the stand's own name in step with this one.
+STAND_DIR = ".stand"
 
 
 class SandboxMisconfigured(RuntimeError):
-    """The sandbox is on, but it would talk to something that is not its own fake Node."""
+    """The sandbox or the offline mode could reach real people or production data.
+
+    Either the sandbox talks to something that is not its own fake Node, or the
+    offline mode is on outside a sandbox on a stand's data directory.
+    """
 
 
 def mount(app: FastAPI, settings: Settings) -> None:
@@ -31,9 +38,15 @@ def mount(app: FastAPI, settings: Settings) -> None:
     fake Node posts its webhook and secret to. Another port on this machine is
     another backend: the live Node, or another stand with its own database.
 
+    The offline mode (OFFLINE=1) is checked first, the sandbox on or off: its
+    model invents text and dossiers, so it needs the sandbox and a stand's data
+    directory.
+
     Raises:
-        SandboxMisconfigured: the sandbox is on and an address leads elsewhere.
+        SandboxMisconfigured: the sandbox is on and an address leads elsewhere,
+            or the offline mode is on without the sandbox or outside a stand's data.
     """
+    _refuse_offline_outside_a_stand(settings)
     if not settings.sandbox:
         return
     port = settings.uvicorn_port
@@ -61,6 +74,30 @@ def mount(app: FastAPI, settings: Settings) -> None:
     runs.activate_latest()
     app.include_router(routes.router)
     app.include_router(node.router)
+
+
+def _refuse_offline_outside_a_stand(settings: Settings) -> None:
+    """Refuse the offline mode where its invented text could reach a person or production data.
+
+    Allowed, not forbidden: a data directory is a stand's only when its resolved
+    path has a .stand folder in it. Any other one may be someone's production
+    data, this tree's default or another tree's.
+    """
+    if not settings.offline:
+        return
+    if not settings.sandbox:
+        raise SandboxMisconfigured(
+            "OFFLINE=1 without SANDBOX=1: the offline model's invented text would go to real"
+            " people through the live transport. The offline mode is raised by scripts/stand"
+            " only; outside a stand turn it off."
+        )
+    data = settings.data_dir.resolve()
+    if STAND_DIR not in data.parts:
+        raise SandboxMisconfigured(
+            f"OFFLINE=1 on DATA_DIR={data}, not a stand's data directory (no {STAND_DIR} folder"
+            " in its path): invented dossiers could land in production data. The offline"
+            " mode is raised by scripts/stand only; outside a stand turn it off."
+        )
 
 
 def _url_of(transport: object) -> str:

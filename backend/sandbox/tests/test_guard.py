@@ -1,5 +1,6 @@
 """Предохранитель: песочница с боевым транспортом — это письма живым людям."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +8,7 @@ from fastapi import FastAPI
 
 import paths
 import sandbox
+from config import Settings
 from core.whatsapp import FakeWhatsApp, NodeWhatsApp
 from sandbox import runs
 
@@ -22,11 +24,25 @@ def sandbox_runs(tmp_path, monkeypatch):
     runs.deactivate()
 
 
+# A stand's own data directory: the offline mode refuses the default one.
+STAND_DATA = Path("/w/tree/.stand/data")
+
+
 def _settings(
-    sandbox_on: bool, node_url: str, self_url: str = "http://127.0.0.1:8787", port: int = 8787
+    sandbox_on: bool,
+    node_url: str,
+    self_url: str = "http://127.0.0.1:8787",
+    port: int = 8787,
+    offline: bool = False,
+    data_dir: Path = STAND_DATA,
 ):
     return SimpleNamespace(
-        sandbox=sandbox_on, sender_node_url=node_url, sandbox_self_url=self_url, uvicorn_port=port
+        sandbox=sandbox_on,
+        sender_node_url=node_url,
+        sandbox_self_url=self_url,
+        uvicorn_port=port,
+        offline=offline,
+        data_dir=data_dir,
     )
 
 
@@ -151,3 +167,85 @@ def test_on_refuses_another_backends_port(node_url, transport_url, self_url):
         sandbox.mount(_app(transport_url), _settings(True, node_url, self_url, port=9123))
     assert "UVICORN_PORT=9123" in str(failure.value), "the error names this backend's port"
     assert paths.state_db() == paths.PRODUCTION_STATE
+
+
+# --- #52: the offline mode invents text and dossiers ---------------------------------
+
+DEFAULT_DATA = Settings.model_fields["data_dir"].default
+
+
+def _mounted(app: FastAPI) -> bool:
+    """Return whether the sandbox's routers are in: an included router hides its paths."""
+    routes = [*app.routes]
+    routes += [r for route in app.routes for r in getattr(route, "original_router", app).routes]
+    return any(getattr(route, "path", "").startswith("/api/sandbox") for route in routes)
+
+
+def test_offline_without_the_sandbox_refuses_to_start():
+    """Invented text through the live transport would reach real people."""
+    app = _app("http://127.0.0.1:8788")
+    with pytest.raises(sandbox.SandboxMisconfigured) as failure:
+        sandbox.mount(app, _settings(False, "http://127.0.0.1:8788", offline=True))
+    assert "SANDBOX=1" in str(failure.value)
+    assert not _mounted(app)
+
+
+@pytest.mark.parametrize(
+    "data_dir",
+    [
+        DEFAULT_DATA,
+        DEFAULT_DATA.parent / ".." / DEFAULT_DATA.parent.name / "data",
+        STAND_DATA / ".." / ".." / "backend" / "data",
+        # The production data of another tree: a worktree's own default is not the only one.
+        Path("/Users/someone/Outreach-OS/backend/data"),
+        Path("/tmp/offline-data"),
+        # A component of the path, not a substring of it.
+        Path("/w/tree/.standby/data"),
+        Path("/w/tree/my.stand/data"),
+    ],
+    ids=[
+        "default",
+        "default via ..",
+        "out of the stand via ..",
+        "another tree",
+        "no stand",
+        ".standby",
+        "my.stand",
+    ],
+)
+def test_offline_outside_a_stands_data_directory_refuses_to_start(data_dir):
+    """Invented dossiers would land in a production database, next to the real ones."""
+    app = _app()
+    with pytest.raises(sandbox.SandboxMisconfigured) as failure:
+        sandbox.mount(app, _settings(True, SANDBOX_NODE, offline=True, data_dir=data_dir))
+    assert "DATA_DIR" in str(failure.value)
+    assert "scripts/stand" in str(failure.value)
+    assert not _mounted(app)
+    assert paths.state_db() == paths.PRODUCTION_STATE
+
+
+def test_offline_through_a_link_out_of_the_stand_refuses_to_start(tmp_path):
+    """The resolved path counts: a .stand link to production data is production data."""
+    production = tmp_path / "Outreach-OS" / "backend"
+    (production / "data").mkdir(parents=True)
+    (tmp_path / "tree").mkdir()
+    (tmp_path / "tree" / ".stand").symlink_to(production)
+    with pytest.raises(sandbox.SandboxMisconfigured):
+        sandbox.mount(
+            _app(),
+            _settings(
+                True, SANDBOX_NODE, offline=True, data_dir=tmp_path / "tree" / ".stand" / "data"
+            ),
+        )
+
+
+def test_offline_in_a_sandbox_with_its_own_data_starts():
+    app = _app()
+    sandbox.mount(app, _settings(True, SANDBOX_NODE, offline=True))
+    assert _mounted(app)
+
+
+def test_the_sandbox_alone_may_use_the_default_data_directory():
+    """The guard is the offline mode's: a sandbox run keeps its own databases anyway."""
+    sandbox.mount(_app(), _settings(True, SANDBOX_NODE, data_dir=DEFAULT_DATA))
+    assert runs.active() is not None

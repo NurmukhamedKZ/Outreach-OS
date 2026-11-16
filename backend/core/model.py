@@ -8,7 +8,7 @@ record of a paid call is the dossier built from it (#12).
 import contextvars
 import threading
 import weakref
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from time import monotonic, sleep
 from typing import Any, Literal, Protocol, cast
@@ -21,7 +21,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_openrouter import ChatOpenRouter
 from openrouter.errors import NoResponseError, OpenRouterError, ResponseValidationError
 from openrouter.utils import BackoffStrategy, RetryConfig
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from core.errors import DomainError
 from observability import langfuse_handler, log_trace
@@ -45,6 +45,9 @@ CALL_DEADLINE_S = 180
 # usually passes on the next try.
 TRANSPORT_RETRIES = 3
 RETRYABLE = (httpx.TransportError, OutputParserException, ResponseValidationError)
+# Opens every text an offline reply puts before a person (#52): a draft that
+# leaks into a real chat is told at first sight.
+OFFLINE_MARK = "[офлайн]"
 
 
 class ModelError(Exception):
@@ -67,7 +70,7 @@ class ModelKeyMissingError(DomainError):
 
 
 class Model(Protocol):
-    """Structured-output LLM; OpenRouter in production, FakeModel in tests."""
+    """Structured-output LLM; OpenRouter in production, OfflineModel on a stand, FakeModel in tests."""
 
     def answer[S: BaseModel](
         self,
@@ -213,6 +216,36 @@ def _log_trace_in_background(handler: BaseCallbackHandler) -> None:
     # 10-25 minutes in production: it must not be able to hold up the call.
     context = contextvars.copy_context()
     threading.Thread(target=context.run, args=(log_trace, handler), daemon=True).start()
+
+
+class OfflineModel:
+    """Model of a stand's offline mode (OFFLINE=1): answers at once and without the network.
+
+    The answer is `reply(schema, messages)`: the schema's owner builds it from its
+    own prompt, so this core knows no module's schema. No trace is sent: Langfuse
+    hangs on OpenRouterModel alone.
+    """
+
+    def __init__(self, reply: Callable[[type[BaseModel], Sequence[Message]], BaseModel]):
+        self.reply = reply
+
+    def answer[S: BaseModel](
+        self,
+        model: str,
+        schema: type[S],
+        messages: Sequence[Message],
+        *,
+        session_id: str,
+        name: str,
+    ) -> S:
+        try:
+            answer = self.reply(schema, messages)
+        except ValidationError:
+            # What a real model's reply off the schema ends in after the retries.
+            raise ModelError(f"{name}: ValidationError") from None
+        if not isinstance(answer, schema):
+            raise ModelError(f"{name}: no offline reply for {schema.__name__}")
+        return answer
 
 
 @dataclass(frozen=True)

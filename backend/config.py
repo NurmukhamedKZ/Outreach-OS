@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     # Песочница: подменный транспорт и отдельная база вместо боевых. Флагом, а
     # не наличием файла: включать её должно быть так же явно, как выключать.
     sandbox: bool = False
+    # Offline mode of a stand (#52): a model and pages that never leave the machine,
+    # so an agent can run a batch and the seller for free. Invented text, so it
+    # needs the sandbox and a stand's data directory (sandbox.mount refuses otherwise).
+    offline: bool = False
     # `uv run python main.py` и `uv run uvicorn main:app --reload` обязаны
     # биндиться на один и тот же адрес: иначе случайный повторный запуск не
     # падает с "address already in use", а тихо слушает недостижимый wildcard

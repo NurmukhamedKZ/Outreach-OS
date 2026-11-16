@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """The stand: this worktree's backend and dashboard on free ports, in the sandbox, with its own data.
 
-    scripts/stand up               start both in the background, wait until they answer, print where
+    scripts/stand up [--online]    start both in the background, wait until they answer, print where
     scripts/stand status           print where; exit 1 when the stand is not up
     scripts/stand down             stop both; the data stays in .stand/data (rm -rf .stand wipes it)
 
 The backend gets no live Node, no Telegram and no backup, and its data directory
-is .stand/data: nothing outside .stand/ is written. Stdlib only: it runs before
-`uv sync`.
+is .stand/data: nothing outside .stand/ is written. It is offline (OFFLINE=1):
+the model and the pages never leave the machine, a batch and a draft cost
+nothing; --online gives it the real model and network. Stdlib only: it runs
+before `uv sync`.
 """
 
 from __future__ import annotations
@@ -45,11 +47,13 @@ class NotReady(Exception):
         self.name = name
 
 
-def backend_env(root: Path, port: int) -> dict[str, str]:
+def backend_env(root: Path, port: int, online: bool = False) -> dict[str, str]:
     """Return the variables the stand's backend runs with, over the caller's environment.
 
     Variables beat backend/.env, so a worktree's production .env cannot point the
-    stand at the live Node, the operator's Telegram or iCloud Drive.
+    stand at the live Node, the operator's Telegram or iCloud Drive, nor make an
+    offline stand pay for the model with its key. The offline mode starts only on
+    a data directory under .stand (sandbox.STAND_DIR).
     """
     url = f"http://{HOST}:{port}"
     return {
@@ -57,6 +61,7 @@ def backend_env(root: Path, port: int) -> dict[str, str]:
         "UVICORN_PORT": str(port),
         "DATA_DIR": str(root / ".stand" / "data"),
         "SANDBOX": "1",
+        "OFFLINE": "0" if online else "1",
         "SENDER_NODE_URL": f"{url}/api/sandbox/node",
         "SANDBOX_SELF_URL": url,
         "BACKUP_DIR": NO_BACKUP,
@@ -76,10 +81,12 @@ def owns(cwds: str, root: Path) -> bool:
     return any(line in ours for line in cwds.splitlines())
 
 
-def up() -> int:
+def up(online: bool) -> int:
     state = _read()
     if state is not None:
         if all(_alive(entry["pgid"]) for entry in state.values()):
+            if online:
+                print("stand: already up; --online applies after scripts/stand down", file=sys.stderr)
             _print(state)
             return 0
         _stop(state)  # what a crashed stand left half-running
@@ -89,11 +96,11 @@ def up() -> int:
     state = {}
     processes = {}
     try:
-        for name, port, command, env in _commands(backend_port, frontend_port):
+        for name, port, command, env in _commands(backend_port, frontend_port, online):
             processes[name] = _start(name, command, env)
             # pid is the group's id: start_new_session. Written at once, so an `up`
             # killed from here on leaves its groups to `down`.
-            state[name] = {"pgid": processes[name].pid, "port": port}
+            state[name] = {"pgid": processes[name].pid, "port": port, "online": online}
             _write(state)
         deadline = time.monotonic() + READY_SECONDS
         _wait("backend", processes["backend"], f"http://{HOST}:{backend_port}/api/stats", deadline)
@@ -148,14 +155,16 @@ def _install() -> None:
         subprocess.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=ROOT / "frontend", check=True)
 
 
-def _commands(backend_port: int, frontend_port: int) -> list[tuple[str, int, list[str], dict[str, str]]]:
+def _commands(
+    backend_port: int, frontend_port: int, online: bool
+) -> list[tuple[str, int, list[str], dict[str, str]]]:
     """Return what to start: the name (also its folder and log), port, command and variables."""
     backend = ["uv", "run", "python", str(ROOT / "backend" / "main.py")]
     # Without --hostname next dev listens on every interface, and the dashboard has no login.
     frontend = [str(ROOT / "frontend" / "node_modules" / ".bin" / "next"), "dev"]
     frontend += ["--hostname", HOST, "--port", str(frontend_port)]
     return [
-        ("backend", backend_port, backend, {**backend_env(ROOT, backend_port), "PYTHONUNBUFFERED": "1"}),
+        ("backend", backend_port, backend, {**backend_env(ROOT, backend_port, online), "PYTHONUNBUFFERED": "1"}),
         ("frontend", frontend_port, frontend, {"API_ORIGIN": f"http://{HOST}:{backend_port}"}),
     ]
 
@@ -164,8 +173,16 @@ def _print(state: dict[str, dict[str, int]]) -> None:
     print(f"dashboard  http://{HOST}:{state['frontend']['port']}")
     print(f"api        http://{HOST}:{state['backend']['port']}")
     print(f"data       {STAND / 'data'}")
+    print(f"mode       {mode(state)}")
     print(f"logs       {STAND / 'backend.log'}")
     print(f"           {STAND / 'frontend.log'}")
+
+
+def mode(state: dict[str, dict[str, int]]) -> str:
+    """Return what the running stand's backend talks to; a stand up before #52 has no mark and was online."""
+    if state["backend"].get("online", True):
+        return "online: the real model and network"
+    return "offline: no model, no network"
 
 
 def _free_ports(count: int) -> list[int]:
@@ -251,7 +268,10 @@ def _stop(state: dict[str, dict[str, int]]) -> None:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="scripts/stand", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("up", help="start the stand, or print where the running one is")
+    start = commands.add_parser("up", help="start the stand, or print where the running one is")
+    start.add_argument(
+        "--online", action="store_true", help="the real model and network: batches go to 2GIS and pay"
+    )
     commands.add_parser("status", help="print where the stand is; exit 1 when it is not up")
     commands.add_parser("down", help="stop the stand; its data stays")
     args = parser.parse_args(argv)
@@ -263,7 +283,7 @@ def main(argv: list[str]) -> int:
             # The children do not inherit the lock (Popen closes their descriptors).
             fcntl.flock(lock, fcntl.LOCK_EX)
             if args.command == "up":
-                return up()
+                return up(args.online)
             return status() if args.command == "status" else down()
     except subprocess.CalledProcessError as error:
         print(f"stand: {' '.join(map(str, error.cmd))} failed with code {error.returncode}", file=sys.stderr)

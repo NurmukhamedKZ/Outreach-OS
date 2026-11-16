@@ -10,8 +10,9 @@ from backup import public as backup
 from config import settings
 from core import db as core_db
 from core.db import ProductionDb
-from core.model import Model, ModelKeyMissingError, OpenRouterModel
+from core.model import Model, ModelKeyMissingError, OfflineModel, OpenRouterModel
 from core.pages import Pages
+from research import offline
 from research.service import ResearchService
 
 
@@ -25,7 +26,10 @@ def get_model() -> Model:
     """Return the model, refusing before a batch starts when there is no key.
 
     Without the check every company of the batch would fail and spend an attempt.
+    Offline (OFFLINE=1) the answer is built from the prompt and needs no key.
     """
+    if settings.offline:
+        return OfflineModel(offline.answer)
     if not settings.openrouter_api_key:
         raise ModelKeyMissingError()
     return OpenRouterModel(settings.openrouter_api_key)

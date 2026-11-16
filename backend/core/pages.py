@@ -2,6 +2,7 @@
 
 Downloaded pages are kept as files (sha1(url).html.gz plus a json sidecar), so a
 parser can be fixed and rerun for a company without going back to the network.
+The offline mode of a stand (OFFLINE=1) answers from these files alone.
 """
 
 import gzip
@@ -149,16 +150,10 @@ class ScraplingPages:
         cookies: Mapping[str, str] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Page:
-        body, sidecar = self._paths(url)
-        if sidecar.exists():
-            try:
-                return self._read(body, sidecar)
-            except (OSError, EOFError, zlib.error, ValueError, KeyError, TypeError) as error:
-                log.warning("stored page for %s is unreadable (%s), fetching again", url, error)
-                body.unlink(missing_ok=True)
-                sidecar.unlink(missing_ok=True)
+        if (page := stored(self.root, url)) is not None:
+            return page
         page = self._fetch(url, cookies, headers)
-        self._store(url, page)
+        store(self.root, url, page)
         return page
 
     def _fetch(
@@ -187,34 +182,50 @@ class ScraplingPages:
         # Response.text is the root element's text (empty); the markup is html_content.
         return Page(text=str(response.html_content), final_url=landed, fetched_at=self.now())
 
-    def _paths(self, url: str) -> tuple[Path, Path]:
-        sha = hashlib.sha1(url.encode()).hexdigest()
-        return self.root / f"{sha}.html.gz", self.root / f"{sha}.json"
 
-    def _read(self, body: Path, sidecar: Path) -> Page:
+def stored(root: Path, url: str) -> Page | None:
+    """Return the page kept for `url` under `root`; None when there is none.
+
+    An unreadable page is removed and counts as none: the network adapter fetches it again.
+    """
+    body, sidecar = _paths(root, url)
+    if not sidecar.exists():
+        return None
+    try:
         meta = json.loads(sidecar.read_text(encoding="utf-8"))
         return Page(
             text=gzip.decompress(body.read_bytes()).decode("utf-8"),
             final_url=meta["final_url"],
             fetched_at=datetime.fromisoformat(meta["fetched_at"]),
         )
+    except (OSError, EOFError, zlib.error, ValueError, KeyError, TypeError) as error:
+        log.warning("stored page for %s is unreadable (%s), dropped", url, error)
+        body.unlink(missing_ok=True)
+        sidecar.unlink(missing_ok=True)
+        return None
 
-    def _store(self, url: str, page: Page) -> None:
-        """Write the page, then the sidecar, each atomically.
 
-        A sidecar marks a complete page, so it goes last: a crash in between
-        leaves a page without a sidecar, which is fetched again.
-        """
-        body, sidecar = self._paths(url)
-        self.root.mkdir(parents=True, exist_ok=True)
-        _write_atomically(body, gzip.compress(page.text.encode("utf-8")))
-        meta = {
-            "url": url,
-            "final_url": page.final_url,
-            "status": 200,
-            "fetched_at": page.fetched_at.isoformat(timespec="seconds"),
-        }
-        _write_atomically(sidecar, json.dumps(meta, ensure_ascii=False).encode("utf-8"))
+def store(root: Path, url: str, page: Page) -> None:
+    """Keep `page` as the page at `url` under `root`: the page, then the sidecar, each atomically.
+
+    A sidecar marks a complete page, so it goes last: a crash in between
+    leaves a page without a sidecar, which is fetched again.
+    """
+    body, sidecar = _paths(root, url)
+    root.mkdir(parents=True, exist_ok=True)
+    _write_atomically(body, gzip.compress(page.text.encode("utf-8")))
+    meta = {
+        "url": url,
+        "final_url": page.final_url,
+        "status": 200,
+        "fetched_at": page.fetched_at.isoformat(timespec="seconds"),
+    }
+    _write_atomically(sidecar, json.dumps(meta, ensure_ascii=False).encode("utf-8"))
+
+
+def _paths(root: Path, url: str) -> tuple[Path, Path]:
+    sha = hashlib.sha1(url.encode()).hexdigest()
+    return root / f"{sha}.html.gz", root / f"{sha}.json"
 
 
 def _write_atomically(path: Path, data: bytes) -> None:
@@ -222,6 +233,29 @@ def _write_atomically(path: Path, data: bytes) -> None:
     tmp = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
     tmp.write_bytes(data)
     tmp.replace(path)
+
+
+class StoredPages:
+    """Pages from the kept files alone, never the network: the offline mode of a stand.
+
+    An address with no page kept answers 404, as a page that is gone: the
+    offline world is what was stored, and nothing else exists.
+    """
+
+    def __init__(self, root: Path):
+        self.root = root
+
+    def get(
+        self,
+        url: str,
+        *,
+        cookies: Mapping[str, str] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> Page:
+        if (page := stored(self.root, url)) is None:
+            log.info("offline: no stored page for %s", url)
+            raise HttpStatusError(404, url)
+        return page
 
 
 class FakePages:

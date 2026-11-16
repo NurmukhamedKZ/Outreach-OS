@@ -298,3 +298,34 @@ def test_closing_the_client_closes_the_network_transport(monkeypatch):
     client.close()
 
     assert closed == [True]
+
+
+# --- #52: the offline model of a stand -------------------------------------------
+
+
+class Other(LLMSchema):
+    text: str
+
+
+def test_offline_answers_with_its_reply_function_for_the_asked_schema():
+    asked = []
+
+    def reply(schema, messages):
+        asked.append((schema, messages))
+        return Dossier(summary=f"{model.OFFLINE_MARK} {messages[-1][1]}")
+
+    assert answer(model.OfflineModel(reply)) == Dossier(summary="[офлайн] Company card...")
+    assert asked == [(Dossier, MESSAGES)]
+
+
+def test_offline_reply_that_is_not_the_asked_schema_is_a_model_error():
+    with pytest.raises(model.ModelError):
+        answer(model.OfflineModel(lambda schema, messages: Other(text="hi")))
+
+
+def test_offline_reply_the_schema_refuses_is_a_model_error():
+    def reply(schema, messages):
+        return Dossier.model_validate({"hooks": ["no summary"]})
+
+    with pytest.raises(model.ModelError):
+        answer(model.OfflineModel(reply))
