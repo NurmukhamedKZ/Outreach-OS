@@ -6,6 +6,7 @@ The processes are not started here: that is the manual check in the PR.
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -136,3 +137,35 @@ def test_a_process_group_is_the_stands_only_when_it_works_in_this_worktree():
     assert not stand.owns(_cwds("/w/tree/backend/migrations"), root), "a shell in a subfolder"
     assert not stand.owns(_cwds("/Users/someone"), root), "a reused pid"
     assert not stand.owns("", root), "the group is gone"
+
+
+@pytest.fixture
+def no_processes(tmp_path, monkeypatch):
+    """`up` with its processes faked: what it builds is recorded, nothing starts."""
+    monkeypatch.setattr(stand, "STAND", tmp_path)
+    monkeypatch.setattr(stand, "STATE", tmp_path / "stand.json")
+    monkeypatch.setattr(stand, "_install", lambda: None)
+    monkeypatch.setattr(stand, "_start", lambda name, command, env: SimpleNamespace(pid=4242))
+    monkeypatch.setattr(stand, "_wait", lambda *args: None)
+    monkeypatch.setattr(stand, "_print", lambda state: None)
+    built: list[int] = []
+    monkeypatch.setattr(stand, "_demo", lambda port: built.append(port) or 0)
+    return built
+
+
+@pytest.mark.parametrize(("flags", "builds"), [([], True), (["--empty"], False), (["--online"], False)])
+def test_up_builds_the_demo_world_only_offline_and_not_when_asked_for_an_empty_stand(
+    no_processes, flags, builds
+):
+    assert stand.main(["up", *flags]) == 0
+
+    assert bool(no_processes) is builds
+
+
+def test_up_on_a_running_stand_builds_nothing(no_processes, monkeypatch):
+    stand._write({"backend": {"pgid": 1, "port": 2}, "frontend": {"pgid": 3, "port": 4}})
+    monkeypatch.setattr(stand, "_alive", lambda pgid: True)
+
+    assert stand.main(["up"]) == 0
+
+    assert no_processes == []

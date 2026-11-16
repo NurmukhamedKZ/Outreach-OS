@@ -742,12 +742,24 @@ def run(
     rng = random.Random()
     while not stop.is_set():
         try:
-            with closing(core_db.connect(paths.state_db())) as db:
-                step(Worker(db, whatsapp, notify, model, rng, journal), clock.now())
+            once(step, whatsapp, notify, model, journal, rng)
         except Exception:
             log.exception("%s crashed on a tick", actor)
             journal.record_crash(actor)
         stop.wait(interval())
+
+
+def once(
+    step: Step,
+    whatsapp: WhatsApp,
+    notify: Notify,
+    model: Callable[[], Model],
+    journal: Journal,
+    rng: random.Random,
+) -> None:
+    """Run `step` once, now, on a connection of its own to the database of the moment."""
+    with closing(core_db.connect(paths.state_db())) as db:
+        step(Worker(db, whatsapp, notify, model, rng, journal), clock.now())
 
 
 def warmup_interval() -> float:

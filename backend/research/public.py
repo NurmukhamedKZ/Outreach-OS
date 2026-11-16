@@ -6,6 +6,8 @@ conversations reads its leads here (#17, #36); the app's assembler resets interr
 import sqlite3
 from datetime import datetime
 
+from research import domain
+
 # What company() raises, re-exported for callers to catch without reaching into research.
 from research.exceptions import CompanyNotFoundError as CompanyNotFoundError
 from research.schemas import CompanyResearch as CompanyResearch
@@ -42,3 +44,13 @@ def company(db: sqlite3.Connection, company_id: str, now: datetime) -> CompanyRe
         CompanyNotFoundError: no such company.
     """
     return ResearchService(db).company(company_id, now)
+
+
+def reviews_url(branch_id: str) -> str:
+    """Return the address research reads a branch's reviews at, the 2GIS reviews API."""
+    return domain.REVIEWS_API.format(branch_id=branch_id)
+
+
+def site_home_url(site: str) -> str:
+    """Return the address research reads a company site's home page at."""
+    return domain.SITE_HOME.format(domain=site)

@@ -7,25 +7,29 @@
 """
 
 import sqlite3
+import threading
+from collections.abc import Iterator
 from contextlib import closing
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Annotated, Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 import clock
 import paths
 import sqlite_tools
+from companies import public as companies
+from config import settings
 from conversations import public as conversations
 from core import db as core_db
 from core.schemas import Schema
 from delivery import public as delivery
 from research import public as research
-from sandbox import chat, faults, node, runs
+from sandbox import chat, demo, faults, node, runs
 
 router = APIRouter(prefix="/api/sandbox", tags=["sandbox"])
 ALMATY = ZoneInfo("Asia/Almaty")
@@ -40,6 +44,11 @@ PRESETS = {"jitter": 15 * 60, "hour": 3600, "day": 86400}
 WINDOW_SEARCH_DAYS = 8
 
 PERSONAL_JID = "@s.whatsapp.net"
+
+# A request of the demo scenario to this backend: a research batch of the world takes seconds.
+SELF_TIMEOUT_SECONDS = 60
+# One build at a time: two would race for the same world and both make a run.
+_building = threading.Lock()
 
 
 class NewRun(Schema):
@@ -61,6 +70,12 @@ class NewFaults(Schema):
 
 class NewIncoming(Schema):
     text: str = ""
+    # Which thread of the run answers; the run's lead when not given (#53).
+    company_id: str | None = None
+
+
+class NewTick(Schema):
+    daemon: delivery.Daemon = "tick"
 
 
 @router.get("/runs")
@@ -140,7 +155,7 @@ def read_chat() -> dict[str, Any]:
     # The run's own file, not paths.state_db(): a run switched in another tab
     # between the two reads would otherwise look for this run's thread there.
     with closing(core_db.connect(run.path)) as db:
-        return chat.view(db, _thread_of(db, run))
+        return chat.view(db, _thread_of(db, run.company_id))
 
 
 @router.post("/incoming")
@@ -150,7 +165,7 @@ def incoming(body: NewIncoming) -> dict[str, bool]:
     run = _require_scenario()
     # Closed before the webhook call: that request writes to this very file.
     with closing(core_db.connect(run.path)) as db:
-        channel = _thread_of(db, run)["channel"]
+        channel = _thread_of(db, body.company_id or run.company_id)["channel"]
     payload = {
         "kind": "incoming",
         "number": runs.SANDBOX_NUMBER,
@@ -179,6 +194,58 @@ def incoming(body: NewIncoming) -> dict[str, bool]:
             " Проверьте SANDBOX_SELF_URL — он должен указывать на этот же"
             " процесс",
         ) from None
+
+
+@router.post("/tick")
+def tick(body: NewTick, request: Request) -> dict[str, str]:
+    """Один шаг демона доставки сейчас — тот же, что сделал бы его цикл.
+
+    Чтобы сценарию, e2e и агенту на стенде не ждать двадцать секунд тика и час
+    монитора. Гейты те же, что у демона; что шаг сделал — в журнале («Процессы»).
+    """
+    state = request.app.state
+    delivery.step(
+        body.daemon, state.whatsapp, delivery.telegram, conversations.model, state.journal
+    )
+    return {"daemon": body.daemon}
+
+
+def self_client() -> Iterator[httpx.Client]:
+    """Yield a client to this very backend, as the fake Node reaches its own webhook.
+
+    No proxies from the environment: the address is this machine's.
+    """
+    with httpx.Client(
+        base_url=node.self_url(), timeout=SELF_TIMEOUT_SECONDS, trust_env=False
+    ) as client:
+        yield client
+
+
+@router.post("/demo", status_code=201)
+def build_demo(client: Annotated[httpx.Client, Depends(self_client)]) -> demo.Summary:
+    """Демо-мир на свежем офлайн-стенде: выдуманные компании через настоящий конвейер.
+
+    Только офлайн: иначе партия пошла бы в 2GIS и платила модели. Только на
+    пустой базе: собранный мир второй раз не собирается — пересобрать его
+    можно, стерев данные стенда (rm -rf .stand).
+    """
+    if not settings.offline:
+        raise HTTPException(
+            409, "демо-мир собирается только офлайн: иначе партия пойдёт в 2GIS и заплатит модели"
+        )
+    with closing(sqlite_tools.connect_readonly(paths.PRODUCTION_STATE)) as db:
+        if companies.counts(db).companies:
+            raise HTTPException(
+                409, "мир уже собран: в базе стенда есть компании — пересобрать: rm -rf .stand"
+            )
+    if not _building.acquire(blocking=False):
+        raise HTTPException(409, "мир уже собирается")
+    try:
+        return demo.build(client, paths.PAGES, clock.now())
+    except demo.DemoFailedError as error:
+        raise HTTPException(500, f"демо-мир собран не до конца: {error}") from None
+    finally:
+        _building.release()
 
 
 def _require_lead(company_id: str) -> None:
@@ -214,13 +281,14 @@ def _require_scenario() -> runs.Run:
     return run
 
 
-def _thread_of(db: sqlite3.Connection, run: runs.Run) -> conversations.ThreadState:
-    """Return the thread of the run's lead; 409 before its first draft.
+def _thread_of(db: sqlite3.Connection, company_id: str) -> conversations.ThreadState:
+    """Return the company's thread in the run's database; 409 before its first draft.
 
-    The run's company, not the first thread of the run's database: «Черновики
-    топ-N» pressed in a run open threads of other leads there too.
+    By the company, not the first thread of the run's database: «Черновики
+    топ-N» pressed in a run open threads of other leads there too. Only read:
+    a company without a thread gets none here.
     """
-    thread = conversations.thread(db, run.company_id)
+    thread = conversations.thread(db, company_id)
     if thread is None:
         raise HTTPException(409, "треда ещё нет: сначала черновик первого письма")
     return thread

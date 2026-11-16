@@ -1,9 +1,7 @@
 """The offline mode of a stand (OFFLINE=1, #52): the assembly hands out adapters that never leave the machine."""
 
-import socket
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,12 +22,6 @@ from research import domain as research_domain
 from research.tests.test_domain import fixture as research_fixture
 
 BUILDERS = [research_dependencies.get_model, conversations_dependencies.build_model]
-
-
-@pytest.fixture
-def offline(monkeypatch):
-    monkeypatch.setattr(settings, "offline", True)
-    monkeypatch.setattr(settings, "openrouter_api_key", None)
 
 
 @pytest.mark.parametrize("build", BUILDERS)
@@ -62,31 +54,6 @@ def test_without_the_flag_the_pages_go_to_the_network():
 # --- end to end, over HTTP, with the sockets closed -----------------------------------
 
 FIRM = "70000001017502602"  # the branch of companies' reference card: Studio Nomad
-LOOPBACK = {"127.0.0.1", "localhost", "::1"}
-
-
-@pytest.fixture
-def no_outbound(monkeypatch):
-    """Fail the test on any request off this machine: Python sockets and scrapling's curl alike."""
-    connect, resolve = socket.socket.connect, socket.getaddrinfo
-
-    def local_only(sock, address, *args, **kwargs):
-        if isinstance(address, tuple) and address[0] not in LOOPBACK:
-            raise AssertionError(f"went out to {address}")
-        return connect(sock, address, *args, **kwargs)
-
-    def resolve_local(host, *args, **kwargs):
-        if host not in LOOPBACK:
-            raise AssertionError(f"looked up {host}")
-        return resolve(host, *args, **kwargs)
-
-    def no_curl(url, **kwargs):
-        raise AssertionError(f"scrapling fetched {url}")
-
-    monkeypatch.setattr(socket.socket, "connect", local_only)
-    monkeypatch.setattr(socket.socket, "connect_ex", local_only)
-    monkeypatch.setattr(socket, "getaddrinfo", resolve_local)
-    monkeypatch.setattr(core_pages, "Fetcher", SimpleNamespace(get=no_curl))
 
 
 @pytest.fixture

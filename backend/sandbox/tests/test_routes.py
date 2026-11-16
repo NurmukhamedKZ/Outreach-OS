@@ -23,7 +23,9 @@ from conversations import api as conversations_api
 from conversations import dependencies as conversations_dependencies
 from conversations.tests.leads import add_lead
 from core import db as core_db
+from core.activity import Journal
 from core.model import FakeModel
+from core.whatsapp import FakeWhatsApp
 from delivery.schemas import DeliverySettings, Window
 from sandbox import faults, node, routes, runs
 
@@ -192,6 +194,29 @@ def test_incoming_without_a_thread_is_a_409(client):
     assert client.post("/api/sandbox/incoming", json={"text": "привет"}).status_code == 409
 
 
+def test_incoming_answers_from_another_thread_of_the_run(client, sent):
+    """The world needs replies in many threads of one run, not only from the run's lead."""
+    run = _run_with_thread(client)
+    _add_thread(runs.get(run["run_id"]).path, "c_one", "+77010000002")
+
+    answer = client.post("/api/sandbox/incoming", json={"text": "привет", "company_id": "c_one"})
+
+    assert answer.status_code == 200, answer.text
+    assert sent[-1]["from"] == "77010000002@s.whatsapp.net"
+
+
+def test_incoming_for_a_company_without_a_thread_in_the_run_is_a_409(client, sent):
+    """A lead of research with no thread in this run: nothing is opened, nothing is sent."""
+    run = _run_with_thread(client)
+
+    answer = client.post("/api/sandbox/incoming", json={"text": "привет", "company_id": "c_one"})
+
+    assert answer.status_code == 409
+    assert sent == []
+    with closing(core_db.connect(runs.get(run["run_id"]).path)) as db:
+        assert [row[0] for row in db.execute("SELECT company_id FROM threads")] == ["c_romashka"]
+
+
 def test_everything_needs_an_active_run(client):
     for path, body in (
         ("/api/sandbox/clock", {"preset": "day"}),
@@ -343,3 +368,26 @@ def test_the_chat_is_the_thread_of_the_run_s_lead(client):
     assert [(bubble["kind"], bubble["text"]) for bubble in chat["bubbles"]] == [
         ("draft", "Здравствуйте")
     ]
+
+
+# --- one step of a daemon now (#53) ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("daemon", "actor"),
+    [("tick", "sender.tick"), ("warmup", "sender.warmup"), ("monitor", "sender.monitor")],
+)
+def test_tick_runs_one_step_of_the_daemon_over_the_run(client, daemon, actor):
+    _start(client)
+    client.app.state.whatsapp = FakeWhatsApp()
+    client.app.state.journal = Journal(paths.state_db)
+
+    answer = client.post("/api/sandbox/tick", json={"daemon": daemon})
+
+    assert answer.status_code == 200, answer.text
+    assert answer.json() == {"daemon": daemon}
+    assert [event["actor"] for event in client.app.state.journal.recent()] == [actor]
+
+
+def test_tick_knows_only_the_three_daemons(client):
+    assert client.post("/api/sandbox/tick", json={"daemon": "backup"}).status_code == 422

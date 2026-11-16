@@ -1,11 +1,12 @@
 """Facade of delivery for the app assembler, overview (counters, tasks, funnel) and the sandbox."""
 
+import random
 import sqlite3
 from collections import Counter
 from collections.abc import Callable
 from datetime import datetime
 from threading import Event, Thread
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from conversations import public as conversation
 from core.activity import Journal
@@ -31,6 +32,7 @@ JOURNAL_INTERVALS = {
 __all__ = [
     "JOURNAL_INTERVALS",
     "LONGEST_JITTER_MINUTES",
+    "Daemon",
     "DeliverySettings",
     "Fate",
     "delivered_messages",
@@ -39,9 +41,18 @@ __all__ = [
     "settings",
     "start",
     "stats",
+    "step",
     "stuck",
     "telegram",
 ]
+
+# The three daemons by the name the sandbox asks for one step of.
+type Daemon = Literal["tick", "warmup", "monitor"]
+STEPS: dict[str, worker.Step] = {
+    "tick": worker.Worker.tick,
+    "warmup": worker.Worker.warm,
+    "monitor": worker.Worker.monitor,
+}
 
 # The operator's Telegram, for the daemons the assembler starts.
 telegram: Notify = notify.send
@@ -144,3 +155,20 @@ def start(
     for thread in threads:
         thread.start()
     return threads
+
+
+def step(
+    daemon: Daemon,
+    whatsapp: WhatsApp,
+    notifier: Notify,
+    model: Callable[[], Model],
+    journal: Journal,
+) -> None:
+    """Run one step of a daemon now, as its loop runs it: the same gates, the same journal.
+
+    For the sandbox, which does not wait twenty seconds for a tick or an hour for
+    the monitor. The loops keep ticking beside it: a row both take is settled by
+    its conditional UPDATE, as with the operator's buttons. What the step did is
+    in the journal; an exception goes to the caller, not the journal.
+    """
+    worker.once(STEPS[daemon], whatsapp, notifier, model, journal, random.Random())
