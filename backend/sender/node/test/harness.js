@@ -79,7 +79,20 @@ export async function harness(t, { webhookSecret = "" } = {}) {
     events: [], // every webhook call: {url, headers, body}
     webhookStatus: 200,
     onSocket: () => {},
+    onAuth: () => {}, // awaited before the auth state is read: may hold it or throw
     last: () => h.sockets.at(-1),
+    // Sockets made and neither closed nor ended: the process may hold one per number.
+    open: () => h.sockets.filter((sock) => !sock.closed && !sock.ended),
+    // Hold every connect at the auth state, as a slow disk would; the call lets go.
+    hold: () => {
+      let release;
+      const gate = new Promise((resolve) => (release = resolve));
+      h.onAuth = () => gate;
+      return () => {
+        h.onAuth = () => {};
+        release();
+      };
+    },
     call: (method, url, body) => call(h.server, method, url, body),
     tick: async (ms) => {
       t.mock.timers.tick(ms);
@@ -111,6 +124,7 @@ export async function harness(t, { webhookSecret = "" } = {}) {
     },
     authState: async (dir) => {
       h.auth.push(dir);
+      await h.onAuth(dir);
       return { state: { dir }, saveCreds: (creds) => h.saved.push({ dir, creds }) };
     },
     loggedOutCode: LOGGED_OUT,

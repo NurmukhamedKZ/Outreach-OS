@@ -105,7 +105,7 @@ export function createServer({
             log.error({ number, attempts }, "сокет не поднимается, дальше — руками");
           } else {
             const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempts - 1), RECONNECT_MAX_MS);
-            setTimeout(() => connect(number), delay);
+            setTimeout(() => connectOnce(number), delay);
           }
         }
       }
@@ -173,11 +173,6 @@ export function createServer({
     }
   }
 
-  async function socketOf(number) {
-    if (!sockets.get(number)?.sock) await connect(number);
-    return sockets.get(number).sock;
-  }
-
   // WhatsApp отвязал сессию (loggedOut): по старым ключам Baileys больше не войдёт,
   // и QR на мёртвом сокете не придёт никогда. Каталог сессии откладывается, а не
   // удаляется — это невосстановимый слой, — и открывается новый неавторизованный
@@ -213,7 +208,33 @@ export function createServer({
       if (error.code !== "ENOENT") throw error;
     }
     log.warn({ number, aside: path.basename(aside) }, "отвязанная сессия отложена, новый сокет");
-    await connect(number);
+    await connectOnce(number);
+  }
+
+  // На номер — не больше одного сокета (#65). Проверка «сокета нет» и запись нового
+  // в карту разделены чтением ключей с диска, и два запроса открыли бы два сокета на
+  // одну сессию: WhatsApp выбивает один из них (conflict), а второй живёт сиротой.
+  // Поэтому подключение номера идёт под замком, как замена сессии: запрос, заставший
+  // подключение в полёте, ждёт его и получает тот же сокет, а упавшее подключение
+  // снимает замок — следующий запрос пробует заново.
+  const connecting = new Map();
+
+  function connectOnce(number) {
+    if (!connecting.has(number)) {
+      connecting.set(number, connect(number).finally(() => connecting.delete(number)));
+    }
+    return connecting.get(number);
+  }
+
+  async function socketOf(number) {
+    // Замена сессии убирает номер из карты до переименования каталога: подключиться
+    // в это окно значило бы прочитать ключи, которые вот-вот уедут в .bak. Ждём, пока
+    // в полёте нет ни замены, ни подключения, и смотрим карту без паузы после этого.
+    while (replacing.has(number) || connecting.has(number)) {
+      await (replacing.get(number) ?? connecting.get(number));
+    }
+    if (!sockets.get(number)?.sock) await connectOnce(number);
+    return sockets.get(number).sock;
   }
 
   async function waitForQr(number) {
@@ -305,8 +326,10 @@ export function createServer({
       for await (const chunk of request) chunks.push(chunk);
       const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
       // Номер строит путь к каталогу сессии: Python присылает только канонический,
-      // а прямой вызов Node не должен выйти из sessions/.
-      if (body.number !== undefined && !/^\+\d{10,15}$/.test(body.number)) {
+      // а прямой вызов Node не должен выйти из sessions/. Номера нет или он не строка
+      // (массив прошёл бы регулярку своей строкой) — тоже 422, а не 500 на пути.
+      const number = body?.number;
+      if (typeof number !== "string" || !/^\+\d{10,15}$/.test(number)) {
         throw new RouteError(422, "numberInvalid", "номер не в канонической форме");
       }
       reply(200, await handler(body));
