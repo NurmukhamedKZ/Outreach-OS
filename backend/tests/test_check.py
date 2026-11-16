@@ -46,8 +46,9 @@ def git(root, *args):
     # Hooks run with GIT_DIR and other GIT_* set; without stripping them
     # the test would write to the project repo.
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    done = subprocess.run(["git", *args], cwd=root, env=env, check=True, capture_output=True,
-                          text=True)
+    done = subprocess.run(
+        ["git", *args], cwd=root, env=env, check=True, capture_output=True, text=True
+    )
     return done.stdout.strip()
 
 
@@ -89,7 +90,9 @@ def test_frontend_path_selects_frontend():
 
 def test_backend_or_docs_diff_skips_frontend():
     assert verdicts(["backend/x.py", "docs/a"]) == {
-        "pytest": None, "frontend": "дифф не трогает frontend/"}
+        "pytest": None,
+        "frontend": "дифф не трогает frontend/",
+    }
 
 
 def test_empty_diff_skips_frontend_and_runs_backend():
@@ -109,6 +112,13 @@ def test_real_table_builds_frontend_before_tsc_and_only_on_its_diff():
     front = by_name.pop("frontend")
     assert front.triggers == FRONT_TRIGGER and front.needs == "node_modules"
     assert [cmd[:2] for cmd in front.commands] == [["npm", "run"], ["npx", "tsc"]]
+    node = by_name.pop("node")
+    assert (node.cwd, node.commands, node.triggers) == (
+        "backend/sender/node",
+        [["npm", "test"]],
+        ("backend/sender/node/",),
+    )
+    assert not node.needs
     assert set(by_name) == {"ruff", "mypy", "lint-imports", "pytest"}
     assert all(not c.triggers for c in by_name.values())
 
@@ -124,7 +134,10 @@ def test_changed_files_are_committed_worktree_and_untracked(tmp_path):
     (root / "frontend" / "новый.tsx").write_text("x")
     (root / "a.txt").write_text("b")
     assert sorted(check.changed_files(root)) == [
-        "a.txt", "frontend/committed.tsx", "frontend/новый.tsx"]
+        "a.txt",
+        "frontend/committed.tsx",
+        "frontend/новый.tsx",
+    ]
 
 
 def test_changes_on_main_after_the_fork_are_not_ours(tmp_path):
@@ -189,8 +202,13 @@ def test_skipped_check_is_reported(tmp_path, capsys):
 
 
 def front_with_needs():
-    return check.Check("frontend", "frontend", [[sys.executable, "-c", "pass"]],
-                       needs="node_modules", hint="cd frontend && npm ci")
+    return check.Check(
+        "frontend",
+        "frontend",
+        [[sys.executable, "-c", "pass"]],
+        needs="node_modules",
+        hint="cd frontend && npm ci",
+    )
 
 
 def test_missing_node_modules_is_a_hint_not_a_trace(tmp_path, capsys):
