@@ -2,6 +2,7 @@
 // boundary, idempotency, the unlinked session put aside, reconnects, the webhook.
 
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
@@ -10,6 +11,10 @@ import { CONNECTION_LOST, LOGGED_OUT, NOW, bringQr, flush, harness } from "./har
 const OURS = "+77000000001";
 const LEAD = "+77010000001";
 const send = (extra = {}) => ({ number: OURS, to: LEAD, text: "привет", key: "outbox-1", ...extra });
+// Let requests in flight run to where they wait, without moving the mocked clock.
+const settle = async () => {
+  for (let turn = 0; turn < 10; turn++) await flush();
+};
 
 // --- the number --------------------------------------------------------------------
 
@@ -33,16 +38,26 @@ for (const route of ["/send", "/check", "/pair", "/qr"]) {
   }
 }
 
-// #65: a body without a number reaches path.join and is a 500, and so is a number
-// that is no string; #55 kept index.js as it was.
+// A missing number and a number that is no string: the array would pass the regex
+// as its string and reach path.join.
 for (const route of ["/send", "/check", "/pair", "/qr"]) {
-  for (const number of [undefined, ["+77000000001"]]) {
-    test(`${route} refuses a number ${JSON.stringify(number)} with a 422`, { todo: "#65" }, async (t) => {
+  for (const number of [undefined, ["+77000000001"], 77000000001, null]) {
+    test(`${route} refuses a number ${JSON.stringify(number)} before any socket or directory`, async (t) => {
       const h = await harness(t);
       const { status, body } = await h.call("POST", route, { ...send(), number });
       assert.deepEqual([status, body.code], [422, "numberInvalid"]);
+      assert.deepEqual([h.sockets.length, h.auth.length], [0, 0]);
+      assert.deepEqual(await readdir(h.sessions), []);
     });
   }
+}
+
+for (const text of ["", "null", "[]", "7"]) {
+  test(`a body ${JSON.stringify(text)} has no number and is a 422`, async (t) => {
+    const h = await harness(t);
+    const { status, body } = await h.call("POST", "/send", text);
+    assert.deepEqual([status, body.code, h.sockets.length], [422, "numberInvalid", 0]);
+  });
 }
 
 for (const number of ["+7700000000", "+770000000001234"]) {
@@ -147,15 +162,103 @@ test("send on a number without a socket opens one", async (t) => {
   assert.deepEqual([body.sent, h.sockets.length], [true, 1]);
 });
 
-// #65: socketOf checks, then awaits the auth state, so two requests at once on a
-// number without a socket open two sockets on one session.
-test("two requests at once on a number without a socket open one socket", { todo: "#65" }, async (t) => {
+// --- one socket per number (#65) ---------------------------------------------------
+// WhatsApp holds one session on one set of keys and kicks the other socket out with
+// `conflict`: a second socket on a number is a reconnect, never a spare.
+
+test("two requests at once on a number without a socket open one socket", async (t) => {
   const h = await harness(t);
-  await Promise.all([
-    h.call("POST", "/send", send()),
-    h.call("POST", "/check", { number: OURS, to: LEAD }),
-  ]);
+  const release = h.hold();
+  const sent = h.call("POST", "/send", send());
+  await h.waitFor(() => h.auth.length === 1);
+  const checked = h.call("POST", "/check", { number: OURS, to: LEAD });
+  await settle();
+  release();
+
+  const answers = await Promise.all([sent, checked]);
+
+  assert.deepEqual(answers.map((a) => a.status), [200, 200]);
+  assert.deepEqual([h.sockets.length, h.open().length, h.auth.length], [1, 1, 1]);
+  assert.equal(h.last().sent.length, 1);
+});
+
+test("a request during a reconnect waits for it and gets the new socket", async (t) => {
+  const h = await harness(t);
+  await h.given(OURS, "connected");
+  await h.last().close(CONNECTION_LOST);
+  const release = h.hold();
+  await h.tick(5000);
+  assert.equal(h.auth.length, 2);
+  const sent = h.call("POST", "/send", send());
+  await settle();
+  release();
+
+  const { body } = await sent;
+
+  assert.deepEqual([body.sent, h.sockets.length, h.open().length], [true, 2, 1]);
+  assert.equal(h.last().sent.length, 1);
+});
+
+test("a failed connect fails its waiters and releases the lock", async (t) => {
+  const h = await harness(t);
+  const held = [];
+  h.onAuth = () => new Promise((_, reject) => held.push(reject));
+  const first = h.call("POST", "/check", { number: OURS, to: LEAD });
+  await h.waitFor(() => h.auth.length === 1);
+  const second = h.call("POST", "/check", { number: OURS, to: LEAD });
+  await settle();
+  for (const reject of held) reject(new Error("EIO"));
+
+  const answers = await Promise.all([first, second]);
+
+  assert.deepEqual(answers.map((a) => a.status), [500, 500]);
+  assert.deepEqual([h.sockets.length, h.auth.length], [0, 1]);
+  h.onAuth = () => {};
+  const { status } = await h.call("POST", "/check", { number: OURS, to: LEAD });
+  assert.deepEqual([status, h.sockets.length], [200, 1]);
+});
+
+test("a send whose connect failed is sent false: there was no socket to take the frame", async (t) => {
+  const h = await harness(t);
+  h.onAuth = () => {
+    throw new Error("EIO");
+  };
+  const { status, body } = await h.call("POST", "/send", send());
+  assert.equal(status, 200);
+  assert.deepEqual(body, { ok: false, sent: false, error: "Error: EIO" });
+});
+
+test("a reconnect that cannot read the session stalls instead of taking the process down", async (t) => {
+  const h = await harness(t);
+  await h.given(OURS, "connected");
+  await h.last().close(CONNECTION_LOST);
+  h.onAuth = () => {
+    throw new Error("EIO");
+  };
+  await h.tick(5000);
   assert.equal(h.sockets.length, 1);
+  assert.equal((await h.call("GET", "/health")).body[OURS].state, "stalled");
+});
+
+// Baileys closes a socket once; a second close is how a test gets a reconnect timer
+// to outlive its socket.
+test("the reconnect timer of a socket that is no longer the number's does nothing", async (t) => {
+  const h = await harness(t);
+  h.onSocket = bringQr;
+  await h.given(OURS, "socketDown");
+  await h.last().close(LOGGED_OUT);
+  await h.call("POST", "/qr", { number: OURS });
+  await h.tick(10 * 60 * 1000);
+  assert.deepEqual([h.sockets.length, h.open().length], [2, 1]);
+});
+
+test("a QR that comes with the open leaves the socket connected", async (t) => {
+  const h = await harness(t);
+  await h.call("POST", "/check", { number: OURS, to: LEAD });
+  h.last().emit("connection.update", { qr: "LATE" });
+  await h.last().open();
+  await flush();
+  assert.equal((await h.call("GET", "/health")).body[OURS].state, "connected");
 });
 
 // --- /check ------------------------------------------------------------------------
@@ -247,6 +350,23 @@ test("two qr at once on a logged out session open one socket", async (t) => {
   ]);
   assert.deepEqual(answers.map((a) => a.status), [200, 200]);
   assert.equal(h.sockets.length, 2);
+  assert.deepEqual(await readdir(h.sessions), [aside]);
+});
+
+test("a send during the replacement of an unlinked session waits for the fresh socket", async (t) => {
+  const h = await unlinked(t);
+  const keys = []; // whether each connect from here on found the old keys
+  h.onAuth = (dir) => keys.push(existsSync(path.join(dir, "creds.json")));
+
+  const [qr, sent] = await Promise.all([
+    h.call("POST", "/qr", { number: OURS }),
+    h.call("POST", "/send", send()),
+  ]);
+
+  assert.deepEqual([qr.status, sent.status, sent.body.sent], [200, 200, true]);
+  assert.deepEqual([h.sockets.length, h.open().length], [2, 1]);
+  assert.deepEqual(keys, [false]);
+  assert.equal(h.last().sent.length, 1);
   assert.deepEqual(await readdir(h.sessions), [aside]);
 });
 
