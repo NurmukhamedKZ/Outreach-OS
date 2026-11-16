@@ -5,9 +5,9 @@ import "./globals.css";
 import Sidebar from "@/components/Sidebar";
 import Highlighter from "@/components/Highlighter";
 
-// Files in the repo, not Google Fonts: Turbopack kept Google's answer in its cache
-// and failed every build on it (docs/agents/bugs.md, #24). Variable, latin and cyrillic;
-// Inter's opsz is pinned at 14, as Google serves it.
+// Шрифты из репозитория, не из Google Fonts: Turbopack держал ответ Google в кэше
+// и падал на нём каждой сборкой (docs/agents/bugs.md, #24). Вариативные, латиница
+// и кириллица; ось opsz у Inter закреплена на 14, как отдаёт Google.
 const inter = localFont({
   src: "./fonts/Inter.woff2",
   weight: "100 900",

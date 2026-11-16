@@ -1,4 +1,7 @@
-"""#13 и #38: старый конвейер и сборщик collector удалены — никто не импортирует их."""
+"""#13 и #38: старый конвейер и сборщик collector удалены — никто не импортирует их.
+
+#63: дашборд не берёт шрифты у Google.
+"""
 
 import re
 from pathlib import Path
@@ -22,8 +25,10 @@ def test_no_code_reaches_the_retired_pipeline():
 def test_the_dashboard_takes_no_fonts_from_google():
     """#63: next/font/google под Turbopack роняет сборку ответом Google в кэше (bugs.md, #24)."""
     frontend = BACKEND.parent / "frontend"
+    google = re.compile(r"next/font/google|fonts\.(googleapis|gstatic)\.com")
     offenders = [str(path.relative_to(frontend))
-                 for folder in ("app", "components")
-                 for path in (frontend / folder).rglob("*.ts*")
-                 if "next/font/google" in path.read_text(encoding="utf-8")]
+                 for path in frontend.rglob("*")
+                 if path.suffix in {".ts", ".tsx", ".js", ".mjs", ".css"}
+                 and not {"node_modules", ".next"} & set(path.relative_to(frontend).parts)
+                 and google.search(path.read_text(encoding="utf-8"))]
     assert offenders == []
