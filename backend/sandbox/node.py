@@ -141,6 +141,7 @@ def _refuse_number(number: str) -> JSONResponse | None:
     """Refuse what Node refuses: a number out of canonical form builds no session path.
 
     Without it a number Python sent malformed passes here and fails in production.
+    Not a schema validator: FastAPI would answer its own 422 shape, not Node's {code, error}.
     """
     try:
         if phones.canonical(number) == number:

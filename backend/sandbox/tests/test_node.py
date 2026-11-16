@@ -196,7 +196,6 @@ def test_the_delivery_status_has_the_fields_of_the_contract(clean):
 
 
 def test_a_socket_that_does_not_come_up_sends_nothing_and_no_receipt(clean):
-    """Как в Node: на неподнятом сокете фрейм не уходит — sent:false, статуса нет."""
     faults.update(number="stalled")
     body = _send()
     node.settle()

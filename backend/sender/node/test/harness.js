@@ -75,6 +75,7 @@ export async function harness(t, { webhookSecret = "" } = {}) {
     sessions,
     sockets: [], // every socket made, in order
     auth: [], // the directory of every auth state asked for
+    saved: [], // every credentials save: {dir, creds}
     events: [], // every webhook call: {url, headers, body}
     webhookStatus: 200,
     onSocket: () => {},
@@ -83,6 +84,15 @@ export async function harness(t, { webhookSecret = "" } = {}) {
     tick: async (ms) => {
       t.mock.timers.tick(ms);
       await flush();
+    },
+    // Tick a second at a time until `done`; return the seconds waited. A bound,
+    // not a hang: a broken backoff must fail the test, not stall npm test.
+    waitFor: async (done, limitSeconds = 3600) => {
+      for (let waited = 0; waited < limitSeconds; waited++) {
+        if (done()) return waited;
+        await h.tick(1000);
+      }
+      throw new Error(`nothing happened in ${limitSeconds} s`);
     },
     // Put the socket of `number` into a state of the contract.
     given: async (number, state) => {
@@ -101,7 +111,7 @@ export async function harness(t, { webhookSecret = "" } = {}) {
     },
     authState: async (dir) => {
       h.auth.push(dir);
-      return { state: { dir }, saveCreds: () => {} };
+      return { state: { dir }, saveCreds: (creds) => h.saved.push({ dir, creds }) };
     },
     loggedOutCode: LOGGED_OUT,
     toDataURL: async (text) => `data:image/png;base64,${text}`,

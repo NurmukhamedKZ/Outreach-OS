@@ -14,7 +14,14 @@ const send = (extra = {}) => ({ number: OURS, to: LEAD, text: "привет", ke
 // --- the number --------------------------------------------------------------------
 
 for (const route of ["/send", "/check", "/pair", "/qr"]) {
-  for (const number of ["77000000001", "+7 700 000 00 01", "../x", "+77000000001/../../x"]) {
+  for (const number of [
+    "77000000001",
+    "+7 700 000 00 01",
+    "../x",
+    "+77000000001/../../x",
+    "+770000000", // nine digits
+    "+7700000000012345", // sixteen digits
+  ]) {
     test(`${route} refuses ${JSON.stringify(number)} before any socket or directory`, async (t) => {
       const h = await harness(t);
       const { status, body } = await h.call("POST", route, { ...send(), number });
@@ -26,6 +33,26 @@ for (const route of ["/send", "/check", "/pair", "/qr"]) {
   }
 }
 
+// Not fixed by #55 (index.js behaves as before): a body without a number reaches
+// path.join and is a 500, and so is a number that is no string; see the PR.
+for (const route of ["/send", "/check", "/pair", "/qr"]) {
+  for (const number of [undefined, ["+77000000001"]]) {
+    test(`${route} refuses a number ${JSON.stringify(number)} with a 422`, { todo: "#55 PR" }, async (t) => {
+      const h = await harness(t);
+      const { status, body } = await h.call("POST", route, { ...send(), number });
+      assert.deepEqual([status, body.code], [422, "numberInvalid"]);
+    });
+  }
+}
+
+for (const number of ["+7700000000", "+770000000001234"]) {
+  test(`${number.length - 1} digits after the plus are a number`, async (t) => {
+    const h = await harness(t);
+    const { status } = await h.call("POST", "/check", { number, to: LEAD });
+    assert.equal(status, 200);
+  });
+}
+
 test("the session of a number lives in its own directory under sessions", async (t) => {
   const h = await harness(t);
   await h.call("POST", "/check", { number: OURS, to: LEAD });
@@ -34,6 +61,13 @@ test("the session of a number lives in its own directory under sessions", async 
 });
 
 // --- /send -------------------------------------------------------------------------
+
+test("the credentials Baileys updates are saved to the session of the number", async (t) => {
+  const h = await harness(t);
+  await h.given(OURS, "connected");
+  await h.last().emit("creds.update", { me: "fresh" });
+  assert.deepEqual(h.saved, [{ dir: path.join(h.sessions, OURS), creds: { me: "fresh" } }]);
+});
 
 test("send puts the text to the lead's jid and returns the provider id", async (t) => {
   const h = await harness(t);
@@ -113,6 +147,17 @@ test("send on a number without a socket opens one", async (t) => {
   assert.deepEqual([body.sent, h.sockets.length], [true, 1]);
 });
 
+// Not fixed by #55: socketOf checks, then awaits the auth state, so two requests
+// at once on a number without a socket open two sockets on one session; see the PR.
+test("two requests at once on a number without a socket open one socket", { todo: "#55 PR" }, async (t) => {
+  const h = await harness(t);
+  await Promise.all([
+    h.call("POST", "/send", send()),
+    h.call("POST", "/check", { number: OURS, to: LEAD }),
+  ]);
+  assert.equal(h.sockets.length, 1);
+});
+
 // --- /check ------------------------------------------------------------------------
 
 for (const hasWhatsApp of [true, false]) {
@@ -176,6 +221,15 @@ test("qr returns the QR of the fresh socket as a data url", async (t) => {
   assert.deepEqual(body, { qr: "data:image/png;base64,QR-DATA" });
 });
 
+test("a dead socket that throws on end is still put aside", async (t) => {
+  const h = await unlinked(t);
+  h.last().end = () => {
+    throw new Error("Connection Closed");
+  };
+  const { status } = await h.call("POST", "/qr", { number: OURS });
+  assert.deepEqual([status, h.sockets.length], [200, 2]);
+});
+
 test("an unlinked session without a directory still gets a fresh socket", async (t) => {
   const h = await harness(t);
   h.onSocket = bringQr;
@@ -220,8 +274,7 @@ test("the close of the replaced socket does not touch the fresh one", async (t) 
   assert.equal(body[OURS].state, "connecting");
 });
 
-test("a QR that does not come is a 504 after fifteen seconds", async (t) => {
-  const h = await harness(t);
+async function qrTimesOut(h) {
   let answer;
   h.call("POST", "/qr", { number: OURS }).then((a) => (answer = a));
   for (let waited = 0; waited < 14900; waited += 100) await h.tick(100);
@@ -229,6 +282,17 @@ test("a QR that does not come is a 504 after fifteen seconds", async (t) => {
   for (let waited = 0; !answer && waited < 1000; waited += 100) await h.tick(100);
   assert.equal(answer.status, 504);
   assert.deepEqual(answer.body, { code: "qrTimeout", error: "QR не пришёл вовремя" });
+}
+
+test("a QR that does not come is a 504 after fifteen seconds", async (t) => {
+  await qrTimesOut(await harness(t));
+});
+
+test("a socket that opened drops its QR: it is linked already", async (t) => {
+  const h = await harness(t);
+  h.onSocket = bringQr;
+  await h.given(OURS, "connected");
+  await qrTimesOut(h);
 });
 
 // --- the connection ----------------------------------------------------------------
@@ -260,12 +324,7 @@ test("reconnects back off twice longer each time up to five minutes, then stall"
   for (let attempt = 1; attempt <= 12; attempt++) {
     await h.last().close(CONNECTION_LOST);
     const made = h.sockets.length;
-    let waited = 0;
-    while (h.sockets.length === made) {
-      await h.tick(1000);
-      waited += 1000;
-    }
-    delays.push(waited / 1000);
+    delays.push(await h.waitFor(() => h.sockets.length > made));
   }
   assert.deepEqual(delays, [5, 10, 20, 40, 80, 160, 300, 300, 300, 300, 300, 300]);
 
@@ -346,12 +405,7 @@ test("an event Python did not take is retried with backoff and dropped after twe
   const delays = [];
   while (delays.length < 11) {
     const tries = h.events.length;
-    let waited = 0;
-    while (h.events.length === tries) {
-      await h.tick(1000);
-      waited += 1000;
-    }
-    delays.push(waited / 1000);
+    delays.push(await h.waitFor(() => h.events.length > tries));
   }
   assert.deepEqual(delays, [5, 10, 20, 40, 80, 160, 300, 300, 300, 300, 300]);
   await h.tick(24 * 60 * 60 * 1000);
