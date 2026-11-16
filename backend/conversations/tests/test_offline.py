@@ -40,7 +40,7 @@ def sell(*incoming: str) -> SellerAnswer:
 def test_a_first_draft_takes_the_first_signal_and_names_its_fact():
     draft = write(SEED)
 
-    assert draft.text.startswith(OFFLINE_MARK)
+    assert draft.text.startswith(f"{OFFLINE_MARK} Ромашка, ")
     assert "«цены по запросу»" in draft.text
     assert domain.normalize_angle(draft.angle, PITCHABLE) == "site_no_pricing"
     assert not draft.stop

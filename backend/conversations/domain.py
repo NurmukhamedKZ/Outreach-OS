@@ -255,7 +255,12 @@ def seller_task(stage: Stage) -> str:
 
 
 def prompt(seed: dict[str, Any], history: Sequence[dict[str, Any]], task: str) -> str:
-    """Return the human part of a move: the lead's card, the dialogue so far and the task."""
+    """Return the human part of a move: the lead's card, the dialogue so far and the task.
+
+    conversations/offline.py reads this layout back (the company line, the hooks and
+    signals blocks, the dialogue turns, the task wording of followup_task): change
+    them together, conversations/tests/test_offline.py fails otherwise.
+    """
     dossier = seed.get("dossier") or {}
     parts = [f"Компания: {seed.get('name', '')}", f"Город: {seed.get('city', '')}"]
     if dossier.get("summary"):

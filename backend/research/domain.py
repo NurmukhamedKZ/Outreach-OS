@@ -259,7 +259,9 @@ def _bare_host(url: str) -> str:
 def prompt(card: Card, reviews: Sequence[Review], pages: Sequence[SitePage]) -> list[Message]:
     """Return the one request of a company's research: card, reviews and site text.
 
-    No phones and no other contacts: the model needs none of them.
+    No phones and no other contacts: the model needs none of them. research/offline.py
+    reads this layout back (the company line, review lines, the pages block): change
+    them together, research/tests/test_offline.py fails otherwise.
     """
     lines = [
         "Карточка 2GIS",

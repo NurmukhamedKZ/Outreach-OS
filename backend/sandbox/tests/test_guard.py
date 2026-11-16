@@ -191,16 +191,52 @@ def test_offline_without_the_sandbox_refuses_to_start():
 
 
 @pytest.mark.parametrize(
-    "data_dir", [DEFAULT_DATA, DEFAULT_DATA.parent / ".." / DEFAULT_DATA.parent.name / "data"]
+    "data_dir",
+    [
+        DEFAULT_DATA,
+        DEFAULT_DATA.parent / ".." / DEFAULT_DATA.parent.name / "data",
+        STAND_DATA / ".." / ".." / "backend" / "data",
+        # The production data of another tree: a worktree's own default is not the only one.
+        Path("/Users/someone/Outreach-OS/backend/data"),
+        Path("/tmp/offline-data"),
+        # A component of the path, not a substring of it.
+        Path("/w/tree/.standby/data"),
+        Path("/w/tree/my.stand/data"),
+    ],
+    ids=[
+        "default",
+        "default via ..",
+        "out of the stand via ..",
+        "another tree",
+        "no stand",
+        ".standby",
+        "my.stand",
+    ],
 )
-def test_offline_on_the_default_data_directory_refuses_to_start(data_dir):
-    """Invented dossiers would land in the production database, next to the real ones."""
+def test_offline_outside_a_stands_data_directory_refuses_to_start(data_dir):
+    """Invented dossiers would land in a production database, next to the real ones."""
     app = _app()
     with pytest.raises(sandbox.SandboxMisconfigured) as failure:
         sandbox.mount(app, _settings(True, SANDBOX_NODE, offline=True, data_dir=data_dir))
     assert "DATA_DIR" in str(failure.value)
+    assert "scripts/stand" in str(failure.value)
     assert not _mounted(app)
     assert paths.state_db() == paths.PRODUCTION_STATE
+
+
+def test_offline_through_a_link_out_of_the_stand_refuses_to_start(tmp_path):
+    """The resolved path counts: a .stand link to production data is production data."""
+    production = tmp_path / "Outreach-OS" / "backend"
+    (production / "data").mkdir(parents=True)
+    (tmp_path / "tree").mkdir()
+    (tmp_path / "tree" / ".stand").symlink_to(production)
+    with pytest.raises(sandbox.SandboxMisconfigured):
+        sandbox.mount(
+            _app(),
+            _settings(
+                True, SANDBOX_NODE, offline=True, data_dir=tmp_path / "tree" / ".stand" / "data"
+            ),
+        )
 
 
 def test_offline_in_a_sandbox_with_its_own_data_starts():

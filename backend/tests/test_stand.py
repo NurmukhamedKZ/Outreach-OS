@@ -107,6 +107,20 @@ def test_an_online_stand_has_the_real_model_and_network(tmp_path, monkeypatch):
     assert online.sandbox, "online or not, the stand stays in the sandbox"
 
 
+def test_the_stand_names_its_mode_and_one_up_before_the_offline_mode_was_online():
+    def state(**backend):
+        return {"backend": {"pgid": 1, "port": 2, **backend}, "frontend": {"pgid": 3, "port": 4}}
+
+    assert stand.mode(state(online=False)).startswith("offline")
+    assert stand.mode(state(online=True)).startswith("online")
+    assert stand.mode(state()).startswith("online")
+
+
+def test_the_stand_keeps_its_data_where_the_offline_guard_lets_it_start(stand_settings):
+    assert sandbox.STAND_DIR in stand_settings.data_dir.parts
+    assert stand.STAND.name == sandbox.STAND_DIR
+
+
 def _cwds(*folders: str) -> str:
     """What `lsof -a -g <pgid> -d cwd -Fn` prints for a group whose processes work in `folders`."""
     return "".join(f"p{500 + i}\nfcwd\nn{folder}\n" for i, folder in enumerate(folders))

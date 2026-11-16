@@ -32,6 +32,7 @@ def test_every_quote_of_the_reference_pages_is_found_and_the_company_passes():
 
     domain.judge(found)
     assert found.rejected == 0
+    assert "Studio Nomad" in answer.dossier.summary
     assert {hook.source for hook in found.dossier.hooks} == {Source.REVIEWS, Source.SITE}
     assert len(found.dossier.hooks) <= domain.MAX_HOOKS
     assert not answer.facts.complaints, "five-star reviews are no complaints"
@@ -91,3 +92,12 @@ def test_every_text_a_person_reads_carries_the_offline_mark():
     texts = [answer.facts.what_they_do, answer.dossier.summary, answer.dossier.approach]
     texts += [hook.angle for hook in answer.dossier.hooks]
     assert all(text.startswith(OFFLINE_MARK) for text in texts), texts
+
+
+def test_a_vacancy_after_letters_casefold_lengthens_is_quoted_from_its_word():
+    # Each ß casefolds to two letters: twelve of them move a casefolded index a word on.
+    pages = site(f"<p>Stra{'ß' * 12}e ВАКАНСИИ: менеджер по продажам в отдел B2B</p>")
+
+    answer, _ = research([], pages)
+
+    assert [v.quote.split()[0] for v in answer.facts.vacancies] == ["ВАКАНСИИ:"]

@@ -94,9 +94,13 @@ def _quote(text: str) -> str | None:
 
 
 def _word_at(text: str, fragment: str) -> int | None:
-    """Return where the word holding `fragment` starts in `text`; None when it is not there."""
-    at = text.casefold().find(fragment)
-    return None if at < 0 else text.rfind(" ", 0, at) + 1
+    """Return where the word holding `fragment` starts in `text`; None when it is not there.
+
+    Searched in `text` itself, not a casefolded copy: casefold changes the length
+    of some letters, and an index into the copy would cut the page elsewhere.
+    """
+    found = re.search(re.escape(fragment), text, re.IGNORECASE)
+    return None if found is None else text.rfind(" ", 0, found.start()) + 1
 
 
 def _complaint_type(text: str) -> ComplaintType:
