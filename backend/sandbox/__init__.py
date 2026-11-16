@@ -17,7 +17,8 @@ LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 class SandboxMisconfigured(RuntimeError):
-    """The sandbox is on, but it would talk to something that is not its own fake Node."""
+    """The sandbox would talk to something that is not its own fake Node,
+    or the offline mode is on outside a sandbox with a data directory of its own."""
 
 
 def mount(app: FastAPI, settings: Settings) -> None:
@@ -31,9 +32,15 @@ def mount(app: FastAPI, settings: Settings) -> None:
     fake Node posts its webhook and secret to. Another port on this machine is
     another backend: the live Node, or another stand with its own database.
 
+    The offline mode (OFFLINE=1) is checked first, the sandbox on or off: its
+    model invents text and dossiers, so it needs the sandbox and a data
+    directory other than the default one.
+
     Raises:
-        SandboxMisconfigured: the sandbox is on and an address leads elsewhere.
+        SandboxMisconfigured: the sandbox is on and an address leads elsewhere,
+            or the offline mode is on without the sandbox or on the default data directory.
     """
+    _refuse_offline_outside_a_stand(settings)
     if not settings.sandbox:
         return
     port = settings.uvicorn_port
@@ -61,6 +68,25 @@ def mount(app: FastAPI, settings: Settings) -> None:
     runs.activate_latest()
     app.include_router(routes.router)
     app.include_router(node.router)
+
+
+def _refuse_offline_outside_a_stand(settings: Settings) -> None:
+    """Refuse the offline mode where its invented text could reach a person or production data."""
+    if not settings.offline:
+        return
+    if not settings.sandbox:
+        raise SandboxMisconfigured(
+            "OFFLINE=1 without SANDBOX=1: the offline model's invented text would go to real"
+            " people through the live transport. Turn the sandbox on (scripts/stand does)"
+            " or the offline mode off."
+        )
+    default = Settings.model_fields["data_dir"].default
+    if settings.data_dir.resolve() == default.resolve():
+        raise SandboxMisconfigured(
+            f"OFFLINE=1 on the default data directory {default}: invented dossiers would land"
+            " in the production database. Set DATA_DIR to a directory of its own"
+            " (scripts/stand does) or turn the offline mode off."
+        )
 
 
 def _url_of(transport: object) -> str:

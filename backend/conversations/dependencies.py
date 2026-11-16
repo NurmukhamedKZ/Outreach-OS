@@ -10,10 +10,11 @@ from fastapi import Depends
 import paths
 import sqlite_tools
 from config import settings
+from conversations import offline
 from conversations.service import ConversationService
 from core import db as core_db
 from core.db import Db
-from core.model import Model, ModelKeyMissingError, OpenRouterModel
+from core.model import Model, ModelKeyMissingError, OfflineModel, OpenRouterModel
 
 # Not 0 as in research: there facts are pulled out of a text, here a message
 # goes to a person, and zero temperature writes every letter the same.
@@ -23,9 +24,13 @@ TEMPERATURE = 0.7
 def build_model() -> Model:
     """Return the model conversations writes with; refuses before anything when there is no key.
 
+    Offline (OFFLINE=1) the writer and the seller answer from the prompt and need no key.
+
     Raises:
-        ModelKeyMissingError: OPENROUTER_API_KEY is empty.
+        ModelKeyMissingError: OPENROUTER_API_KEY is empty and the mode is not offline.
     """
+    if settings.offline:
+        return OfflineModel(offline.answer)
     if not settings.openrouter_api_key:
         raise ModelKeyMissingError()
     return OpenRouterModel(settings.openrouter_api_key, temperature=TEMPERATURE)

@@ -13,8 +13,11 @@ from fastapi import FastAPI
 import sandbox
 from backup.service import BackupService
 from config import Settings
+from conversations import dependencies as conversations_dependencies
 from core.activity import Journal
+from core.model import OfflineModel
 from core.whatsapp import NodeWhatsApp
+from research import dependencies as research_dependencies
 from sandbox import runs
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,20 +35,25 @@ SANDBOX_SELF_URL=http://127.0.0.1:8787
 UVICORN_HOST=0.0.0.0
 TELEGRAM_BOT_TOKEN=123:live
 TELEGRAM_CHAT_ID=42
+OPENROUTER_API_KEY=sk-or-live
 """
+
+
+def _stand_settings(tmp_path, monkeypatch, dotenv_text: str = PRODUCTION_ENV, **flags):
+    """Settings as the stand's backend reads them: its variables over a .env and the shell."""
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(dotenv_text, encoding="utf-8")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:from-the-shell")
+    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "icloud" / "backup"))
+    (tmp_path / "icloud").mkdir(exist_ok=True)
+    for key, value in stand.backend_env(tmp_path / "worktree", 9123, **flags).items():
+        monkeypatch.setenv(key, value)
+    return Settings(_env_file=dotenv)
 
 
 @pytest.fixture
 def stand_settings(tmp_path, monkeypatch):
-    """Settings as the stand's backend reads them: its variables over a production .env and shell."""
-    dotenv = tmp_path / ".env"
-    dotenv.write_text(PRODUCTION_ENV, encoding="utf-8")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:from-the-shell")
-    monkeypatch.setenv("BACKUP_DIR", str(tmp_path / "icloud" / "backup"))
-    (tmp_path / "icloud").mkdir()
-    for key, value in stand.backend_env(tmp_path / "worktree", 9123).items():
-        monkeypatch.setenv(key, value)
-    return Settings(_env_file=dotenv)
+    return _stand_settings(tmp_path, monkeypatch)
 
 
 def test_the_stand_passes_the_sandbox_guard_on_its_own_port(stand_settings, tmp_path, monkeypatch):
@@ -57,6 +65,7 @@ def test_the_stand_passes_the_sandbox_guard_on_its_own_port(stand_settings, tmp_
     finally:
         runs.deactivate()
     assert stand_settings.sandbox
+    assert stand_settings.offline, "the guard checked the offline mode too"
     assert stand_settings.uvicorn_port == 9123
     assert stand_settings.uvicorn_host == "127.0.0.1"
 
@@ -76,6 +85,26 @@ def test_the_stand_tells_nobody_and_backs_up_nothing(stand_settings, tmp_path):
 
 def test_the_stand_keeps_its_data_inside_its_directory(stand_settings, tmp_path):
     assert stand_settings.data_dir == tmp_path / "worktree" / ".stand" / "data"
+
+
+@pytest.mark.parametrize(
+    ("dependencies", "build"),
+    [(research_dependencies, "get_model"), (conversations_dependencies, "build_model")],
+)
+def test_the_stand_asks_no_model_even_with_a_key_in_the_env_file(
+    stand_settings, monkeypatch, dependencies, build
+):
+    """Batches and drafts on a stand cost nothing and answer no 503, whatever backend/.env holds."""
+    assert stand_settings.openrouter_api_key == "sk-or-live"
+    monkeypatch.setattr(dependencies, "settings", stand_settings)
+    assert isinstance(getattr(dependencies, build)(), OfflineModel)
+
+
+def test_an_online_stand_has_the_real_model_and_network(tmp_path, monkeypatch):
+    online = _stand_settings(tmp_path, monkeypatch, PRODUCTION_ENV + "OFFLINE=1\n", online=True)
+
+    assert not online.offline, "--online beats the env file too"
+    assert online.sandbox, "online or not, the stand stays in the sandbox"
 
 
 def _cwds(*folders: str) -> str:

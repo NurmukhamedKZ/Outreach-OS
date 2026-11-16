@@ -35,7 +35,7 @@ from conversations import public as conversations
 from core import db as core_db
 from core.activity import Journal
 from core.errors import DomainError, domain_error_handler
-from core.pages import ScraplingPages
+from core.pages import Pages, ScraplingPages, StoredPages
 from core.whatsapp import NodeWhatsApp
 from delivery import api as delivery_api
 from delivery import public as delivery
@@ -77,11 +77,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     stop.set()
 
 
+def build_pages() -> Pages:
+    """Return the process's page adapter: offline (OFFLINE=1) the stored pages, never the network."""
+    if settings.offline:
+        return StoredPages(paths.PAGES)
+    return ScraplingPages(paths.PAGES, now=clock.now)
+
+
 app = FastAPI(title="Outreach OS", description="Лиды по Казахстану", lifespan=lifespan)
 # One journal per process, over the database of the moment: a sandbox run switches it live.
 app.state.journal = Journal(paths.state_db)
 # One page adapter per process: the pace belongs to the host, two would double it.
-app.state.pages = ScraplingPages(paths.PAGES, now=clock.now)
+app.state.pages = build_pages()
 # One backup service per process: its lock keeps the daemon and the button apart.
 # The production database, never a sandbox run's.
 app.state.backup = backup.BackupService(

@@ -269,3 +269,41 @@ def test_empty_cookies_and_headers_are_not_sent(network, source):
     source.get(URL, cookies={}, headers={})
 
     assert calls == [{"impersonate": "chrome"}]
+
+
+@pytest.fixture
+def no_network(monkeypatch):
+    """Any request reaching scrapling fails the test: the stored pages never go out."""
+
+    def refuse(url, **kwargs):
+        raise AssertionError(f"went to the network: {url}")
+
+    monkeypatch.setattr(pages, "Fetcher", SimpleNamespace(get=refuse))
+
+
+def test_stored_pages_answer_what_was_kept_and_never_the_network(no_network, tmp_path):
+    kept = pages.Page(text="<html>card</html>", final_url=URL + "/tab/info", fetched_at=FETCHED_AT)
+    pages.store(tmp_path / "pages", URL, kept)
+
+    assert pages.StoredPages(tmp_path / "pages").get(URL, cookies={"a": "1"}) == kept
+
+
+def test_stored_pages_read_what_the_network_adapter_kept(network, source, tmp_path, monkeypatch):
+    network(response(landed=URL + "/tab/info"))
+    fetched = source.get(URL)
+    monkeypatch.setattr(pages, "Fetcher", None)
+
+    assert pages.StoredPages(tmp_path / "pages").get(URL) == fetched
+
+
+@pytest.mark.parametrize("corrupt", [None, corrupt_body, sidecar("{}"), delete_body])
+def test_an_address_without_a_readable_page_is_gone(no_network, tmp_path, corrupt):
+    root = tmp_path / "pages"
+    pages.store(root, "https://other.kz/", pages.Page("<html/>", "https://other.kz/", FETCHED_AT))
+    if corrupt:
+        pages.store(root, URL, pages.Page("<html/>", URL, FETCHED_AT))
+        corrupt(root)
+
+    with pytest.raises(pages.HttpStatusError) as error:
+        pages.StoredPages(root).get(URL)
+    assert error.value.status == 404
