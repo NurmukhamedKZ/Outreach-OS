@@ -87,9 +87,10 @@ export async function harness(t, { webhookSecret = "" } = {}) {
     hold: () => {
       let release;
       const gate = new Promise((resolve) => (release = resolve));
+      const before = h.onAuth;
       h.onAuth = () => gate;
       return () => {
-        h.onAuth = () => {};
+        h.onAuth = before;
         release();
       };
     },

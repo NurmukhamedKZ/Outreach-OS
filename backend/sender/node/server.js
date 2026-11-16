@@ -76,8 +76,10 @@ export function createServer({
       // QR-логин и pairing-code — два взаимоисключающих способа привязать один
       // и тот же неавторизованный сокет: Baileys шлёт `qr`, пока ничей код не
       // запрошен, поэтому кадр просто копится в записи номера, а /qr его читает.
+      // Копится текст, картинку рисует /qr: ожидание рисовки посреди обработчика
+      // вернуло бы в карту запись, какой она была до ожидания (#65).
       if (update.qr) {
-        sockets.set(number, { ...sockets.get(number), qr: await toDataURL(update.qr) });
+        sockets.set(number, { ...sockets.get(number), qr: update.qr });
       }
       if (update.connection === "open") {
         sockets.set(number, { ...sockets.get(number), state: "connected", attempts: 0, qr: null });
@@ -105,7 +107,16 @@ export function createServer({
             log.error({ number, attempts }, "сокет не поднимается, дальше — руками");
           } else {
             const delay = Math.min(RECONNECT_BASE_MS * 2 ** (attempts - 1), RECONNECT_MAX_MS);
-            setTimeout(() => connectOnce(number), delay);
+            setTimeout(() => {
+              // Таймер принадлежит закрывшемуся сокету: номер уже на другом — не наш.
+              if (sockets.get(number)?.sock !== sock) return;
+              // Ключи не прочитались (диск, права): необработанный отказ уронил бы
+              // процесс со всеми номерами, а так встаёт один, как после попыток.
+              connectOnce(number).catch((error) => {
+                sockets.set(number, { ...sockets.get(number), state: "stalled" });
+                log.error({ number, error: String(error) }, "сессия не читается, дальше — руками");
+              });
+            }, delay);
           }
         }
       }
@@ -228,11 +239,9 @@ export function createServer({
 
   async function socketOf(number) {
     // Замена сессии убирает номер из карты до переименования каталога: подключиться
-    // в это окно значило бы прочитать ключи, которые вот-вот уедут в .bak. Ждём, пока
-    // в полёте нет ни замены, ни подключения, и смотрим карту без паузы после этого.
-    while (replacing.has(number) || connecting.has(number)) {
-      await (replacing.get(number) ?? connecting.get(number));
-    }
+    // в это окно значило бы прочитать ключи, которые вот-вот уедут в .bak.
+    await replacing.get(number);
+    await connecting.get(number);
     if (!sockets.get(number)?.sock) await connectOnce(number);
     return sockets.get(number).sock;
   }
@@ -261,7 +270,13 @@ export function createServer({
       }
       // Отвязанная сессия: фрейм точно не уйдёт — честное sent:false, а не 500.
       if (loggedOut(number)) return { ok: false, sent: false, error: "loggedOut" };
-      const sock = await socketOf(number);
+      let sock;
+      try {
+        sock = await socketOf(number);
+      } catch (error) {
+        // Сокет не поднялся (ключи не прочитались) — фрейм точно не ушёл.
+        return { ok: false, sent: false, error: String(error) };
+      }
       const content = {
         text: { text },
         image: { image: { url: text }, caption: "" },
@@ -300,7 +315,7 @@ export function createServer({
       await socketOf(number);
       const qr = await waitForQr(number);
       if (!qr) throw new RouteError(504, "qrTimeout", "QR не пришёл вовремя");
-      return { qr };
+      return { qr: await toDataURL(qr) };
     },
   };
 

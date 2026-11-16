@@ -199,7 +199,7 @@ test("a request during a reconnect waits for it and gets the new socket", async 
   assert.equal(h.last().sent.length, 1);
 });
 
-test("a connect that failed fails who waited for it and leaves no lock", async (t) => {
+test("a failed connect fails its waiters and releases the lock", async (t) => {
   const h = await harness(t);
   const held = [];
   h.onAuth = () => new Promise((_, reject) => held.push(reject));
@@ -216,6 +216,49 @@ test("a connect that failed fails who waited for it and leaves no lock", async (
   h.onAuth = () => {};
   const { status } = await h.call("POST", "/check", { number: OURS, to: LEAD });
   assert.deepEqual([status, h.sockets.length], [200, 1]);
+});
+
+test("a send whose connect failed is sent false: there was no socket to take the frame", async (t) => {
+  const h = await harness(t);
+  h.onAuth = () => {
+    throw new Error("EIO");
+  };
+  const { status, body } = await h.call("POST", "/send", send());
+  assert.equal(status, 200);
+  assert.deepEqual(body, { ok: false, sent: false, error: "Error: EIO" });
+});
+
+test("a reconnect that cannot read the session stalls instead of taking the process down", async (t) => {
+  const h = await harness(t);
+  await h.given(OURS, "connected");
+  await h.last().close(CONNECTION_LOST);
+  h.onAuth = () => {
+    throw new Error("EIO");
+  };
+  await h.tick(5000);
+  assert.equal(h.sockets.length, 1);
+  assert.equal((await h.call("GET", "/health")).body[OURS].state, "stalled");
+});
+
+// Baileys closes a socket once; a second close is how a test gets a reconnect timer
+// to outlive its socket.
+test("the reconnect timer of a socket that is no longer the number's does nothing", async (t) => {
+  const h = await harness(t);
+  h.onSocket = bringQr;
+  await h.given(OURS, "socketDown");
+  await h.last().close(LOGGED_OUT);
+  await h.call("POST", "/qr", { number: OURS });
+  await h.tick(10 * 60 * 1000);
+  assert.deepEqual([h.sockets.length, h.open().length], [2, 1]);
+});
+
+test("a QR that comes with the open leaves the socket connected", async (t) => {
+  const h = await harness(t);
+  await h.call("POST", "/check", { number: OURS, to: LEAD });
+  h.last().emit("connection.update", { qr: "LATE" });
+  await h.last().open();
+  await flush();
+  assert.equal((await h.call("GET", "/health")).body[OURS].state, "connected");
 });
 
 // --- /check ------------------------------------------------------------------------
