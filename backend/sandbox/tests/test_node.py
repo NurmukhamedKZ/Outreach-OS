@@ -1,17 +1,31 @@
-"""Подменный Node: тот же контракт, что у sender/node/index.js.
+"""Подменный Node: тот же контракт, что у sender/node/server.js.
 
 Адаптер core/whatsapp.py не переписывается ни строкой, поэтому проверяется ровно
 то, на что он опирается: sent/провайдерский id, идемпотентность по ключу и
-разница между «не ушло» и «неизвестно».
+разница между «не ушло» и «неизвестно». Случаи контракта — общий файл
+sender/node/test/contract.json: по нему же проверяется настоящий Node.
 """
 
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
 
 from sandbox import faults, node, runs
+
+CONTRACT = json.loads(
+    (Path(__file__).resolve().parents[2] / "sender/node/test/contract.json").read_text("utf-8")
+)
+# The socket states of the contract as the switches of the sandbox.
+GIVEN: dict[str, dict[str, Any]] = {
+    "connected": {},
+    "loggedOut": {"number": "loggedOut"},
+    "socketDown": {"number": "stalled"},
+}
 
 
 @pytest.fixture(autouse=True)
@@ -35,21 +49,31 @@ def _record(sent):
     return deliver
 
 
-def test_send_returns_a_provider_id():
-    body = node.send(
-        node.SendRequest(number="+77000000001", to="+77010000001", text="привет", key="outbox-1")
+def _answer(answer: JSONResponse | dict[str, Any]) -> dict[str, Any]:
+    """Return the answer of a route called directly; a refusal fails the test."""
+    assert isinstance(answer, dict), answer
+    return answer
+
+
+def _send() -> dict[str, Any]:
+    return _answer(
+        node.send(
+            node.SendRequest(
+                number="+77000000001", to="+77010000001", text="привет", key="outbox-1"
+            )
+        )
     )
+
+
+def test_send_returns_a_provider_id():
+    body = _send()
     assert body["sent"] is True
     assert body["provider_id"]
 
 
 def test_repeat_by_key_does_not_send_twice(clean):
-    first = node.send(
-        node.SendRequest(number="+77000000001", to="+77010000001", text="привет", key="outbox-1")
-    )
-    again = node.send(
-        node.SendRequest(number="+77000000001", to="+77010000001", text="привет", key="outbox-1")
-    )
+    first = _send()
+    again = _send()
     node.settle()
     assert again["provider_id"] == first["provider_id"]
     assert len(clean) == 1, "дубликат в холодном аутриче — прямой повод нажать Report"
@@ -57,9 +81,7 @@ def test_repeat_by_key_does_not_send_twice(clean):
 
 def test_not_sent_is_an_honest_no(clean):
     faults.update(send="not_sent")
-    body = node.send(
-        node.SendRequest(number="+77000000001", to="+77010000001", text="привет", key="outbox-1")
-    )
+    body = _send()
     assert body["sent"] is False
     assert body["provider_id"] is None
     node.settle()
@@ -71,18 +93,12 @@ def test_unknown_is_a_five_hundred():
     безопасный ретрай. Неизвестность обязана приезжать как TransportError."""
     faults.update(send="unknown")
     with pytest.raises(HTTPException) as failure:
-        node.send(
-            node.SendRequest(
-                number="+77000000001", to="+77010000001", text="привет", key="outbox-1"
-            )
-        )
+        _send()
     assert failure.value.status_code == 500
 
 
 def test_delivery_status_goes_to_our_own_webhook(clean):
-    node.send(
-        node.SendRequest(number="+77000000001", to="+77010000001", text="привет", key="outbox-1")
-    )
+    _send()
     node.settle()
     assert clean[0]["kind"] == "status"
     assert clean[0]["status"] == node.DELIVERED
@@ -91,18 +107,14 @@ def test_delivery_status_goes_to_our_own_webhook(clean):
 
 def test_read_status_when_asked(clean):
     faults.update(delivery="read")
-    node.send(
-        node.SendRequest(number="+77000000001", to="+77010000001", text="привет", key="outbox-1")
-    )
+    _send()
     node.settle()
     assert clean[0]["status"] == node.READ
 
 
 def test_silence_leaves_the_thread_in_queued(clean):
     faults.update(delivery="silent")
-    body = node.send(
-        node.SendRequest(number="+77000000001", to="+77010000001", text="привет", key="outbox-1")
-    )
+    body = _send()
     assert body["sent"] is True
     node.settle()
     assert clean == []
@@ -126,8 +138,9 @@ def test_health_reports_the_switched_state():
 
 def test_pair_and_qr_answer_without_a_phone():
     """Страница пула обязана работать: она зовёт обе ручки на живом номере."""
-    assert (node.pair(node.NumberRequest(number="+77000000001")))["code"]
-    assert (node.qr(node.NumberRequest(number="+77000000001")))["qr"].startswith("data:image")
+    assert _answer(node.pair(node.NumberRequest(number="+77000000001")))["code"]
+    qr = _answer(node.qr(node.NumberRequest(number="+77000000001")))["qr"]
+    assert qr.startswith("data:image")
 
 
 def test_a_logged_out_session_refuses_a_check_with_the_code_and_sends_nothing(clean):
@@ -135,9 +148,7 @@ def test_a_logged_out_session_refuses_a_check_with_the_code_and_sends_nothing(cl
     refused = node.check(node.CheckRequest(number="+77000000001", to="+77010000001"))
     assert isinstance(refused, JSONResponse)
     assert refused.status_code == 409 and b"sessionLoggedOut" in bytes(refused.body)
-    body = node.send(
-        node.SendRequest(number="+77000000001", to="+77010000001", text="привет", key="outbox-1")
-    )
+    body = _send()
     assert body["sent"] is False
 
 
@@ -145,3 +156,48 @@ def test_a_qr_for_a_logged_out_session_opens_a_fresh_one():
     faults.update(number="loggedOut")
     node.qr(node.NumberRequest(number="+77000000001"))
     assert faults.current().number == "connected"
+
+
+# --- the contract shared with the real Node ------------------------------------------
+
+
+def _read(expected: Any, actual: Any) -> Any:
+    """Return `actual` as Python reads it: only the fields of `expected`, a missing one None."""
+    if isinstance(expected, dict):
+        given = actual if isinstance(actual, dict) else {}
+        return {key: _read(value, given.get(key)) for key, value in expected.items()}
+    return actual
+
+
+@pytest.mark.parametrize("case", CONTRACT["cases"], ids=lambda case: case["name"])
+def test_the_fake_answers_every_case_of_the_contract_as_node(case):
+    app = FastAPI()
+    app.include_router(node.router)
+    faults.update(**GIVEN[case["given"]])
+    request = case["request"]
+
+    response = TestClient(app).request(
+        request["method"], f"/api/sandbox/node{request['path']}", json=request.get("body")
+    )
+    node.settle()
+
+    body = response.json()
+    assert response.status_code == case["status"], body
+    expected = case.get("body", {})
+    assert _read(expected, body) == expected
+    for field in case.get("strings", []):
+        assert isinstance(body.get(field), str) and body[field], field
+
+
+def test_the_delivery_status_has_the_fields_of_the_contract(clean):
+    _send()
+    node.settle()
+    assert set(clean[0]) == set(CONTRACT["events"]["status"])
+
+
+def test_a_socket_that_does_not_come_up_sends_nothing_and_no_receipt(clean):
+    faults.update(number="stalled")
+    body = _send()
+    node.settle()
+    assert body["sent"] is False
+    assert clean == []

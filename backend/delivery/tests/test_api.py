@@ -1,7 +1,9 @@
 """HTTP of delivery: the pool, the queue with its author, the settings and Node's webhook."""
 
+import json
 import sqlite3
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -29,6 +31,8 @@ from delivery.tests.conftest import (
     thread_of,
 )
 from refusals import public as refusals
+
+NODE_CONTRACT = Path(__file__).resolve().parents[2] / "sender/node/test/contract.json"
 
 
 @pytest.fixture
@@ -423,6 +427,25 @@ def test_an_event_we_cannot_use_still_gets_200(http):
         "handled": False
     }
     assert http.post("/api/sender/webhook", json={"kind": "connection"}).status_code == 200
+
+
+def test_every_event_of_the_node_contract_is_read(http, db):
+    """The events exactly as Node sends them (sender/node/test/contract.json)."""
+    events = json.loads(NODE_CONTRACT.read_text("utf-8"))["events"]
+    sent(db, provider_id=events["status"]["provider_id"])
+
+    answers = {kind: http.post("/api/sender/webhook", json=event) for kind, event in events.items()}
+
+    assert {kind: answer.status_code for kind, answer in answers.items()} == dict.fromkeys(
+        events, 200
+    )
+    assert {kind: answer.json()["handled"] for kind, answer in answers.items()} == {
+        "connection": False,
+        "incoming": True,
+        "status": True,
+    }
+    assert db.execute("SELECT delivered_at FROM outbox").fetchone()[0] is not None
+    assert (conversation.unhandled_incoming(db) or {}).get("text") == events["incoming"]["text"]
 
 
 def test_a_forged_event_is_refused_and_the_right_secret_passes(http, db, monkeypatch):

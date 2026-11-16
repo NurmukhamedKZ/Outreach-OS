@@ -1,4 +1,4 @@
-"""Подменный Node: те же пять ручек, что у sender/node/index.js, и столько же
+"""Подменный Node: те же пять ручек, что у sender/node/server.js, и столько же
 знания о продукте — нисколько.
 
 core/whatsapp.py не переписывается ни строкой: NodeWhatsApp ходит по
@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from config import settings
+from core import phones
 from core.whatsapp import FAKE_QR, LOGGED_OUT
 from sandbox import faults
 from sandbox.runs import SANDBOX_NUMBER
@@ -75,8 +76,10 @@ def forget_keys() -> None:
     _sent_keys.clear()
 
 
-@router.post("/send")
-def send(request: SendRequest) -> dict[str, Any]:
+@router.post("/send", response_model=None)
+def send(request: SendRequest) -> JSONResponse | dict[str, Any]:
+    if (refused := _refuse_number(request.number)) is not None:
+        return refused
     if request.key and request.key in _sent_keys:
         log.info("повтор по ключу %s, второй отправки нет", request.key)
         return {"ok": True, "sent": True, "provider_id": _sent_keys[request.key]}
@@ -84,7 +87,7 @@ def send(request: SendRequest) -> dict[str, Any]:
     if switch.send == "unknown":
         raise HTTPException(500, "транспорт не ответил: судьба отправки неизвестна")
     # Как в Node: на неподнятом сокете фрейм точно не ушёл — безопасный ретрай.
-    if switch.send == "not_sent" or switch.number == "loggedOut":
+    if switch.send == "not_sent" or switch.number in ("loggedOut", "stalled"):
         return {
             "ok": False,
             "sent": False,
@@ -106,19 +109,25 @@ def send(request: SendRequest) -> dict[str, Any]:
 
 @router.post("/check", response_model=None)
 def check(request: CheckRequest) -> JSONResponse | dict[str, bool]:
+    if (refused := _refuse_number(request.number)) is not None:
+        return refused
     if faults.current().number == "loggedOut":
         return JSONResponse({"code": LOGGED_OUT, "error": "loggedOut"}, status_code=409)
     return {"has_whatsapp": faults.current().has_whatsapp}
 
 
-@router.post("/pair")
-def pair(request: NumberRequest) -> dict[str, str]:
+@router.post("/pair", response_model=None)
+def pair(request: NumberRequest) -> JSONResponse | dict[str, str]:
+    if (refused := _refuse_number(request.number)) is not None:
+        return refused
     _fresh_session()
     return {"code": "SBX-0000"}
 
 
-@router.post("/qr")
-def qr(request: NumberRequest) -> dict[str, str]:
+@router.post("/qr", response_model=None)
+def qr(request: NumberRequest) -> JSONResponse | dict[str, str]:
+    if (refused := _refuse_number(request.number)) is not None:
+        return refused
     _fresh_session()
     return {"qr": FAKE_QR}
 
@@ -126,6 +135,22 @@ def qr(request: NumberRequest) -> dict[str, str]:
 @router.get("/health")
 def health() -> dict[str, dict[str, Any]]:
     return {SANDBOX_NUMBER: {"state": faults.current().number, "reconnects": 0}}
+
+
+def _refuse_number(number: str) -> JSONResponse | None:
+    """Refuse what Node refuses: a number out of canonical form builds no session path.
+
+    Without it a number Python sent malformed passes here and fails in production.
+    Not a schema validator: FastAPI would answer its own 422 shape, not Node's {code, error}.
+    """
+    try:
+        if phones.canonical(number) == number:
+            return None
+    except ValueError:
+        pass
+    return JSONResponse(
+        {"code": "numberInvalid", "error": "номер не в канонической форме"}, status_code=422
+    )
 
 
 def _fresh_session() -> None:
