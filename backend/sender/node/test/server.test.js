@@ -33,11 +33,11 @@ for (const route of ["/send", "/check", "/pair", "/qr"]) {
   }
 }
 
-// Not fixed by #55 (index.js behaves as before): a body without a number reaches
-// path.join and is a 500, and so is a number that is no string; see the PR.
+// #65: a body without a number reaches path.join and is a 500, and so is a number
+// that is no string; #55 kept index.js as it was.
 for (const route of ["/send", "/check", "/pair", "/qr"]) {
   for (const number of [undefined, ["+77000000001"]]) {
-    test(`${route} refuses a number ${JSON.stringify(number)} with a 422`, { todo: "#55 PR" }, async (t) => {
+    test(`${route} refuses a number ${JSON.stringify(number)} with a 422`, { todo: "#65" }, async (t) => {
       const h = await harness(t);
       const { status, body } = await h.call("POST", route, { ...send(), number });
       assert.deepEqual([status, body.code], [422, "numberInvalid"]);
@@ -147,9 +147,9 @@ test("send on a number without a socket opens one", async (t) => {
   assert.deepEqual([body.sent, h.sockets.length], [true, 1]);
 });
 
-// Not fixed by #55: socketOf checks, then awaits the auth state, so two requests
-// at once on a number without a socket open two sockets on one session; see the PR.
-test("two requests at once on a number without a socket open one socket", { todo: "#55 PR" }, async (t) => {
+// #65: socketOf checks, then awaits the auth state, so two requests at once on a
+// number without a socket open two sockets on one session.
+test("two requests at once on a number without a socket open one socket", { todo: "#65" }, async (t) => {
   const h = await harness(t);
   await Promise.all([
     h.call("POST", "/send", send()),
