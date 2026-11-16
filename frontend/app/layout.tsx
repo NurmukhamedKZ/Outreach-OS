@@ -1,19 +1,22 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 import Sidebar from "@/components/Sidebar";
 import Highlighter from "@/components/Highlighter";
 
-const inter = Inter({
-  subsets: ["latin", "cyrillic"],
-  weight: ["400", "500", "600"],
+// Files in the repo, not Google Fonts: Turbopack kept Google's answer in its cache
+// and failed every build on it (docs/agents/bugs.md, #24). Variable, latin and cyrillic;
+// Inter's opsz is pinned at 14, as Google serves it.
+const inter = localFont({
+  src: "./fonts/Inter.woff2",
+  weight: "100 900",
   variable: "--font-sans",
 });
 
-const mono = JetBrains_Mono({
-  subsets: ["latin", "cyrillic"],
-  weight: ["400", "500"],
+const jetbrainsMono = localFont({
+  src: "./fonts/JetBrainsMono.woff2",
+  weight: "100 800",
   variable: "--font-jetbrains",
 });
 
@@ -24,7 +27,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="ru" className={`${inter.variable} ${mono.variable}`}>
+    <html lang="ru" className={`${inter.variable} ${jetbrainsMono.variable}`}>
       <body>
         <Suspense fallback={null}>
           <Highlighter />

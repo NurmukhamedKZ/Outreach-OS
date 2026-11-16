@@ -17,3 +17,13 @@ def test_no_code_reaches_the_retired_pipeline():
                  for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
                  if RETIRED.search(line)]
     assert offenders == []
+
+
+def test_the_dashboard_takes_no_fonts_from_google():
+    """#63: next/font/google под Turbopack роняет сборку ответом Google в кэше (bugs.md, #24)."""
+    frontend = BACKEND.parent / "frontend"
+    offenders = [str(path.relative_to(frontend))
+                 for folder in ("app", "components")
+                 for path in (frontend / folder).rglob("*.ts*")
+                 if "next/font/google" in path.read_text(encoding="utf-8")]
+    assert offenders == []

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The stand: this worktree's backend and dashboard on free ports, in the sandbox, with its own data.
 
-    scripts/stand up [--webpack]   start both in the background, wait until they answer, print where
+    scripts/stand up               start both in the background, wait until they answer, print where
     scripts/stand status           print where; exit 1 when the stand is not up
     scripts/stand down             stop both; the data stays in .stand/data (rm -rf .stand wipes it)
 
@@ -76,12 +76,10 @@ def owns(cwds: str, root: Path) -> bool:
     return any(line in ours for line in cwds.splitlines())
 
 
-def up(webpack: bool) -> int:
+def up() -> int:
     state = _read()
     if state is not None:
         if all(_alive(entry["pgid"]) for entry in state.values()):
-            if webpack:
-                print("stand: already up; --webpack applies after scripts/stand down", file=sys.stderr)
             _print(state)
             return 0
         _stop(state)  # what a crashed stand left half-running
@@ -91,7 +89,7 @@ def up(webpack: bool) -> int:
     state = {}
     processes = {}
     try:
-        for name, port, command, env in _commands(backend_port, frontend_port, webpack):
+        for name, port, command, env in _commands(backend_port, frontend_port):
             processes[name] = _start(name, command, env)
             # pid is the group's id: start_new_session. Written at once, so an `up`
             # killed from here on leaves its groups to `down`.
@@ -150,16 +148,12 @@ def _install() -> None:
         subprocess.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=ROOT / "frontend", check=True)
 
 
-def _commands(
-    backend_port: int, frontend_port: int, webpack: bool
-) -> list[tuple[str, int, list[str], dict[str, str]]]:
+def _commands(backend_port: int, frontend_port: int) -> list[tuple[str, int, list[str], dict[str, str]]]:
     """Return what to start: the name (also its folder and log), port, command and variables."""
     backend = ["uv", "run", "python", str(ROOT / "backend" / "main.py")]
     # Without --hostname next dev listens on every interface, and the dashboard has no login.
     frontend = [str(ROOT / "frontend" / "node_modules" / ".bin" / "next"), "dev"]
     frontend += ["--hostname", HOST, "--port", str(frontend_port)]
-    if webpack:
-        frontend.append("--webpack")
     return [
         ("backend", backend_port, backend, {**backend_env(ROOT, backend_port), "PYTHONUNBUFFERED": "1"}),
         ("frontend", frontend_port, frontend, {"API_ORIGIN": f"http://{HOST}:{backend_port}"}),
@@ -220,23 +214,12 @@ def _wait(name: str, process: subprocess.Popen[bytes], url: str, deadline: float
         time.sleep(0.5)
 
 
-# Google Fonts answered with a /l/font?kit=…&skey=… address, which Turbopack's
-# next/font cannot take, and keeps the answer in its cache (docs/agents/bugs.md, #24, #63).
-GOOGLE_FONT_FAILURE = "next/font/google queries have exactly one entry"
-
-
 def _explain(error: NotReady) -> None:
     log = STAND / f"{error.name}.log"
     text = log.read_text(encoding="utf-8", errors="replace")
     print(f"stand: {error}; both processes are stopped", file=sys.stderr)
     print(f"--- the end of {log}", file=sys.stderr)
     print("\n".join(text.splitlines()[-40:]), file=sys.stderr)
-    if GOOGLE_FONT_FAILURE in text:
-        print(
-            "--- Turbopack and Google Fonts (docs/agents/bugs.md, #24): the failure stays in"
-            " its cache. Run: rm -rf frontend/.next && scripts/stand up --webpack",
-            file=sys.stderr,
-        )
 
 
 def _alive(pgid: int) -> bool:
@@ -268,10 +251,7 @@ def _stop(state: dict[str, dict[str, int]]) -> None:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="scripts/stand", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
-    start = commands.add_parser("up", help="start the stand, or print where the running one is")
-    start.add_argument(
-        "--webpack", action="store_true", help="next dev without Turbopack (docs/agents/bugs.md, #24)"
-    )
+    commands.add_parser("up", help="start the stand, or print where the running one is")
     commands.add_parser("status", help="print where the stand is; exit 1 when it is not up")
     commands.add_parser("down", help="stop the stand; its data stays")
     args = parser.parse_args(argv)
@@ -283,7 +263,7 @@ def main(argv: list[str]) -> int:
             # The children do not inherit the lock (Popen closes their descriptors).
             fcntl.flock(lock, fcntl.LOCK_EX)
             if args.command == "up":
-                return up(args.webpack)
+                return up()
             return status() if args.command == "status" else down()
     except subprocess.CalledProcessError as error:
         print(f"stand: {' '.join(map(str, error.cmd))} failed with code {error.returncode}", file=sys.stderr)
