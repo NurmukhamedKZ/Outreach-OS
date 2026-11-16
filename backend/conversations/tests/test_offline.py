@@ -109,3 +109,23 @@ def test_no_word_of_the_table_is_a_stop_word_closing_the_thread_before_the_selle
     assert not [
         (word, stop) for word in words for stop in DeliverySettings().stopwords if stop in word
     ]
+
+
+def test_a_long_fact_is_cut_to_its_limit():
+    quote = "длинная цитата " * 30
+    draft = write({**SEED, "signals": [{"type": "site_no_pricing", "quote": quote}]})
+
+    assert f"«{quote.strip()[: offline.FACT_CHARS]}»" in draft.text
+
+
+def test_only_the_leads_words_give_a_verdict():
+    history = [
+        {"role": "incoming", "text": "А что вы предлагаете?"},
+        {"role": "outgoing", "text": "Если отказываемся от звонков, теряем клиентов"},
+    ]
+    answer = offline.answer(
+        SellerAnswer, domain.seller_messages(SEED, history, "оффер", Stage.PROBING)
+    )
+
+    assert isinstance(answer, SellerAnswer)
+    assert answer.decision == Decision.ANSWER

@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from core.model import OFFLINE_MARK
 from research import domain, offline
 from research.domain import Card, Review, SitePage
@@ -78,8 +80,9 @@ def test_a_site_without_prices_and_with_a_sales_vacancy_gives_its_signals():
     }
 
 
-def test_prices_on_the_site_are_seen():
-    answer, _ = research([], site("<p>Сайт-визитка — от 150 000 ₸ за проект</p>"))
+@pytest.mark.parametrize("price", ["150 000 ₸", "150 000 тенге", "150 000 ТЕНГЕ"])
+def test_prices_on_the_site_are_seen(price):
+    answer, _ = research([], site(f"<p>Сайт-визитка — от {price} за проект</p>"))
 
     assert answer.facts.pricing_visible
 
@@ -101,3 +104,43 @@ def test_a_vacancy_after_letters_casefold_lengthens_is_quoted_from_its_word():
     answer, _ = research([], pages)
 
     assert [v.quote.split()[0] for v in answer.facts.vacancies] == ["ВАКАНСИИ:"]
+
+
+@pytest.mark.parametrize(("rating", "complaint"), [(3, True), (4, False), (None, False)])
+def test_a_review_rated_three_or_lower_is_a_complaint_and_one_without_a_rating_is_none(
+    rating, complaint
+):
+    review = Review(CARD, "Сайт сдали на месяц позже обещанного срока", rating, NOW, False)
+
+    answer, found = research([review], [])
+
+    assert bool(answer.facts.complaints) is complaint
+    domain.judge(found)
+
+
+def test_a_request_left_unanswered_is_a_missed_lead():
+    review = Review(CARD, "Оставили заявку на сайте, никто так и не перезвонил", 1, NOW, False)
+
+    answer, found = research([review], [])
+
+    assert [c.type for c in answer.facts.complaints] == [ComplaintType.REQUEST_IGNORED]
+    assert [s.type for s in found.signals] == [SignalType.REVIEWS_MISSED_LEAD]
+
+
+def test_many_reviews_leave_room_for_the_site_within_the_hook_limit():
+    reviews = [
+        Review(CARD, f"Отзыв номер {n}: сделали всё аккуратно и вовремя", 5, NOW, False)
+        for n in range(domain.MAX_HOOKS + 1)
+    ]
+
+    answer, _ = research(reviews, site("<p>Бухгалтерские услуги для ТОО и ИП в Алматы</p>"))
+
+    assert len(answer.dossier.hooks) == domain.MAX_HOOKS
+    assert "Бухгалтерские услуги для ТОО и ИП в Алматы" in [h.quote for h in answer.dossier.hooks]
+
+
+def test_a_vacancy_outside_sales_is_no_hiring_signal():
+    answer, found = research([], site("<p>Цены от 5000 тенге. Вакансии: бухгалтер в штат</p>"))
+
+    assert [v.sales for v in answer.facts.vacancies] == [False]
+    assert SignalType.SITE_HIRING_SALES not in {s.type for s in found.signals}
