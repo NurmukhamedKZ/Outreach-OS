@@ -97,8 +97,7 @@ scripts/stand down     # гасит оба; данные остаются в .st
 с `API_ORIGIN` на этот бэкенд. Переменные стенда сильнее `backend/.env`, ключ модели
 и Langfuse из него остаются. Логи процессов — `.stand/backend.log` и
 `.stand/frontend.log`. Стендов в разных worktree — сколько угодно одновременно;
-Node-сервис стенд не запускает. `--webpack` — `next dev` без Turbopack
-(`docs/agents/bugs.md`, #24).
+Node-сервис стенд не запускает.
 
 **`config.py` — единственное место чтения переменных окружения**, общее для
 всех трёх систем: `pydantic.BaseSettings` сам подхватывает `backend/.env` при
@@ -511,7 +510,8 @@ cd backend && uv run pytest delivery/tests/
 запросы идут через rewrite Next (`next.config.ts`, `API_ORIGIN`) на тот же оригин.
 
 **Дизайн-система** (`globals.css`, токены в `:root`): белый канвас, чёрный
-CTA, Inter + JetBrains Mono (`next/font`), hairline-границы, тёмные блоки
+CTA, Inter + JetBrains Mono (`next/font/local`, вариативные файлы с кириллицей
+в `frontend/app/fonts/`, без Google Fonts — #63), hairline-границы, тёмные блоки
 только у кода и лога. Тема светлая и залочена — инверсий секций нет. Иконки —
 `@phosphor-icons/react`, свои SVG не рисуем.
 
