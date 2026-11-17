@@ -12,7 +12,7 @@ type Thread = { status: string; draft: object | null };
 
 const RUN_LEAD = FIRM.touches;
 // Два других лида топ-3 нового прогона — для вердиктов продавца.
-const VERDICTS = { [FIRM.interested]: "Давайте созвонимся завтра", [FIRM.answer]: "А сколько это стоит?" };
+const VERDICTS: Record<string, string> = { [FIRM.interested]: "Давайте созвонимся завтра", [FIRM.answer]: "А сколько это стоит?" };
 
 /** Шаг доставки, пока тред не придёт в нужное состояние: ждём состояние, а не исход тика.
  *  Шаг — как `sandbox/demo.py::_next_send`: в окно, за джиттер, тик; каждая отправка с
