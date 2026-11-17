@@ -47,7 +47,7 @@ class Check:
     hint: str = ""
 
 
-# A new check (#54 e2e) is one more entry here.
+# A new check is one more entry here.
 CHECKS = [
     Check("ruff", "backend", [["uv", "run", "ruff", "check", "."],
                               ["uv", "run", "ruff", "format", "--check", "."]]),
@@ -56,6 +56,9 @@ CHECKS = [
     Check("pytest", "backend", [["uv", "run", "pytest", "-q"]]),
     # Build before tsc: a stale .next/types/validator.ts fails tsc, the build regenerates it.
     Check("frontend", "frontend", [["npm", "run", "build"], ["npx", "tsc", "--noEmit"]],
+          triggers=("frontend/",), needs="node_modules", hint="cd frontend && npm ci"),
+    # Its own stand on free ports (frontend/e2e/stand.ts); next dev writes .next/dev, the build .next.
+    Check("e2e", "frontend", [["npx", "playwright", "test"]],
           triggers=("frontend/",), needs="node_modules", hint="cd frontend && npm ci"),
     # server.js imports no package, so no node_modules is needed (#55).
     Check("node", "backend/sender/node", [["npm", "test"]], triggers=("backend/sender/node/",)),

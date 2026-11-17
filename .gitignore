@@ -58,6 +58,8 @@ backend/logs/
 frontend/node_modules/
 frontend/.next/
 frontend/next-env.d.ts
+# E2E (#54): скриншоты и трейсы упавших тестов
+frontend/e2e/results/
 
 # Сессии WhatsApp: ключи к живым номерам, в git не кладутся ни при каком
 # способе добавления файлов (дублируется в sender/node/.gitignore)

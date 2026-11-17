@@ -119,6 +119,13 @@ def test_real_table_builds_frontend_before_tsc_and_only_on_its_diff():
         ("backend/sender/node/",),
     )
     assert not node.needs
+    e2e = by_name.pop("e2e")
+    assert (e2e.cwd, e2e.commands, e2e.triggers, e2e.needs) == (
+        "frontend",
+        [["npx", "playwright", "test"]],
+        FRONT_TRIGGER,
+        "node_modules",
+    )
     assert set(by_name) == {"ruff", "mypy", "lint-imports", "pytest"}
     assert all(not c.triggers for c in by_name.values())
 
@@ -322,3 +329,12 @@ def test_pre_push_clean_tree_runs_checks(tmp_path, capsys):
     root = repo(tmp_path)
     assert check.main(["--pre-push"], push_of_head(root), root, [bad("pytest")]) == 1
     assert "FAIL pytest" in capsys.readouterr().out
+
+
+def test_e2e_runs_on_a_frontend_diff_and_skips_without_one():
+    real = {c.name: c for c in check.CHECKS}
+    chosen = dict((c.name, why) for c, why in check.select([real["e2e"]], ["frontend/app/page.tsx"]))
+    skipped = dict((c.name, why) for c, why in check.select([real["e2e"]], ["backend/main.py"]))
+
+    assert chosen == {"e2e": None}
+    assert skipped == {"e2e": "дифф не трогает frontend/"}
