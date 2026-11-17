@@ -117,7 +117,7 @@ function BreakdownTable({ rows }: { rows: { key: string; sent: number; replied: 
     return <p className="note">данных пока нет</p>;
   }
   return (
-    <table className="table">
+    <table className="table stack-table">
       <thead>
         <tr>
           <th>Ключ</th>
@@ -130,9 +130,9 @@ function BreakdownTable({ rows }: { rows: { key: string; sent: number; replied: 
         {rows.map((row) => (
           <tr key={row.key}>
             <td>{row.key}</td>
-            <td className="mono">{row.sent}</td>
-            <td className="mono">{row.replied}</td>
-            <td className="mono">{row.meetings}</td>
+            <td className="mono" data-label="Отправлено">{row.sent}</td>
+            <td className="mono" data-label="Ответили">{row.replied}</td>
+            <td className="mono" data-label="Встречи">{row.meetings}</td>
           </tr>
         ))}
       </tbody>
