@@ -31,6 +31,8 @@ export default async function setup() {
   if (spawnSync(STAND, ["status"], { cwd: ROOT, stdio: "ignore" }).status === 0) {
     throw new Error("стенд этого дерева уже поднят — e2e поднимает свой: scripts/stand down");
   }
+  // Полуживой стенд (упал один процесс) гасится до того, как стираются его данные.
+  stand("down");
   // Тот же мир на каждом прогоне: на собранных данных стенд мир не пересобирает.
   rmSync(path.join(ROOT, ".stand", "data"), { recursive: true, force: true });
   if (stand("up") !== 0) {
@@ -38,6 +40,6 @@ export default async function setup() {
     throw new Error("стенд не поднялся — причина выше; логи в .stand/");
   }
   return () => {
-    stand("down");
+    if (stand("down") !== 0) console.error("стенд не погас: scripts/stand down");
   };
 }

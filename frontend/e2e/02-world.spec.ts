@@ -4,36 +4,39 @@
 import { expect, test } from "./fixtures";
 import { FIRM, lead, sandbox } from "./world";
 
-test("/sender: «Отправить» у строки автомата под manual, «Отменить» у ждущей", async ({ page, request }) => {
+test("/sender: «Отправить» у строки автомата под manual делает её строкой оператора", async ({ page, request }) => {
   const held = await lead(request, FIRM.held);
-  const draft = await lead(request, FIRM.draft);
-  // Вторая ждущая строка — черновик «Черновиков топ-N»; джиттер держит её от фонового тика.
-  await sandbox.queue(request, draft.company_id);
   await page.goto("/sender");
-  const rows = page.getByRole("row");
+  const rows = page.getByRole("row").filter({ hasText: held.company_id });
+  const author = (name: string) => rows.filter({ has: page.getByRole("cell", { name, exact: true }) });
 
   // Кнопки есть только у ждущих строк: «Ждут отправки».
-  const automat = rows.filter({ hasText: held.company_id }).filter({ hasText: "автомат" });
-  await automat.getByRole("button", { name: "Отправить" }).click();
-  // Автор стал оператором; строку мог уже взять фоновый тик — тогда она в «Последних».
-  await expect(rows.filter({ hasText: held.company_id }).filter({ hasText: "оператор" }).first()).toBeVisible();
-
-  await rows.filter({ hasText: draft.company_id }).getByRole("button", { name: "Отменить" }).click();
-  await expect(rows.filter({ hasText: draft.company_id }).filter({ hasText: "отменено" }).first()).toBeVisible();
+  await author("автомат").getByRole("button", { name: "Отправить" }).click();
+  // Строку оператора manual отпускает: её мог уже взять фоновый тик — тогда она в «Последних».
+  await expect(author("оператор")).toHaveCount(1);
+  await expect(author("автомат")).toHaveCount(0);
 });
 
-test("/sender: режим автопилота переживает перезагрузку", async ({ page }) => {
+test("/sender: «Стоп» держит очередь и переживает перезагрузку, «Отменить» у ждущей", async ({ page, request }) => {
+  const draft = await lead(request, FIRM.draft);
   await page.goto("/sender");
   const mode = (name: string) => page.getByRole("button", { name, exact: true });
   await expect(mode("Ручной")).toHaveAttribute("aria-pressed", "true");
+  // Под «Ручным» строку оператора фоновый тик отправил бы за 20 секунд, если окно открыто.
+  await mode("Стоп").click();
+  await expect(mode("Стоп")).toHaveAttribute("aria-pressed", "true");
 
-  await mode("Только ответы").click();
-  await expect(mode("Только ответы")).toHaveAttribute("aria-pressed", "true");
+  await sandbox.queue(request, draft.company_id); // черновик «Черновиков топ-N»
   await page.reload();
-  await expect(mode("Только ответы")).toHaveAttribute("aria-pressed", "true");
+  await expect(mode("Стоп")).toHaveAttribute("aria-pressed", "true");
+  const row = page.getByRole("row").filter({ hasText: draft.company_id });
+  await row.filter({ hasText: "ждёт" }).getByRole("button", { name: "Отменить" }).click();
+  await expect(row.filter({ hasText: "отменено" })).toHaveCount(1);
+  await expect(row.filter({ hasText: "ждёт" })).toHaveCount(0);
 
-  // Мир остаётся в manual: автомат не должен отпускать строки следующим сценариям.
+  // Мир остаётся в manual, как его собрал демо-сценарий.
   await mode("Ручной").click();
+  await expect(mode("Ручной")).toHaveAttribute("aria-pressed", "true"); // сохранено: кнопка — ответ API
   await page.reload();
   await expect(mode("Ручной")).toHaveAttribute("aria-pressed", "true");
 });

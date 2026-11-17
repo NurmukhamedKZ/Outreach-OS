@@ -19,7 +19,7 @@ import shutil
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
@@ -37,6 +37,7 @@ class Check:
     `triggers` — path prefixes that select the check; empty means always.
     `needs` — a directory inside `cwd` without which the check cannot run;
     `hint` — what to run to get it.
+    `after` — the check, listed earlier, this one starts only once it finished.
     """
 
     name: str
@@ -45,6 +46,7 @@ class Check:
     triggers: tuple[str, ...] = ()
     needs: str = ""
     hint: str = ""
+    after: str = ""
 
 
 # A new check is one more entry here.
@@ -57,9 +59,11 @@ CHECKS = [
     # Build before tsc: a stale .next/types/validator.ts fails tsc, the build regenerates it.
     Check("frontend", "frontend", [["npm", "run", "build"], ["npx", "tsc", "--noEmit"]],
           triggers=("frontend/",), needs="node_modules", hint="cd frontend && npm ci"),
-    # Its own stand on free ports (frontend/e2e/stand.ts); next dev writes .next/dev, the build .next.
+    # Its own stand on free ports (frontend/e2e/stand.ts). After the build: the stand's
+    # next dev rewrites next-env.d.ts and .next/dev/types, which tsc reads.
     Check("e2e", "frontend", [["npx", "playwright", "test"]],
-          triggers=("frontend/",), needs="node_modules", hint="cd frontend && npm ci"),
+          triggers=("frontend/",), needs="node_modules", hint="cd frontend && npm ci",
+          after="frontend"),
     # server.js imports no package, so no node_modules is needed (#55).
     Check("node", "backend/sender/node", [["npm", "test"]], triggers=("backend/sender/node/",)),
 ]
@@ -116,11 +120,23 @@ def timed(c: Check, root: Path) -> tuple[bool, str, float]:
     return passed, output, time.monotonic() - start
 
 
+def wait_then_time(c: Check, before: Future[tuple[bool, str, float]] | None,
+                   root: Path) -> tuple[bool, str, float]:
+    """Run `c` once `before` is done, green or red: its verdict is its own line."""
+    if before is not None:
+        before.exception()
+    return timed(c, root)
+
+
 def run(chosen: list[tuple[Check, str | None]], root: Path) -> int:
     """Run the selected checks in parallel, print the report, return the exit code."""
     to_run = [c for c, why in chosen if why is None]
     with ThreadPoolExecutor(max_workers=len(to_run) or 1) as pool:
-        results = iter(list(pool.map(lambda c: timed(c, root), to_run)))
+        # A worker per check, so one waiting for another never starves the pool.
+        futures: dict[str, Future[tuple[bool, str, float]]] = {}
+        for c in to_run:
+            futures[c.name] = pool.submit(wait_then_time, c, futures.get(c.after), root)
+        results = iter([futures[c.name].result() for c in to_run])
     width = max(len(c.name) for c, _ in chosen)
     failed = []
     for c, why in chosen:

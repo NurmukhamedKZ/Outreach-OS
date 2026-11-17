@@ -29,7 +29,13 @@ const PAGES: Stop[] = [
       }
     },
   },
-  { path: "/leads", sees: (page) => expect(page.getByRole("link", { name: FIRM.answer })).toBeVisible() },
+  {
+    path: "/leads",
+    sees: async (page) => {
+      await expect(page.getByText("лидов 15")).toBeVisible(); // world.LEADS
+      await expect(page.getByRole("link", { name: FIRM.answer, exact: true })).toBeVisible();
+    },
+  },
   {
     path: "/leads/:id",
     sees: async (page) => {

@@ -11,7 +11,8 @@ test.describe.configure({ mode: "serial" });
 type Thread = { status: string; draft: object | null };
 
 const RUN_LEAD = FIRM.touches;
-// Два других лида топ-3 нового прогона — для вердиктов продавца.
+// Два других лида из верха выдачи (их берут «Черновики топ-N», top_n 10) — для вердиктов продавца; слова — из таблицы
+// офлайн-продавца (`backend/conversations/offline.py`, `VERDICTS`).
 const VERDICTS: Record<string, string> = { [FIRM.interested]: "Давайте созвонимся завтра", [FIRM.answer]: "А сколько это стоит?" };
 
 /** Шаг доставки, пока тред не придёт в нужное состояние: ждём состояние, а не исход тика.
@@ -50,6 +51,11 @@ test("прогон по лиду и «Черновики топ-N» на /cold",
 
 test("подтверждённый черновик уходит через подменный Node и доставляется", async ({ page, request }) => {
   const { company_id } = await lead(request, RUN_LEAD);
+  const mode = (name: string) => page.getByRole("button", { name, exact: true });
+  // «Стоп» держит строку, пока её не увидит /sender: окно открыто, и фоновый тик взял бы её сразу.
+  await page.goto("/sender");
+  await mode("Стоп").click();
+  await expect(mode("Стоп")).toHaveAttribute("aria-pressed", "true");
   await page.goto("/cold");
   await page.getByRole("button").filter({ hasText: RUN_LEAD }).click();
   await expect(page.getByRole("link", { name: `карточка ${RUN_LEAD}` })).toBeVisible();
@@ -61,6 +67,8 @@ test("подтверждённый черновик уходит через по
   const row = page.getByRole("row").filter({ hasText: company_id });
   await expect(row).toContainText("оператор");
   await expect(row).toContainText("ждёт");
+  await mode("Ручной").click();
+  await expect(mode("Ручной")).toHaveAttribute("aria-pressed", "true");
 
   await page.goto("/sandbox");
   await tickUntil(request, company_id, (thread) => thread.status === "active"); // первая доставка
@@ -87,8 +95,9 @@ test("ответ лида — черновик продавца, стоп-сло
   // Отказ — в базе прогона (её читает /api/refusals песочницы), а в боевой лид остаётся лидом.
   const refusals: { handle: string }[] = await (await request.get("/api/refusals")).json();
   expect(refusals.map((each) => each.handle)).toContain(channel!.handle);
+  await lead(request, RUN_LEAD);
   await page.goto("/leads");
-  await expect(page.getByRole("link", { name: RUN_LEAD })).toBeVisible();
+  await expect(page.getByRole("link", { name: RUN_LEAD, exact: true })).toBeVisible();
 });
 
 test("вердикты продавца: «созвонимся» и «сколько» отдают тред человеку", async ({ page, request }) => {

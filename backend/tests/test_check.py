@@ -126,6 +126,7 @@ def test_real_table_builds_frontend_before_tsc_and_only_on_its_diff():
         FRONT_TRIGGER,
         "node_modules",
     )
+    assert e2e.after == "frontend", "next dev of the stand rewrites what tsc reads"
     assert set(by_name) == {"ruff", "mypy", "lint-imports", "pytest"}
     assert all(not c.triggers for c in by_name.values())
 
@@ -333,8 +334,36 @@ def test_pre_push_clean_tree_runs_checks(tmp_path, capsys):
 
 def test_e2e_runs_on_a_frontend_diff_and_skips_without_one():
     real = {c.name: c for c in check.CHECKS}
-    chosen = dict((c.name, why) for c, why in check.select([real["e2e"]], ["frontend/app/page.tsx"]))
+    chosen = dict(
+        (c.name, why) for c, why in check.select([real["e2e"]], ["frontend/app/page.tsx"])
+    )
     skipped = dict((c.name, why) for c, why in check.select([real["e2e"]], ["backend/main.py"]))
 
     assert chosen == {"e2e": None}
     assert skipped == {"e2e": "дифф не трогает frontend/"}
+
+
+def test_a_check_after_another_starts_once_that_one_finished(tmp_path):
+    marker = tmp_path / "built"
+    slow = [
+        sys.executable,
+        "-c",
+        f"import time, pathlib; time.sleep(0.5); pathlib.Path({str(marker)!r}).touch()",
+    ]
+    needs_it = [
+        sys.executable,
+        "-c",
+        f"import pathlib, sys; sys.exit(not pathlib.Path({str(marker)!r}).exists())",
+    ]
+    chosen = [
+        (check.Check("frontend", ".", [slow]), None),
+        (check.Check("e2e", ".", [needs_it], after="frontend"), None),
+    ]
+
+    assert check.run(chosen, tmp_path) == 0
+
+
+def test_a_check_after_a_skipped_one_still_runs(tmp_path):
+    chosen = [(ok("frontend"), "дифф не трогает frontend/"), (ok("e2e", after="frontend"), None)]
+
+    assert check.run(chosen, tmp_path) == 0

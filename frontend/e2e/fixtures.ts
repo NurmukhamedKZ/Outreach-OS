@@ -23,6 +23,11 @@ export const test = base.extend<{ guard: Guard }>({
         }
       });
       page.on("pageerror", (error) => problems.push(`исключение: ${error.message}`));
+      // Запрос без ответа (обрыв, отказ соединения); ERR_ABORTED — уход со страницы.
+      page.on("requestfailed", (request) => {
+        const reason = request.failure()?.errorText ?? "";
+        if (reason !== "net::ERR_ABORTED") problems.push(`${reason} ${request.method()} ${request.url()}`);
+      });
       page.on("response", (response) => {
         const status = response.status();
         const path = new URL(response.url()).pathname;
@@ -32,6 +37,8 @@ export const test = base.extend<{ guard: Guard }>({
       });
       await use({ allow: (path, status) => allowed.push({ path, status }) });
       if (!page.isClosed() && page.url().startsWith("http")) {
+        // Тест мог кончиться кликом, который увёл страницу: мерим уже загруженную.
+        await page.waitForLoadState();
         const [scroll, width] = await page.evaluate(() => [
           document.documentElement.scrollWidth,
           window.innerWidth,
