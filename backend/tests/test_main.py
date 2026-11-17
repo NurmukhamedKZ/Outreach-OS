@@ -96,3 +96,9 @@ def test_the_entry_point_listens_on_the_port_setting(monkeypatch):
     monkeypatch.setattr(settings, "sandbox", False)
     runpy.run_path(str(Path(main.__file__)), run_name="__main__")
     assert served == {"host": settings.uvicorn_host, "port": 9123}
+
+
+@pytest.mark.parametrize("path", ["/api/sandbox/demo", "/api/sandbox/tick"])
+def test_without_the_sandbox_the_demo_and_the_tick_do_not_exist(path):
+    assert not settings.sandbox
+    assert TestClient(main.app).post(path).status_code == 404

@@ -3,9 +3,13 @@
 The processes are not started here: that is the manual check in the PR.
 """
 
+import io
+import json
+import urllib.error
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -136,3 +140,88 @@ def test_a_process_group_is_the_stands_only_when_it_works_in_this_worktree():
     assert not stand.owns(_cwds("/w/tree/backend/migrations"), root), "a shell in a subfolder"
     assert not stand.owns(_cwds("/Users/someone"), root), "a reused pid"
     assert not stand.owns("", root), "the group is gone"
+
+
+@pytest.fixture
+def no_processes(tmp_path, monkeypatch):
+    """`up` with its processes faked: what it builds is recorded, nothing starts."""
+    monkeypatch.setattr(stand, "STAND", tmp_path)
+    monkeypatch.setattr(stand, "STATE", tmp_path / "stand.json")
+    monkeypatch.setattr(stand, "_install", lambda: None)
+    monkeypatch.setattr(stand, "_start", lambda name, command, env: SimpleNamespace(pid=4242))
+    monkeypatch.setattr(stand, "_wait", lambda *args: None)
+    monkeypatch.setattr(stand, "_print", lambda state: None)
+    built: list[int] = []
+    monkeypatch.setattr(stand, "_demo", lambda port: built.append(port) or 0)
+    return built
+
+
+@pytest.mark.parametrize(("flags", "builds"), [([], True), (["--empty"], False), (["--online"], False)])
+def test_up_builds_the_demo_world_only_offline_and_not_when_asked_for_an_empty_stand(
+    no_processes, flags, builds
+):
+    assert stand.main(["up", *flags]) == 0
+
+    assert bool(no_processes) is builds
+
+
+def test_up_on_a_running_stand_builds_nothing(no_processes, monkeypatch):
+    stand._write({"backend": {"pgid": 1, "port": 2}, "frontend": {"pgid": 3, "port": 4}})
+    monkeypatch.setattr(stand, "_alive", lambda pgid: True)
+
+    assert stand.main(["up"]) == 0
+
+    assert no_processes == []
+
+
+def _answers(monkeypatch, outcome):
+    """The stand's HTTP opener answering `outcome`: a body, an HTTP error or a network error."""
+
+    def open_(request, timeout):
+        assert (request.get_method(), request.full_url.endswith("/api/sandbox/demo")) == (
+            "POST",
+            True,
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return io.BytesIO(json.dumps(outcome).encode())
+
+    monkeypatch.setattr(stand, "_HTTP", SimpleNamespace(open=open_))
+
+
+def _refused(code: int, detail: str) -> urllib.error.HTTPError:
+    body = io.BytesIO(json.dumps({"detail": detail}).encode())
+    return urllib.error.HTTPError("http://127.0.0.1/api/sandbox/demo", code, "", None, body)  # type: ignore[arg-type]  # no headers needed
+
+
+def test_demo_prints_what_it_built(monkeypatch, capsys):
+    built = {"companies": 18, "leads": 15, "threads": 15, "queue": 15, "run_id": "r"}
+    _answers(monkeypatch, built)
+
+    assert stand._demo(9123) == 0
+
+    assert capsys.readouterr().out.startswith("world      18 companies, 15 leads, 15 threads")
+
+
+def test_demo_on_built_data_is_no_error_and_says_why(monkeypatch, capsys):
+    _answers(monkeypatch, _refused(409, "мир уже собран"))
+
+    assert stand._demo(9123) == 0
+
+    assert capsys.readouterr().out == "world      мир уже собран\n"
+
+
+@pytest.mark.parametrize(
+    "failure", [_refused(500, "собран не до конца"), ConnectionRefusedError("refused"), "not json"]
+)
+def test_a_demo_that_failed_exits_1_and_says_how_to_rebuild(monkeypatch, capsys, failure):
+    if failure == "not json":
+        monkeypatch.setattr(
+            stand, "_HTTP", SimpleNamespace(open=lambda request, timeout: io.BytesIO(b"<html>"))
+        )
+    else:
+        _answers(monkeypatch, failure)
+
+    assert stand._demo(9123) == 1
+
+    assert "rm -rf .stand" in capsys.readouterr().err

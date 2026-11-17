@@ -65,6 +65,16 @@ def site_domain(company: Company) -> str | None:
     return domain.site_domain((c.kind, c.handle) for c in company.contacts)
 
 
+def rubric_page_url(city: str, rubric: str, page: int) -> str:
+    """Return the address of a rubric's list page as collection asks 2GIS for it."""
+    return domain.RUBRIC_PAGE.format(city=city, rubric=rubric, page=page)
+
+
+def firm_card_url(city: str, branch_id: str) -> str:
+    """Return the address of a branch's card as collection asks 2GIS for it."""
+    return domain.FIRM_CARD.format(city=city, branch_id=branch_id)
+
+
 def forget_interrupted_collection(db: sqlite3.Connection) -> None:
     """Return segments a stopped process left mid-collection to not collected.
 

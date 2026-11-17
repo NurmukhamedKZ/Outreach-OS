@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """The stand: this worktree's backend and dashboard on free ports, in the sandbox, with its own data.
 
-    scripts/stand up [--online]    start both in the background, wait until they answer, print where
+    scripts/stand up [--online | --empty]    start both in the background, wait until they answer, print where
     scripts/stand status           print where; exit 1 when the stand is not up
     scripts/stand down             stop both; the data stays in .stand/data (rm -rf .stand wipes it)
 
 The backend gets no live Node, no Telegram and no backup, and its data directory
 is .stand/data: nothing outside .stand/ is written. It is offline (OFFLINE=1):
 the model and the pages never leave the machine, a batch and a draft cost
-nothing; --online gives it the real model and network. Stdlib only: it runs
-before `uv sync`.
+nothing; --online gives it the real model and network. A fresh offline stand
+builds its demo world (#53): invented companies through the real pipeline, in
+seconds; on built data it is not built again, --empty skips it. Stdlib only: it
+runs before `uv sync`.
 """
 
 from __future__ import annotations
@@ -33,6 +35,8 @@ STATE = STAND / "stand.json"
 HOST = "127.0.0.1"
 READY_SECONDS = 120
 STOP_SECONDS = 10
+# The demo world is built in seconds; this is the ceiling of a slow machine.
+DEMO_SECONDS = 180
 # Its parent is a device file, so the folder can never be created: the backup reads as disabled.
 NO_BACKUP = "/dev/null/backup"
 # No http_proxy for the stand's own addresses.
@@ -81,7 +85,7 @@ def owns(cwds: str, root: Path) -> bool:
     return any(line in ours for line in cwds.splitlines())
 
 
-def up(online: bool) -> int:
+def up(online: bool, empty: bool = False) -> int:
     state = _read()
     if state is not None:
         if all(_alive(entry["pgid"]) for entry in state.values()):
@@ -113,7 +117,51 @@ def up(online: bool) -> int:
         _explain(error)
         return 1
     _print(state)
-    return 0
+    if online or empty:
+        return 0
+    return _demo(backend_port)
+
+
+def _demo(port: int) -> int:
+    """Build the demo world on the stand's backend; on built data it answers 409 and builds nothing."""
+    request = urllib.request.Request(
+        f"http://{HOST}:{port}/api/sandbox/demo", data=b"", method="POST"
+    )
+    started = time.monotonic()
+    try:
+        with _HTTP.open(request, timeout=DEMO_SECONDS) as response:
+            built = json.load(response)
+    except urllib.error.HTTPError as error:
+        detail = _detail(error)
+        if error.code == 409:
+            print(f"world      {detail}")
+            return 0
+        print(f"stand: the demo world failed, HTTP {error.code}: {detail}", file=sys.stderr)
+    except (OSError, ValueError) as error:  # no answer, or an answer that is no JSON
+        print(f"stand: the demo world failed: {error}", file=sys.stderr)
+    else:
+        print(
+            f"world      {built['companies']} companies, {built['leads']} leads,"
+            f" {built['threads']} threads, {built['queue']} queue rows"
+            f" in {time.monotonic() - started:.0f} s"
+        )
+        return 0
+    print(
+        f"stand: it is up with what was built; see {STAND / 'backend.log'}. To rebuild:"
+        " scripts/stand down && rm -rf .stand && scripts/stand up",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _detail(error: urllib.error.HTTPError) -> str:
+    """Return the backend's word on a refused request: its detail, else the body as it came."""
+    body = error.read().decode("utf-8", errors="replace")
+    error.close()
+    try:
+        return str(json.loads(body)["detail"])
+    except (ValueError, KeyError, TypeError):
+        return body
 
 
 def status() -> int:
@@ -269,8 +317,12 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="scripts/stand", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     start = commands.add_parser("up", help="start the stand, or print where the running one is")
-    start.add_argument(
+    filled = start.add_mutually_exclusive_group()
+    filled.add_argument(
         "--online", action="store_true", help="the real model and network: batches go to 2GIS and pay"
+    )
+    filled.add_argument(
+        "--empty", action="store_true", help="no demo world: the stand's data stays as it is"
     )
     commands.add_parser("status", help="print where the stand is; exit 1 when it is not up")
     commands.add_parser("down", help="stop the stand; its data stays")
@@ -283,7 +335,7 @@ def main(argv: list[str]) -> int:
             # The children do not inherit the lock (Popen closes their descriptors).
             fcntl.flock(lock, fcntl.LOCK_EX)
             if args.command == "up":
-                return up(args.online)
+                return up(args.online, args.empty)
             return status() if args.command == "status" else down()
     except subprocess.CalledProcessError as error:
         print(f"stand: {' '.join(map(str, error.cmd))} failed with code {error.returncode}", file=sys.stderr)

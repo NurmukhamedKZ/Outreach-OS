@@ -497,3 +497,93 @@ def test_the_rule_of_the_tick_is_the_rule_of_the_domain(db, work, mode, author, 
     went = work.send_due(INSIDE, work._service.settings()) is not None
 
     assert went == domain.releases(mode, author, kind)
+
+
+# --- one step now, for the sandbox (#53) ---------------------------------------------------
+
+
+@pytest.fixture
+def now_is(state, monkeypatch):
+    """The database of the moment is the test's; set the clock with the returned function."""
+    import clock
+    import paths
+
+    monkeypatch.setattr(paths, "PRODUCTION_STATE", state)
+
+    def set_now(moment):
+        monkeypatch.setattr(clock, "now", lambda: moment)
+
+    return set_now
+
+
+def test_a_step_now_is_the_tick_with_its_gates_a_row_at_night_waits(
+    db, now_is, whatsapp, notes, journal
+):
+    from delivery import public as delivery
+
+    outbox_id, _ = queued(db)
+    now_is(NIGHT)
+
+    delivery.step("tick", whatsapp, notes.append, FakeModel, journal)
+
+    assert whatsapp.sends == []
+    assert status_of(db, outbox_id) == "pending"
+    assert journal.recent(actor=worker.TICK_ACTOR)[0]["outcome"] == "rescheduled"
+
+    now_is(INSIDE + timedelta(days=1))  # the morning after the night
+    delivery.step("tick", whatsapp, notes.append, FakeModel, journal)
+
+    assert status_of(db, outbox_id) == "sent"
+
+
+@pytest.mark.parametrize(
+    ("daemon", "actor", "outcome"),
+    [
+        ("tick", worker.TICK_ACTOR, "idle"),
+        ("warmup", worker.WARMUP_ACTOR, "idle"),
+        ("monitor", worker.MONITOR_ACTOR, "healthy"),
+    ],
+)
+def test_a_step_now_runs_one_daemon_once_and_writes_its_journal(
+    now_is, whatsapp, notes, journal, daemon, actor, outcome
+):
+    from delivery import public as delivery
+
+    now_is(INSIDE)
+
+    delivery.step(daemon, whatsapp, notes.append, FakeModel, journal)
+
+    assert [event["outcome"] for event in journal.recent(actor=actor)] == [outcome]
+    assert {event["actor"] for event in journal.recent()} == {actor}
+
+
+def test_steps_of_one_daemon_never_overlap_the_loop_and_the_sandbox_alike(
+    state, monkeypatch, journal
+):
+    """The loop and the sandbox's step must not take one incoming or one touch twice."""
+    import threading
+    import time
+
+    import paths
+
+    monkeypatch.setattr(paths, "PRODUCTION_STATE", state)
+    running, overlapped = [], []
+
+    def step(work, now):
+        running.append(now)
+        overlapped.append(len(running) > 1)
+        time.sleep(0.05)
+        running.pop()
+
+    threads = [
+        threading.Thread(
+            target=worker.once, args=(step, None, None, FakeModel, journal, random.Random())
+        )
+        for _ in range(3)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+
+    assert overlapped == [False, False, False]

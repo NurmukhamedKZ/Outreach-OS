@@ -19,13 +19,16 @@ from fastapi.testclient import TestClient
 
 import clock
 import paths
+from config import settings
 from conversations import api as conversations_api
 from conversations import dependencies as conversations_dependencies
 from conversations.tests.leads import add_lead
 from core import db as core_db
+from core.activity import Journal
 from core.model import FakeModel
+from core.whatsapp import FakeWhatsApp
 from delivery.schemas import DeliverySettings, Window
-from sandbox import faults, node, routes, runs
+from sandbox import demo, faults, node, routes, runs
 
 MOMENT = datetime(2026, 9, 3, 9, 0, tzinfo=UTC)
 LEADS = ("c_romashka", "c_one", "c_two")
@@ -192,6 +195,29 @@ def test_incoming_without_a_thread_is_a_409(client):
     assert client.post("/api/sandbox/incoming", json={"text": "привет"}).status_code == 409
 
 
+def test_incoming_answers_from_another_thread_of_the_run(client, sent):
+    """The world needs replies in many threads of one run, not only from the run's lead."""
+    run = _run_with_thread(client)
+    _add_thread(runs.get(run["run_id"]).path, "c_one", "+77010000002")
+
+    answer = client.post("/api/sandbox/incoming", json={"text": "привет", "company_id": "c_one"})
+
+    assert answer.status_code == 200, answer.text
+    assert sent[-1]["from"] == "77010000002@s.whatsapp.net"
+
+
+def test_incoming_for_a_company_without_a_thread_in_the_run_is_a_409(client, sent):
+    """A lead of research with no thread in this run: nothing is opened, nothing is sent."""
+    run = _run_with_thread(client)
+
+    answer = client.post("/api/sandbox/incoming", json={"text": "привет", "company_id": "c_one"})
+
+    assert answer.status_code == 409
+    assert sent == []
+    with closing(core_db.connect(runs.get(run["run_id"]).path)) as db:
+        assert [row[0] for row in db.execute("SELECT company_id FROM threads")] == ["c_romashka"]
+
+
 def test_everything_needs_an_active_run(client):
     for path, body in (
         ("/api/sandbox/clock", {"preset": "day"}),
@@ -343,3 +369,86 @@ def test_the_chat_is_the_thread_of_the_run_s_lead(client):
     assert [(bubble["kind"], bubble["text"]) for bubble in chat["bubbles"]] == [
         ("draft", "Здравствуйте")
     ]
+
+
+# --- one step of a daemon now (#53) ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("daemon", "actor"),
+    [("tick", "sender.tick"), ("warmup", "sender.warmup"), ("monitor", "sender.monitor")],
+)
+def test_tick_runs_one_step_of_the_daemon_over_the_run(client, daemon, actor):
+    _start(client)
+    client.app.state.whatsapp = FakeWhatsApp()
+    client.app.state.journal = Journal(paths.state_db)
+
+    answer = client.post("/api/sandbox/tick", json={"daemon": daemon})
+
+    assert answer.status_code == 200, answer.text
+    assert answer.json() == {"daemon": daemon}
+    assert [event["actor"] for event in client.app.state.journal.recent()] == [actor]
+
+
+def test_tick_knows_only_the_three_daemons(client):
+    assert client.post("/api/sandbox/tick", json={"daemon": "backup"}).status_code == 422
+
+
+def test_tick_names_its_daemon_there_is_no_default(client):
+    assert client.post("/api/sandbox/tick", json={}).status_code == 422
+
+
+def test_incoming_with_an_empty_company_is_no_thread_not_the_run_s_lead(client, sent):
+    _run_with_thread(client)
+
+    answer = client.post("/api/sandbox/incoming", json={"text": "привет", "company_id": " "})
+
+    assert answer.status_code == 409
+    assert sent == []
+
+
+# --- the demo world's route (#53); the build itself is backend/tests/test_demo.py -------------
+
+
+@pytest.fixture
+def empty_stand(client, tmp_path, monkeypatch):
+    """An offline stand whose production database has no company yet."""
+    monkeypatch.setattr(settings, "offline", True)
+    monkeypatch.setattr(paths, "PRODUCTION_STATE", tmp_path / "empty.db")
+    core_db.migrate(paths.PRODUCTION_STATE)
+    client.app.dependency_overrides[routes.self_client] = lambda: None
+    return client
+
+
+def test_a_second_build_while_one_is_going_is_a_409(empty_stand, monkeypatch):
+    monkeypatch.setattr(demo, "build", lambda *args: pytest.fail("built twice"))
+    assert routes._building.acquire(blocking=False)
+    try:
+        answer = empty_stand.post("/api/sandbox/demo")
+    finally:
+        routes._building.release()
+
+    assert answer.status_code == 409
+    assert "собирается" in answer.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [demo.DemoFailedError("партия не кончилась"), httpx.ReadTimeout("не ответил")],
+)
+def test_a_build_that_broke_says_how_to_rebuild_and_frees_the_lock(
+    empty_stand, monkeypatch, failure
+):
+    calls = []
+
+    def broken(*args):
+        calls.append(args)
+        raise failure
+
+    monkeypatch.setattr(demo, "build", broken)
+
+    answers = [empty_stand.post("/api/sandbox/demo") for _ in range(2)]
+
+    assert [answer.status_code for answer in answers] == [500, 500]
+    assert "rm -rf .stand" in answers[0].json()["detail"]
+    assert len(calls) == 2, "the lock of the first build is free again"
