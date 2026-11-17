@@ -3,6 +3,9 @@
 The processes are not started here: that is the manual check in the PR.
 """
 
+import io
+import json
+import urllib.error
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
@@ -169,3 +172,56 @@ def test_up_on_a_running_stand_builds_nothing(no_processes, monkeypatch):
     assert stand.main(["up"]) == 0
 
     assert no_processes == []
+
+
+def _answers(monkeypatch, outcome):
+    """The stand's HTTP opener answering `outcome`: a body, an HTTP error or a network error."""
+
+    def open_(request, timeout):
+        assert (request.get_method(), request.full_url.endswith("/api/sandbox/demo")) == (
+            "POST",
+            True,
+        )
+        if isinstance(outcome, Exception):
+            raise outcome
+        return io.BytesIO(json.dumps(outcome).encode())
+
+    monkeypatch.setattr(stand, "_HTTP", SimpleNamespace(open=open_))
+
+
+def _refused(code: int, detail: str) -> urllib.error.HTTPError:
+    body = io.BytesIO(json.dumps({"detail": detail}).encode())
+    return urllib.error.HTTPError("http://127.0.0.1/api/sandbox/demo", code, "", None, body)  # type: ignore[arg-type]  # no headers needed
+
+
+def test_demo_prints_what_it_built(monkeypatch, capsys):
+    built = {"companies": 18, "leads": 15, "threads": 15, "queue": 15, "run_id": "r"}
+    _answers(monkeypatch, built)
+
+    assert stand._demo(9123) == 0
+
+    assert capsys.readouterr().out.startswith("world      18 companies, 15 leads, 15 threads")
+
+
+def test_demo_on_built_data_is_no_error_and_says_why(monkeypatch, capsys):
+    _answers(monkeypatch, _refused(409, "мир уже собран"))
+
+    assert stand._demo(9123) == 0
+
+    assert capsys.readouterr().out == "world      мир уже собран\n"
+
+
+@pytest.mark.parametrize(
+    "failure", [_refused(500, "собран не до конца"), ConnectionRefusedError("refused"), "not json"]
+)
+def test_a_demo_that_failed_exits_1_and_says_how_to_rebuild(monkeypatch, capsys, failure):
+    if failure == "not json":
+        monkeypatch.setattr(
+            stand, "_HTTP", SimpleNamespace(open=lambda request, timeout: io.BytesIO(b"<html>"))
+        )
+    else:
+        _answers(monkeypatch, failure)
+
+    assert stand._demo(9123) == 1
+
+    assert "rm -rf .stand" in capsys.readouterr().err

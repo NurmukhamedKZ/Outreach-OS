@@ -33,7 +33,7 @@ DAY = 86_400
 ANALYTICS_DAYS = 60
 # The verdict table of the offline seller (docs/agents/workflow.md, «Ручной QA») and
 # what each answer leaves the thread in; none of the words is a stop-word of delivery.
-REPLIES = {
+REPLIES: dict[world.Role, tuple[str, str]] = {
     "answer": ("Расскажите подробнее, что вы предлагаете?", "active"),
     "price": ("А сколько это стоит?", "escalated"),
     "interested": ("Давайте созвонимся завтра после обеда", "escalated"),
@@ -44,9 +44,11 @@ REPLIES = {
     "media": ("", "escalated"),
 }
 # Read, not only delivered: the run's lead and one more.
-READ = ("answer", "interested")
+READ: tuple[world.Role, ...] = ("answer", "interested")
+# Sent as the operator edited it: the free marking of the prompt on «Аналитика».
+EDITED: tuple[world.Role, ...] = ("price",)
 OPERATOR_EDIT = " Удобно созвониться на этой неделе?"
-MEETINGS = {"interested": "meeting_held", "price": "meeting_agreed"}
+MEETINGS: dict[world.Role, str] = {"interested": "meeting_held", "price": "meeting_agreed"}
 
 
 class DemoFailedError(Exception):
@@ -79,11 +81,12 @@ class _Operator:
     def __init__(self, client: httpx.Client) -> None:
         self._client = client
         self._ids: dict[str, str] = {}
-        self._rows = 0
 
     def walk(self) -> Summary:
         self._research()
-        run = self._call("POST", "/api/sandbox/runs", {"company_id": self._ids["answer"]}, 201)
+        run = self._call(
+            "POST", "/api/sandbox/runs", {"company_id": self._ids["answer"]}, expect=201
+        )
         self._clock({"preset": "window"})
         firsts = [role for role in world.LEADS if role not in ("held", "draft", "draft_second")]
         for role in firsts:
@@ -107,12 +110,15 @@ class _Operator:
         self._outreach()
         self._tick("monitor")
         self._wait(self._all_delivered, "статусы доставки")
-        stats = self._call("GET", "/api/stats")
+        sourcing = self._call("GET", "/api/stats")["sourcing"]
+        if sourcing is None:
+            raise DemoFailedError("счётчики «Сбора лидов» не посчитались — см. backend.log")
+        threads = [thread["company_id"] for thread in self._call("GET", "/api/threads")["threads"]]
         return Summary(
-            companies=stats["sourcing"]["companies"],
-            leads=stats["sourcing"]["leads"],
-            threads=len(self._call("GET", "/api/threads")["threads"]),
-            queue=self._rows,
+            companies=sourcing["companies"],
+            leads=sourcing["leads"],
+            threads=len(threads),
+            queue=sum(len(self._queue_of(company_id)) for company_id in threads),
             run_id=run["run"]["run_id"],
         )
 
@@ -121,7 +127,7 @@ class _Operator:
     def _research(self) -> None:
         segments = {"cities": [world.CITY], "rubrics": [*world.RUBRICS, world.FAILING_RUBRIC]}
         self._call("PUT", "/api/companies/segments", segments)
-        self._call("POST", "/api/research/batches", None, 202)
+        self._call("POST", "/api/research/batches", expect=202)
         self._wait(
             lambda: (
                 self._call("GET", "/api/research/batches/current")["status"]
@@ -142,16 +148,15 @@ class _Operator:
 
     # --- the queue --------------------------------------------------------------------------
 
-    def _queue(self, role: str, text: str | None = None) -> dict[str, Any]:
+    def _queue(self, role: world.Role, text: str | None = None) -> dict[str, Any]:
         body = {"thread_id": self._ids[role]} | ({"text": text} if text else {})
-        row: dict[str, Any] = self._call("POST", "/api/sender/queue", body, 201)
-        self._rows += 1
+        row: dict[str, Any] = self._call("POST", "/api/sender/queue", body, expect=201)
         return row
 
-    def _send(self, role: str) -> None:
+    def _send(self, role: world.Role) -> None:
         """Queue the role's draft as the operator and tick until it is sent."""
         text = None
-        if role == "price":  # the operator's edit: the free marking of the prompt
+        if role in EDITED:
             text = self._thread(role)["draft"]["draft_text"] + OPERATOR_EDIT
         if role in READ:
             self._faults({"delivery": "read"})
@@ -167,7 +172,7 @@ class _Operator:
         self._clock(JITTER)
         self._tick()
 
-    def _stuck(self, role: str) -> None:
+    def _stuck(self, role: world.Role) -> None:
         """The transport answers with nothing known: the tick hands the row to a human."""
         outbox_id = self._queue(role)["outbox_id"]
         self._faults({"send": "unknown"})
@@ -176,22 +181,22 @@ class _Operator:
         finally:
             self._faults({"send": "ok"})
 
-    def _failed(self, role: str) -> None:
+    def _failed(self, role: world.Role) -> None:
         """The frame never leaves: retried with backoff until the row fails."""
         outbox_id = self._queue(role)["outbox_id"]
         self._faults({"send": "not_sent"})
         try:
-
-            def retry() -> None:
-                self._clock({"preset": "window"})
-                self._clock(PAST_BACKOFF)
-                self._tick()
-
-            self._until(lambda: self._row(role, outbox_id) == "failed", retry, role)
+            self._until(lambda: self._row(role, outbox_id) == "failed", self._next_retry, role)
         finally:
             self._faults({"send": "ok"})
 
-    def _held(self, role: str) -> None:
+    def _next_retry(self) -> None:
+        """Into the window and past the longest backoff, then one tick."""
+        self._clock({"preset": "window"})
+        self._clock(PAST_BACKOFF)
+        self._tick()
+
+    def _held(self, role: world.Role) -> None:
         """The automaton queues a first touch in full, and manual holds its row."""
         self._call("POST", f"/api/threads/{self._ids[role]}/draft", {"kind": "first"})
         # The automaton takes the first draft of a thread not delivered yet: only this one is left.
@@ -201,11 +206,10 @@ class _Operator:
             self._until(lambda: bool(self._rows_of(role)), self._tick, role)
         finally:
             self._autopilot("manual")
-        self._rows += 1
 
     # --- the lead -------------------------------------------------------------------------
 
-    def _reply(self, role: str, text: str, status: str) -> None:
+    def _reply(self, role: world.Role, text: str, status: str) -> None:
         """Answer as the lead through the fake Node and tick until the thread settles."""
         self._call("POST", "/api/sandbox/incoming", {"company_id": self._ids[role], "text": text})
 
@@ -216,7 +220,7 @@ class _Operator:
 
         self._until(settled, self._tick, role)
 
-    def _touches(self, role: str) -> None:
+    def _touches(self, role: world.Role) -> None:
         """The lead stays silent: each pause brings a follow-up, the last one exhausts the thread."""
         for days in self._call("GET", "/api/sender/settings")["follow_up_days"]:
             self._clock({"seconds": days * DAY})
@@ -231,7 +235,7 @@ class _Operator:
         """A second number warms up, a third is banned; the warmup writes to the second."""
         warming, banned = world.POOL
         for number in world.POOL:
-            self._call("POST", "/api/sender/numbers", {"number": number}, 201)
+            self._call("POST", "/api/sender/numbers", {"number": number}, expect=201)
         ban = {"status": "banned", "note": "демо: номер забанен"}
         self._call("POST", f"/api/sender/numbers/{banned}/status", ban)
         # A day past the socket delay: the warmup calendar moves the number on.
@@ -244,37 +248,43 @@ class _Operator:
 
     def _outreach(self) -> None:
         """«Черновики топ-N»: the leads left without a thread get their first drafts."""
-        self._call("POST", "/api/threads/outreach", None, 202)
+        self._call("POST", "/api/threads/outreach", expect=202)
         self._wait(
             lambda: self._call("GET", "/api/threads/outreach/current")["status"] != "running",
             "черновики топ-N",
         )
-        for role in ("draft", "draft_second"):
+        drafts: tuple[world.Role, ...] = ("draft", "draft_second")
+        for role in drafts:
             if self._thread(role)["draft"] is None:
                 raise DemoFailedError(f"{role}: «Черновики топ-N» не написали черновик")
 
     # --- reading --------------------------------------------------------------------------
 
-    def _thread(self, role: str) -> dict[str, Any]:
+    def _thread(self, role: world.Role) -> dict[str, Any]:
         thread: dict[str, Any] = self._call("GET", f"/api/threads/{self._ids[role]}")
         return thread
 
-    def _rows_of(self, role: str) -> list[dict[str, Any]]:
-        view = self._call("GET", "/api/sender/queue", params={"thread_id": self._ids[role]})
-        return [*view["queue"], *view["recent"]]
+    def _queue_of(self, company_id: str) -> list[dict[str, Any]]:
+        """Return the thread's rows once each: a waiting row is among the latest too."""
+        view = self._call("GET", "/api/sender/queue", params={"thread_id": company_id})
+        return list({row["outbox_id"]: row for row in [*view["queue"], *view["recent"]]}.values())
 
-    def _row(self, role: str, outbox_id: int) -> str:
+    def _rows_of(self, role: world.Role) -> list[dict[str, Any]]:
+        return self._queue_of(self._ids[role])
+
+    def _row(self, role: world.Role, outbox_id: int) -> str | None:
         rows = self._rows_of(role)
-        return str(next(row["status"] for row in rows if row["outbox_id"] == outbox_id))
+        return next((row["status"] for row in rows if row["outbox_id"] == outbox_id), None)
 
-    def _number(self, number: str) -> str:
+    def _number(self, number: str) -> str | None:
         cards = self._call("GET", "/api/sender")["numbers"]
-        return str(next(card["status"] for card in cards if card["number"] == number))
+        return next((card["status"] for card in cards if card["number"] == number), None)
 
     def _warmup_log(self) -> bool:
         return bool(self._call("GET", "/api/sender")["warmup_log"])
 
     def _all_delivered(self) -> bool:
+        """Return whether every thread sent to has a receipt; the funnel is what counts both."""
         report = self._call("GET", "/api/analytics", params={"days": str(ANALYTICS_DAYS)})
         steps = {step["step"]: step["count"] for step in report["funnel"]}
         return bool(steps["delivered"] == steps["sent"])
@@ -301,6 +311,7 @@ class _Operator:
         method: str,
         path: str,
         body: dict[str, Any] | None = None,
+        *,
         expect: int = 200,
         params: dict[str, str] | None = None,
     ) -> Any:

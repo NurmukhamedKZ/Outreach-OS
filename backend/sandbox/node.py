@@ -178,8 +178,13 @@ def deliver(payload: dict[str, Any]) -> bool:
         if settings.sender_webhook_secret
         else {}
     )
+    # No proxies from the environment: the secret goes to this machine, not through a proxy.
     response = httpx.post(
-        f"{self_url()}/api/sender/webhook", json=payload, headers=headers, timeout=30
+        f"{self_url()}/api/sender/webhook",
+        json=payload,
+        headers=headers,
+        timeout=30,
+        trust_env=False,
     )
     response.raise_for_status()
     return bool(response.json().get("handled"))

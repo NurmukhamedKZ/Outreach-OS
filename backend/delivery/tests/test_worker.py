@@ -555,3 +555,35 @@ def test_a_step_now_runs_one_daemon_once_and_writes_its_journal(
 
     assert [event["outcome"] for event in journal.recent(actor=actor)] == [outcome]
     assert {event["actor"] for event in journal.recent()} == {actor}
+
+
+def test_steps_of_one_daemon_never_overlap_the_loop_and_the_sandbox_alike(
+    state, monkeypatch, journal
+):
+    """The loop and the sandbox's step must not take one incoming or one touch twice."""
+    import threading
+    import time
+
+    import paths
+
+    monkeypatch.setattr(paths, "PRODUCTION_STATE", state)
+    running, overlapped = [], []
+
+    def step(work, now):
+        running.append(now)
+        overlapped.append(len(running) > 1)
+        time.sleep(0.05)
+        running.pop()
+
+    threads = [
+        threading.Thread(
+            target=worker.once, args=(step, None, None, FakeModel, journal, random.Random())
+        )
+        for _ in range(3)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+
+    assert overlapped == [False, False, False]

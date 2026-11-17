@@ -48,7 +48,7 @@ __all__ = [
 
 # The three daemons by the name the sandbox asks for one step of.
 type Daemon = Literal["tick", "warmup", "monitor"]
-STEPS: dict[str, worker.Step] = {
+STEPS: dict[Daemon, worker.Step] = {
     "tick": worker.Worker.tick,
     "warmup": worker.Worker.warm,
     "monitor": worker.Worker.monitor,

@@ -93,15 +93,24 @@ def built(stand):
     return answer.json()
 
 
-def test_the_build_reports_what_it_made(built):
+def test_the_build_reports_what_it_made(stand, built):
+    threads = stand.get("/api/threads").json()["threads"]
+    rows = {
+        row["outbox_id"]
+        for thread in threads
+        for view in [stand.get(f"/api/sender/queue?thread_id={thread['company_id']}").json()]
+        for row in [*view["queue"], *view["recent"]]
+    }
+
     assert built == {
         "companies": len(world.FIRMS),
         "leads": len(world.LEADS),
         "threads": len(world.LEADS),
-        "queue": built["queue"],
+        "queue": len(rows),
         "run_id": built["run_id"],
     }
-    assert built["queue"] >= 12
+    # Nine first touches, two follow-ups, the stuck, the failed, the cancelled, the held.
+    assert len(rows) == 15
 
 
 def test_today_has_a_task_of_every_kind(stand, built):

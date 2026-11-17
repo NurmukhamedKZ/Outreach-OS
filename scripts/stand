@@ -137,7 +137,7 @@ def _demo(port: int) -> int:
             print(f"world      {detail}")
             return 0
         print(f"stand: the demo world failed, HTTP {error.code}: {detail}", file=sys.stderr)
-    except OSError as error:
+    except (OSError, ValueError) as error:  # no answer, or an answer that is no JSON
         print(f"stand: the demo world failed: {error}", file=sys.stderr)
     else:
         print(

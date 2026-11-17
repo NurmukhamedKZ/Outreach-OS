@@ -47,7 +47,9 @@ PERSONAL_JID = "@s.whatsapp.net"
 
 # A request of the demo scenario to this backend: a research batch of the world takes seconds.
 SELF_TIMEOUT_SECONDS = 60
+REBUILD = "scripts/stand down && rm -rf .stand && scripts/stand up"
 # One build at a time: two would race for the same world and both make a run.
+# ponytail: a lock of the process, one backend per stand; a second process would need the database's.
 _building = threading.Lock()
 
 
@@ -75,7 +77,7 @@ class NewIncoming(Schema):
 
 
 class NewTick(Schema):
-    daemon: delivery.Daemon = "tick"
+    daemon: delivery.Daemon
 
 
 @router.get("/runs")
@@ -165,7 +167,9 @@ def incoming(body: NewIncoming) -> dict[str, bool]:
     run = _require_scenario()
     # Closed before the webhook call: that request writes to this very file.
     with closing(core_db.connect(run.path)) as db:
-        channel = _thread_of(db, body.company_id or run.company_id)["channel"]
+        # An empty company is no company, not the run's lead: only a missing one is.
+        company_id = run.company_id if body.company_id is None else body.company_id
+        channel = _thread_of(db, company_id)["channel"]
     payload = {
         "kind": "incoming",
         "number": runs.SANDBOX_NUMBER,
@@ -233,17 +237,21 @@ def build_demo(client: Annotated[httpx.Client, Depends(self_client)]) -> demo.Su
         raise HTTPException(
             409, "демо-мир собирается только офлайн: иначе партия пойдёт в 2GIS и заплатит модели"
         )
-    with closing(sqlite_tools.connect_readonly(paths.PRODUCTION_STATE)) as db:
-        if companies.counts(db).companies:
-            raise HTTPException(
-                409, "мир уже собран: в базе стенда есть компании — пересобрать: rm -rf .stand"
-            )
+    # The lock before the check: a build finishing between them would be built again.
     if not _building.acquire(blocking=False):
         raise HTTPException(409, "мир уже собирается")
     try:
+        with closing(sqlite_tools.connect_readonly(paths.PRODUCTION_STATE)) as db:
+            if companies.counts(db).companies:
+                raise HTTPException(
+                    409, f"мир уже собран: в базе стенда есть компании — пересобрать: {REBUILD}"
+                )
         return demo.build(client, paths.PAGES, clock.now())
-    except demo.DemoFailedError as error:
-        raise HTTPException(500, f"демо-мир собран не до конца: {error}") from None
+    except (demo.DemoFailedError, httpx.HTTPError) as error:
+        # Half a world counts as built: the next call answers 409, so say how to start over.
+        raise HTTPException(
+            500, f"демо-мир собран не до конца ({error}); пересобрать: {REBUILD}"
+        ) from None
     finally:
         _building.release()
 

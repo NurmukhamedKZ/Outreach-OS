@@ -90,3 +90,15 @@ def test_every_role_the_scenario_plays_has_one_firm():
 
     assert len(roles) == len(set(roles))
     assert set(world.LEADS) <= set(roles)
+
+
+def test_the_run_s_lead_links_its_vacancies_where_research_reads_them():
+    """A literal, not page_url again: a link and its page moved together would pass the test above."""
+    [lead] = [firm for firm in world.FIRMS if firm.role == "answer"]
+    assert lead.site is not None
+    home = PAGES["https://lastochka-buh.example/"]
+
+    links = research_domain.inner_links(home.text, home.final_url)
+
+    assert links == ["https://lastochka-buh.example/jobs/"]
+    assert "менеджера по продажам" in PAGES[links[0]].text

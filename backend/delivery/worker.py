@@ -12,7 +12,7 @@ import sqlite3
 from collections.abc import Callable
 from contextlib import closing
 from datetime import datetime, timedelta
-from threading import Event
+from threading import Event, Lock
 from typing import Any
 
 import clock
@@ -724,6 +724,9 @@ class Worker:
 
 type Step = Callable[[Worker, datetime], object]
 
+# A lock per daemon's step: a daemon was one thread until the sandbox could step it too.
+LOCKS: dict[Step, Lock] = {}
+
 
 def run(
     actor: str,
@@ -757,8 +760,12 @@ def once(
     journal: Journal,
     rng: random.Random,
 ) -> None:
-    """Run `step` once, now, on a connection of its own to the database of the moment."""
-    with closing(core_db.connect(paths.state_db())) as db:
+    """Run `step` once, now, on a connection of its own to the database of the moment.
+
+    One step of a daemon at a time: the loop and the sandbox's step now would
+    otherwise both take one incoming or one due touch, and write it twice.
+    """
+    with LOCKS.setdefault(step, Lock()), closing(core_db.connect(paths.state_db())) as db:
         step(Worker(db, whatsapp, notify, model, rng, journal), clock.now())
 
 

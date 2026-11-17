@@ -10,12 +10,16 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from sandbox import faults, node, runs
+
+# The real hop to the webhook, before the autouse fixture records it instead.
+DELIVER = node.deliver
 
 CONTRACT = json.loads(
     (Path(__file__).resolve().parents[2] / "sender/node/test/contract.json").read_text("utf-8")
@@ -201,3 +205,17 @@ def test_a_socket_that_does_not_come_up_sends_nothing_and_no_receipt(clean):
     node.settle()
     assert body["sent"] is False
     assert clean == []
+
+
+def test_the_webhook_secret_never_goes_through_a_proxy(monkeypatch):
+    """HTTP_PROXY in the environment must not see X-Sender-Secret: the webhook is this machine."""
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(kwargs)
+        return httpx.Response(200, json={"handled": True}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "post", post)
+
+    assert DELIVER({"kind": "status"}) is True
+    assert calls[0]["trust_env"] is False

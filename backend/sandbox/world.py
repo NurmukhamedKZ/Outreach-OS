@@ -11,6 +11,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 from companies import public as companies
 from core import pages as core_pages
@@ -24,6 +25,31 @@ FAILING_RUBRIC = "339"
 INVENTED_PHONES = ("+7799000", "+7727000")
 # Our numbers the scenario adds to the pool beside the sandbox's own: one warms up, one is banned.
 POOL = ("+77990009002", "+77990009003")
+
+
+# What the scenario (sandbox/demo.py) does with a firm; a typo is mypy's, not the build's.
+type Role = Literal[
+    "answer",
+    "price",
+    "interested",
+    "refusal",
+    "wrong",
+    "junk",
+    "stopword",
+    "media",
+    "stuck",
+    "failed",
+    "cancelled",
+    "held",
+    "touches",
+    "draft",
+    "draft_second",
+    "nothing",
+    "no_channel",
+    "city_line",
+]
+# Firms research never makes leads of: nothing to read, no channel to write to.
+NOT_LEADS: tuple[Role, ...] = ("nothing", "no_channel", "city_line")
 
 
 @dataclass(frozen=True)
@@ -55,7 +81,7 @@ class Site:
 class Firm:
     """A company of the world and what the scenario does with it (`role`)."""
 
-    role: str
+    role: Role
     name: str
     rubric: str
     org_id: str
@@ -364,9 +390,7 @@ FIRMS: tuple[Firm, ...] = (
 )
 
 # The firms research makes leads of, and so the threads of the scenario.
-LEADS = tuple(
-    firm.role for firm in FIRMS if firm.role not in ("nothing", "no_channel", "city_line")
-)
+LEADS: tuple[Role, ...] = tuple(firm.role for firm in FIRMS if firm.role not in NOT_LEADS)
 
 
 def page_url(site: Site, page: SitePage) -> str:
@@ -479,7 +503,7 @@ def _site(site: Site) -> dict[str, str]:
     home = research.site_home_url(site.domain)
     links = "".join(f'<a href="{page_url(site, page)}">{page.label}</a>' for page in site.pages)
     # The markup goes last: research quotes a page from its first words.
-    pages = {home: f"<html><body><p>{site.home}</p>{links}{site.markup}</body></html>"}
+    html = {home: f"<html><body><p>{site.home}</p>{links}{site.markup}</body></html>"}
     for page in site.pages:
-        pages[page_url(site, page)] = f"<html><body><p>{page.text}</p></body></html>"
-    return pages
+        html[page_url(site, page)] = f"<html><body><p>{page.text}</p></body></html>"
+    return html

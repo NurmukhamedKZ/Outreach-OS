@@ -390,7 +390,8 @@ cd backend && uv run pytest conversations/tests/
 над `conversations`; снаружи — только `delivery.public` (сборщику — `start` и
 `telegram`, `overview` — `stats`, `stuck`, `delivered_messages`, `JOURNAL_INTERVALS`, песочнице — `settings`,
 `register_number`, `LONGEST_JITTER_MINUTES` и `step` — один шаг демона сейчас, тем же
-`worker.once`, что крутит его цикл: те же гейты и журнал, #53). Журнал (`core.activity.Journal`) приходит
+`worker.once`, что крутит его цикл: те же гейты и журнал; шаги одного демона идут по одному —
+замок на шаг в `worker.LOCKS`, иначе цикл и песочница взяли бы одно входящее дважды, #53). Журнал (`core.activity.Journal`) приходит
 параметром: демонам — из `start`, сервису запроса — зависимостью.
 
 **Транспорт — `core/whatsapp.py`**: Protocol `WhatsApp` (`send`, `check`, `pair`, `qr`,
@@ -669,7 +670,8 @@ OpenRouter `core.model.OfflineModel` (`research.dependencies.get_model`,
 409, ручка тред не открывает. Событие и тогда уходит через подменный Node в свой вебхук.
 «Тик сейчас» (`POST /api/sandbox/tick`, `{"daemon": "tick" | "warmup" | "monitor"}`) —
 один шаг демона доставки (`delivery.public.step`): сценарию, e2e и агенту не ждать 20 секунд
-тика и час монитора; фоновые демоны тикают рядом, гонку закрывает условный `UPDATE`.
+тика и час монитора; фоновые демоны тикают рядом — шаг ждёт шага того же демона, строку
+очереди, взятую обоими, решает условный `UPDATE`.
 
 **Демо-мир** (#53, `POST /api/sandbox/demo`, 201 и сводка: компании, лиды, треды, строки
 очереди, прогон) — данные стенда за секунды: выдуманные компании (`sandbox/world.py`:
