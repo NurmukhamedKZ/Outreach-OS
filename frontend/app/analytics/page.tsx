@@ -57,7 +57,7 @@ export default function AnalyticsPage() {
 
       <section className="card" style={{ marginBottom: 16 }}>
         <h3>Воронка</h3>
-        <table className="table">
+        <table className="table stack-table">
           <thead>
             <tr>
               <th>Шаг</th>
@@ -79,8 +79,8 @@ export default function AnalyticsPage() {
               return (
                 <tr key={row.step}>
                   <td>{STEP_LABELS[row.step] ?? row.step}</td>
-                  <td className="mono">{row.count}</td>
-                  <td className="mono">{pct}</td>
+                  <td className="mono" data-label="Абсолют">{row.count}</td>
+                  <td className="mono" data-label="Доля отправленных">{pct}</td>
                 </tr>
               );
             })}

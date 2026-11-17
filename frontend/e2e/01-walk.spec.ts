@@ -53,6 +53,12 @@ const PAGES: Stop[] = [
     sees: async (page) => {
       await expect(page.getByRole("heading", { name: "Воронка" })).toBeVisible();
       await expect(named(page, "Бухгалтерские услуги · Алматы")).toBeVisible();
+      // Воронка — внутри отступов своей карточки: на телефоне её шапка упиралась в рамку (#73).
+      // Страницу это не расширяло, поэтому сторож ширины молчал.
+      const card = page.locator("section").filter({ has: page.getByRole("heading", { name: "Воронка" }) });
+      const [outer, inner] = [await card.boundingBox(), await card.locator("table").boundingBox()];
+      const padding = await card.evaluate((element) => parseFloat(getComputedStyle(element).paddingRight));
+      expect(inner!.x + inner!.width).toBeLessThanOrEqual(outer!.x + outer!.width - padding + 0.5);
     },
   },
   {
