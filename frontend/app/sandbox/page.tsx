@@ -540,8 +540,9 @@ export default function SandboxPage() {
           <section className="card">
             <h2 className="card-sub">Что делает система</h2>
             <ul className="sandbox-facts">
-              {journal.map((event) => (
-                <li key={`${event.actor}-${event.at}-${event.outcome}`}>
+              {journal.map((event, index) => (
+                // A tick writes many events a second: time and outcome alone are no key.
+                <li key={`${event.actor}-${event.at}-${event.outcome}-${index}`}>
                   <span className="mono">{WHEN.format(new Date(event.last_at))}</span>{" "}
                   {event.actor} · {event.outcome}
                   {event.repeats > 1 && ` ×${event.repeats}`}

@@ -102,3 +102,12 @@ def test_the_run_s_lead_links_its_vacancies_where_research_reads_them():
 
     assert links == ["https://lastochka-buh.example/jobs/"]
     assert "менеджера по продажам" in PAGES[links[0]].text
+
+
+def test_a_site_home_is_quoted_from_its_own_text_not_its_link_labels():
+    """Research quotes a page's first words up to QUOTE_CHARS: a shorter home would end in «Вакансии»."""
+    from research import offline
+
+    for firm in world.FIRMS:
+        if firm.site is not None:
+            assert len(firm.site.home) >= offline.QUOTE_CHARS, firm.name
